@@ -1,0 +1,112 @@
+ffmpeg version N-128195-g914e454559 Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 13 (Ubuntu 13.3.0-6ubuntu2~24.04.1)
+  configuration: --prefix=/usr/local --enable-gpl --enable-version3 --enable-nonfree --enable-static --enable-shared --enable-lto=auto --disable-ffplay --disable-debug --disable-doc --disable-sdl2 --enable-whisper --enable-libass --enable-libfreetype --enable-libfontconfig --enable-libfribidi --enable-libharfbuzz --enable-libmp3lame --enable-libopus --enable-libvorbis --enable-libfdk-aac --enable-libspeex --enable-libtwolame --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-libcodec2 --enable-libshine --enable-libtheora --enable-libvpx --enable-libx264 --enable-libx265 --enable-libdav1d --enable-libaom --enable-libsvtav1 --enable-librav1e --enable-libwebp --enable-librsvg --enable-libjxl --enable-libsoxr --enable-libzimg --enable-libvidstab --enable-libmysofa --enable-librubberband --enable-libbs2b --enable-liblensfun --enable-libtesseract --enable-libvmaf --enable-libplacebo --enable-vulkan-static --enable-vaapi --enable-libvpl --enable-opencl --enable-libdrm --enable-nvenc --enable-nvdec --enable-cuda --enable-cuda-llvm --enable-cuvid --enable-amf --enable-ffnvcodec --enable-iconv --enable-libxml2 --enable-libbluray --enable-libmodplug --enable-libopenmpt --enable-libgme --enable-libcdio --enable-libdc1394 --enable-libiec61883 --enable-libaribb24 --enable-libzvbi --enable-libpulse --enable-libjack --enable-alsa --enable-libv4l2 --enable-libxcb --enable-libxcb-shm --enable-libxcb-xfixes --enable-libxcb-shape --enable-libsnappy --enable-lzma --enable-bzlib --enable-zlib --extra-cflags='-I/usr/include -I/usr/local/include' --extra-ldflags='-L/usr/local/lib -L/usr/local/lib64'
+  libavutil      61. 20.100 / 61. 20.100
+  libavcodec     63. 25.101 / 63. 25.101
+  libavformat    63. 17.100 / 63. 17.100
+  libavdevice    63.  6.100 / 63.  6.100
+  libavfilter    12. 12.100 / 12. 12.100
+  libswscale     10.  6.100 / 10.  6.100
+  libswresample   7.  7.100 /  7.  7.100
+libva info: VA-API version 1.24.0
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+libva info: Trying to open /usr/local/lib/dri/iHD_drv_video.so
+libva info: Found init function __vaDriverInit_1_24
+libva info: va_openDriver() returns 0
+libva info: VA-API version 1.24.0
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+libva info: Trying to open /usr/local/lib/dri/iHD_drv_video.so
+libva info: Found init function __vaDriverInit_1_24
+libva info: va_openDriver() returns 0
+libva info: VA-API version 1.24.0
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+libva info: Trying to open /usr/local/lib/dri/iHD_drv_video.so
+libva info: Found init function __vaDriverInit_1_24
+libva info: va_openDriver() returns 0
+libva info: VA-API version 1.24.0
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+libva info: Trying to open /usr/local/lib/dri/iHD_drv_video.so
+libva info: Found init function __vaDriverInit_1_24
+libva info: va_openDriver() returns 0
+Input #0, matroska,webm, from '/path/to/source-video.mkv':
+  Metadata:
+    ENCODER         : Lavf63.7.100
+  Duration: 01:33:10.69, start: 0.000000, bitrate: 1145 kb/s
+  Chapters:
+    Chapter #0:0: start 0.000000, end 5189.309000
+      Metadata:
+        title           : Chapter 1
+    Chapter #0:1: start 5189.309000, end 5584.036600
+      Metadata:
+        title           : Credits
+    Chapter #0:2: start 5584.036600, end 5590.688000
+      Metadata:
+        title           : Chapter 2
+  Stream #0:0: Video: av1 (libdav1d) (Main), yuv420p10le(tv, bt2020nc/bt2020/smpte2084, progressive), 3840x1608 [SAR 1:1 DAR 160:67], 23.98 fps, 23.98 tbr, 1k tbn (default)
+    Metadata:
+      ENCODER         : Lavc63.16.100 av1_qsv
+      DURATION        : 01:33:10.669000000
+    Side data:
+      Content light level metadata: MaxCLL=912, MaxFALL=200
+      Mastering display metadata: has_primaries:1 has_luminance:1 r(0.6800,0.3200) g(0.2650,0.6900) b(0.1500 0.0600) wp(0.3127, 0.3290) min_luminance=0.000100, max_luminance=1000.000000
+  Stream #0:1(eng): Audio: eac3 (Dolby Digital Plus + Dolby Atmos), 48000 Hz, 5.1(side), fltp, 640 kb/s (default)
+    Metadata:
+      title           : English
+      BPS             : 640000
+      NUMBER_OF_FRAMES: 174709
+      NUMBER_OF_BYTES : 447255040
+      _STATISTICS_WRITING_APP: mkvmerge v66.0.0 ('Josie') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-09-01 18:06:42
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+      DURATION        : 01:33:10.688000000
+  Stream #0:2(eng): Subtitle: subrip (srt) (default)
+    Metadata:
+      title           : English (SDH)
+      BPS             : 33
+      NUMBER_OF_FRAMES: 1053
+      NUMBER_OF_BYTES : 23139
+      _STATISTICS_WRITING_APP: mkvmerge v66.0.0 ('Josie') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-09-01 18:06:42
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+      DURATION        : 01:32:56.219000000
+  Stream #0:3(spa): Subtitle: subrip (srt)
+    Metadata:
+      title           : Spanish (Latin America)
+      BPS             : 24
+      NUMBER_OF_FRAMES: 742
+      NUMBER_OF_BYTES : 17040
+      _STATISTICS_WRITING_APP: mkvmerge v66.0.0 ('Josie') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-09-01 18:06:42
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+      DURATION        : 01:33:05.371000000
+[vost#0:0/av1_qsv @ 0x55bba59fd9c0] Discarding stream metadata 'DURATION' because the stream is being re-encoded. Use '-keep_metadata DURATION' to keep it.
+Stream mapping:
+  Stream #0:0 -> #0:0 (av1 (av1_qsv) -> av1 (av1_qsv))
+Press [q] to stop, [?] for help
+Output #0, matroska, to '/test/cache/vmaf/Sample HDR Film_icq22_45s.mkv':
+  Metadata:
+    encoded_by      : ArcAV1_QSV_V13
+    encoder         : Lavf63.17.100
+  Chapters:
+    Chapter #0:0: start 0.000000, end 45.000000
+      Metadata:
+        title           : Chapter 1
+  Stream #0:0: Video: av1 (AV01 / 0x31305641), p010le(tv, bt2020nc/bt2020/smpte2084, progressive), 3840x1608 [SAR 1:1 DAR 160:67], q=2-31, 23.98 fps, 1k tbn (default)
+    Metadata:
+      encoder         : Lavc63.25.101 av1_qsv
+    Side data:
+      Mastering display metadata: has_primaries:1 has_luminance:1 r(0.6800,0.3200) g(0.2650,0.6900) b(0.1500 0.0600) wp(0.3127, 0.3290) min_luminance=0.000122, max_luminance=1000.000000
+      Content light level metadata: MaxCLL=912, MaxFALL=200
+frame=   59 fps=0.0 q=-0.0 size=       1KiB time=00:00:02.50 bitrate=   4.1kbits/s speed=   5x elapsed=0:00:00.50    
+frame=  157 fps=157 q=-0.0 size=    1024KiB time=00:00:06.58 bitrate=1272.9kbits/s speed=6.59x elapsed=0:00:01.00    
+frame=  249 fps=166 q=-0.0 size=    2048KiB time=00:00:10.42 bitrate=1609.0kbits/s speed=6.95x elapsed=0:00:01.50    
+frame=  345 fps=172 q=-0.0 size=    2048KiB time=00:00:14.43 bitrate=1162.6kbits/s speed=7.21x elapsed=0:00:02.00    
+frame=  441 fps=176 q=-0.0 size=    3328KiB time=00:00:18.43 bitrate=1478.9kbits/s speed=7.37x elapsed=0:00:02.50    
+frame=  539 fps=180 q=-0.0 size=    4096KiB time=00:00:22.52 bitrate=1489.8kbits/s speed=7.51x elapsed=0:00:03.00    
+frame=  633 fps=181 q=-0.0 size=    5120KiB time=00:00:26.44 bitrate=1586.2kbits/s speed=7.55x elapsed=0:00:03.50    
+frame=  729 fps=182 q=-0.0 size=    6656KiB time=00:00:30.44 bitrate=1790.8kbits/s speed=7.61x elapsed=0:00:04.00    
+frame=  825 fps=183 q=-0.0 size=    6656KiB time=00:00:34.45 bitrate=1582.7kbits/s speed=7.65x elapsed=0:00:04.50    
+frame=  923 fps=185 q=-0.0 size=    7680KiB time=00:00:38.53 bitrate=1632.5kbits/s speed=7.71x elapsed=0:00:05.00    
+frame= 1021 fps=186 q=-0.0 size=    8448KiB time=00:00:42.62 bitrate=1623.6kbits/s speed=7.75x elapsed=0:00:05.50    
+[out#0/matroska @ 0x55bba62de780] video:9150KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.070270%
+frame= 1077 fps=187 q=-0.0 Lsize=    9156KiB time=00:00:44.96 bitrate=1668.3kbits/s speed=7.79x elapsed=0:00:05.77    

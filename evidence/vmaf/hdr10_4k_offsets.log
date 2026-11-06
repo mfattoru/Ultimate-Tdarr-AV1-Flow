@@ -1,0 +1,10 @@
+OFFSET=0
+frame=   38 fps=0.0 q=-0.0 size=N/A time=00:00:01.88 bitrate=N/A speed=3.78x elapsed=0:00:00.50    frame=   89 fps= 89 q=-0.0 size=N/A time=00:00:03.90 bitrate=N/A speed= 3.9x elapsed=0:00:01.00    [Parsed_ssim_2 @ 0x1538c8004ec0] SSIM Y:0.770152 (6.385587) U:0.997121 (25.407926) V:0.998056 (27.113586) All:0.845964 (8.123779)
+OFFSET=1
+frame=   34 fps=0.0 q=-0.0 size=N/A time=00:00:01.72 bitrate=N/A speed=3.43x elapsed=0:00:00.50    frame=   83 fps= 83 q=-0.0 size=N/A time=00:00:03.73 bitrate=N/A speed=3.73x elapsed=0:00:01.00    [Parsed_ssim_2 @ 0x150da0005d40] SSIM Y:0.788509 (6.747080) U:0.996906 (25.094665) V:0.997544 (26.097818) All:0.858081 (8.479593)
+OFFSET=2
+frame=   22 fps=0.0 q=-0.0 size=N/A time=00:00:01.23 bitrate=N/A speed=2.46x elapsed=0:00:00.50    frame=   72 fps= 72 q=-0.0 size=N/A time=00:00:03.21 bitrate=N/A speed=3.21x elapsed=0:00:01.00    [Parsed_ssim_2 @ 0x14fb3c005a40] SSIM Y:0.782820 (6.631808) U:0.996732 (24.856565) V:0.996908 (25.097302) All:0.854153 (8.361037)
+OFFSET=3
+frame=   11 fps=0.0 q=-0.0 size=N/A time=00:00:00.71 bitrate=N/A speed=1.42x elapsed=0:00:00.50    frame=   61 fps= 61 q=-0.0 size=N/A time=00:00:02.82 bitrate=N/A speed=2.82x elapsed=0:00:01.00    [Parsed_ssim_2 @ 0x14e474005d40] SSIM Y:0.770650 (6.395006) U:0.996592 (24.675020) V:0.996362 (24.391956) All:0.845926 (8.122693)
+OFFSET=4
+frame=    1 fps=0.0 q=-0.0 size=N/A time=00:00:00.22 bitrate=N/A speed=0.448x elapsed=0:00:00.50    frame=   47 fps= 47 q=-0.0 size=N/A time=00:00:02.24 bitrate=N/A speed=2.24x elapsed=0:00:01.00    frame=   91 fps= 61 q=-0.0 size=N/A time=00:00:03.79 bitrate=N/A speed=2.53x elapsed=0:00:01.50    [Parsed_ssim_2 @ 0x1486bc005d40] SSIM Y:0.767516 (6.336070) U:0.996493 (24.551253) V:0.996229 (24.235754) All:0.843798 (8.063129)

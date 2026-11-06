@@ -1,0 +1,50 @@
+{
+  "benchmark": "Tdarr V15 full-frame scan thread scaling",
+  "date": "2026-11-05",
+  "container": "tdarr-flow-live-test-20261102",
+  "ffprobe": "N-128195-g914e454559",
+  "method": "Direct FFprobe frame scans using V15 frame fields and compact output; includes source-codec inputs and a candidate AV1 output. Compare elapsed time, frame count, and SHA-256 of complete stdout.",
+  "results": [
+    {
+      "input": "1080p H.264 SDR first 120 seconds",
+      "test_path": "/test/precheck-thread-benchmark-20261105/prince-h264-first-120s.mkv",
+      "source_duration_seconds": 120.037,
+      "source_size_bytes": 98397370,
+      "frame_count": 2878,
+      "runs": [
+        {"threads": 1, "elapsed_seconds": 18.181, "stdout_sha256": "fd300739e341aa975bc8e526289704e5edb2d4d9a245f3ba30d74ca2345a0699", "stderr": ""},
+        {"threads": 2, "elapsed_seconds": 9.442, "stdout_sha256": "fd300739e341aa975bc8e526289704e5edb2d4d9a245f3ba30d74ca2345a0699", "stderr": ""},
+        {"threads": 4, "elapsed_seconds": 6.352, "stdout_sha256": "fd300739e341aa975bc8e526289704e5edb2d4d9a245f3ba30d74ca2345a0699", "stderr": ""}
+      ]
+    },
+    {
+      "input": "4K HEVC Main 10 HDR10+",
+      "test_path": "/test/v15-source/birds-hdr10plus.mkv",
+      "source_duration_seconds": 21.355,
+      "source_size_bytes": 167234814,
+      "frame_count": 508,
+      "runs": [
+        {"threads": 1, "elapsed_seconds": 35.033, "stdout_sha256": "cb449f374d2d2e74a7231913bbece17dee391cd64708c8b1df4cd50e676702e7", "stderr": ""},
+        {"threads": 2, "elapsed_seconds": 19.465, "stdout_sha256": "cb449f374d2d2e74a7231913bbece17dee391cd64708c8b1df4cd50e676702e7", "stderr": ""},
+        {"threads": 4, "elapsed_seconds": 11.528, "stdout_sha256": "cb449f374d2d2e74a7231913bbece17dee391cd64708c8b1df4cd50e676702e7", "stderr": ""}
+      ]
+    },
+    {
+      "input": "1080p AV1 output from the same 120-second excerpt",
+      "test_path": "/test/bench-speed/prince-120s-icq22.mkv",
+      "source_duration_seconds": 120.037,
+      "source_size_bytes": 30331765,
+      "frame_count": 2878,
+      "runs": [
+        {"threads": 1, "elapsed_seconds": 16.168, "stdout_sha256": "f58e6ace150899b5782f3cca330876a64fd06d4cf7319822c5f1644f0a274932", "stderr": ""},
+        {"threads": 2, "elapsed_seconds": 9.923, "stdout_sha256": "f58e6ace150899b5782f3cca330876a64fd06d4cf7319822c5f1644f0a274932", "stderr": ""},
+        {"threads": 4, "elapsed_seconds": 7.328, "stdout_sha256": "f58e6ace150899b5782f3cca330876a64fd06d4cf7319822c5f1644f0a274932", "stderr": ""}
+      ]
+    }
+  ],
+  "limitations": [
+    "Concurrent scans were active in the test and production containers, so wall times are not idle-host measurements.",
+    "The benchmark used short excerpts and direct FFprobe, not the full Tdarr worker/plugin pipeline.",
+    "An attempted H.264 excerpt near source time 300 seconds emitted malformed NAL diagnostics and was excluded."
+  ]
+}

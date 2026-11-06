@@ -1,0 +1,1243 @@
+ffmpeg version N-128195-g914e454559 Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 13 (Ubuntu 13.3.0-6ubuntu2~24.04.1)
+  configuration: --prefix=/usr/local --enable-gpl --enable-version3 --enable-nonfree --enable-static --enable-shared --enable-lto=auto --disable-ffplay --disable-debug --disable-doc --disable-sdl2 --enable-whisper --enable-libass --enable-libfreetype --enable-libfontconfig --enable-libfribidi --enable-libharfbuzz --enable-libmp3lame --enable-libopus --enable-libvorbis --enable-libfdk-aac --enable-libspeex --enable-libtwolame --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-libcodec2 --enable-libshine --enable-libtheora --enable-libvpx --enable-libx264 --enable-libx265 --enable-libdav1d --enable-libaom --enable-libsvtav1 --enable-librav1e --enable-libwebp --enable-librsvg --enable-libjxl --enable-libsoxr --enable-libzimg --enable-libvidstab --enable-libmysofa --enable-librubberband --enable-libbs2b --enable-liblensfun --enable-libtesseract --enable-libvmaf --enable-libplacebo --enable-vulkan-static --enable-vaapi --enable-libvpl --enable-opencl --enable-libdrm --enable-nvenc --enable-nvdec --enable-cuda --enable-cuda-llvm --enable-cuvid --enable-amf --enable-ffnvcodec --enable-iconv --enable-libxml2 --enable-libbluray --enable-libmodplug --enable-libopenmpt --enable-libgme --enable-libcdio --enable-libdc1394 --enable-libiec61883 --enable-libaribb24 --enable-libzvbi --enable-libpulse --enable-libjack --enable-alsa --enable-libv4l2 --enable-libxcb --enable-libxcb-shm --enable-libxcb-xfixes --enable-libxcb-shape --enable-libsnappy --enable-lzma --enable-bzlib --enable-zlib --extra-cflags='-I/usr/include -I/usr/local/include' --extra-ldflags='-L/usr/local/lib -L/usr/local/lib64'
+  libavutil      61. 20.100 / 61. 20.100
+  libavcodec     63. 25.101 / 63. 25.101
+  libavformat    63. 17.100 / 63. 17.100
+  libavdevice    63.  6.100 / 63.  6.100
+  libavfilter    12. 12.100 / 12. 12.100
+  libswscale     10.  6.100 / 10.  6.100
+  libswresample   7.  7.100 /  7.  7.100
+libva info: VA-API version 1.24.0
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+libva info: Trying to open /usr/local/lib/dri/iHD_drv_video.so
+libva info: Found init function __vaDriverInit_1_24
+libva info: va_openDriver() returns 0
+libva info: VA-API version 1.24.0
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+libva info: Trying to open /usr/local/lib/dri/iHD_drv_video.so
+libva info: Found init function __vaDriverInit_1_24
+libva info: va_openDriver() returns 0
+libva info: VA-API version 1.24.0
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+libva info: Trying to open /usr/local/lib/dri/iHD_drv_video.so
+libva info: Found init function __vaDriverInit_1_24
+libva info: va_openDriver() returns 0
+libva info: VA-API version 1.24.0
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+libva info: Trying to open /usr/local/lib/dri/iHD_drv_video.so
+libva info: Found init function __vaDriverInit_1_24
+libva info: va_openDriver() returns 0
+[in#0/matroska,webm @ 0x5567f0798ac0] Stream #91: not enough frames to estimate rate; consider increasing probesize
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 16 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 17 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 18 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 19 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 20 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 21 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 22 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 23 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 24 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 25 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 26 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 27 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 28 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 29 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 30 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 31 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 32 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 33 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 34 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 35 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 36 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 37 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 38 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 39 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 40 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 41 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 42 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 43 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 44 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 45 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 46 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 47 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 48 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 49 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 50 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 51 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 52 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 53 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 54 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 55 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 56 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 57 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 58 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 59 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 60 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 61 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 62 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 63 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 64 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 65 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 66 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 67 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 68 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 69 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 70 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 71 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 72 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 73 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 74 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 75 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 76 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 77 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 78 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 79 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 80 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 81 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 82 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 83 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 84 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 85 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 86 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 87 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 88 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[in#0/matroska,webm @ 0x5567f0798ac0] Could not find codec parameters for stream 89 (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size
+Consider increasing the value for the 'analyzeduration' (0) and 'probesize' (5000000) options
+[aist#0:4/pcm_s24le @ 0x5567f1540680] Guessed Channel Layout: 7.1
+Input #0, matroska,webm, from '/path/to/source-video.mkv':
+  Metadata:
+    title           : Sample HDR Film
+    IMDB            : tt0816692
+    creation_time   : 2023-11-17T13:35:38.000000Z
+    TMDB            : movie/157336
+    ENCODER         : Lavf58.76.100
+  Duration: 02:49:04.22, start: 0.000000, bitrate: 80977 kb/s
+  Chapters:
+    Chapter #0:0: start 0.000000, end 575.492000
+      Metadata:
+        title           : Dreaming of the Crash/A Ghost/Cornfield Chase
+    Chapter #0:1: start 575.492000, end 1032.323000
+      Metadata:
+        title           : Parent Teacher Conference
+    Chapter #0:2: start 1032.323000, end 1500.749000
+      Metadata:
+        title           : Dust
+    Chapter #0:3: start 1500.749000, end 2145.393000
+      Metadata:
+        title           : Day One
+    Chapter #0:4: start 2145.393000, end 2536.868000
+      Metadata:
+        title           : Stay
+    Chapter #0:5: start 2536.868000, end 3019.892000
+      Metadata:
+        title           : Endurance
+    Chapter #0:6: start 3019.892000, end 3288.076000
+      Metadata:
+        title           : Going to sleep
+    Chapter #0:7: start 3288.076000, end 3539.703000
+      Metadata:
+        title           : Saturn/Message from Home
+    Chapter #0:8: start 3539.703000, end 3975.013000
+      Metadata:
+        title           : Wormhole/Time Dilation
+    Chapter #0:9: start 3975.013000, end 4648.185000
+      Metadata:
+        title           : Miller's Planet/Mountains
+    Chapter #0:10: start 4648.185000, end 5132.002000
+      Metadata:
+        title           : Afraid of Time
+    Chapter #0:11: start 5132.002000, end 5672.000000
+      Metadata:
+        title           : The choice
+    Chapter #0:12: start 5672.000000, end 6374.702000
+      Metadata:
+        title           : Mann's Planet
+    Chapter #0:13: start 6374.702000, end 6934.553000
+      Metadata:
+        title           : I'm Going Home/Coward
+    Chapter #0:14: start 6934.553000, end 7334.369000
+      Metadata:
+        title           : Rage against the dying of the ligh
+    Chapter #0:15: start 7334.369000, end 7976.844000
+      Metadata:
+        title           : Endurance Race
+    Chapter #0:16: start 7976.844000, end 8453.820000
+      Metadata:
+        title           : Gargantua/Detach
+    Chapter #0:17: start 8453.820000, end 9312.094000
+      Metadata:
+        title           : S.T.A.Y./"It's not a ghost"
+    Chapter #0:18: start 9312.094000, end 9839.830000
+      Metadata:
+        title           : Closing Credits
+    Chapter #0:19: start 9839.830000, end 10144.224000
+      Metadata:
+        title           : Chapter 20
+  Stream #0:0(eng): Video: hevc (Main 10), yuv420p10le(tv, bt2020nc/bt2020/smpte2084), 3840x2160 [SAR 1:1 DAR 16:9], 23.98 fps, 23.98 tbr, 1k tbn (default)
+    Metadata:
+      title           : HEVC (H.265) Video / 51905 kbps / 2160p / 23.976 fps / IMAX 1.78:1 & 2.40:1 / Main 10 @ Level 5.1 @ High / 4:2:0 / 10 bits / 4000nits / Dolby Vision BL+RPU P8, HDR10 compatible, SMPTE ST 2094 HDR10+ Profile B / BT.2020
+      BPS             : 51710549
+      DURATION        : 02:49:04.218000000
+      NUMBER_OF_FRAMES: 243218
+      NUMBER_OF_BYTES : 65570385435
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+    Side data:
+      DOVI configuration record: version: 1.0, profile: 8, level: 6, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 1, compression: 0
+  Stream #0:1(eng): Audio: truehd (Dolby TrueHD + Dolby Atmos), 48000 Hz, 7.1, s32 (24 bit) (default)
+    Metadata:
+      title           : Dolby TrueHD with Atmos / 7.1 / 15 Objects / 48 kHz / 6 401 kbps / 24 bit
+      BPS             : 6400956
+      DURATION        : 02:49:04.209000000
+      NUMBER_OF_FRAMES: 12173050
+      NUMBER_OF_BYTES : 8116579744
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:2(eng): Audio: eac3 (Dolby Digital Plus + Dolby Atmos), 48000 Hz, 5.1.2, fltp, 1664 kb/s
+    Metadata:
+      title           : Dolby Digital Plus with Atmos / 7.1 / 15 Objects / .eb3 BluRay Standard Format / 48 kHz / 1 664 kbps
+      BPS             : 1664000
+      DURATION        : 02:49:04.224000000
+      NUMBER_OF_FRAMES: 317007
+      NUMBER_OF_BYTES : 2109998592
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:3(eng): Audio: eac3 (Dolby Digital Plus + Dolby Atmos), 48000 Hz, 5.1(side), fltp, 768 kb/s
+    Metadata:
+      title           : Dolby Digital Plus with Atmos / 5.1 / 15 Objects / 48 kHz / 768 kbps
+      BPS             : 768000
+      DURATION        : 02:49:04.224000000
+      NUMBER_OF_FRAMES: 317007
+      NUMBER_OF_BYTES : 973845504
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:4(eng): Audio: pcm_s24le, 48000 Hz, 7.1, s32 (24 bit), 9216 kb/s
+    Metadata:
+      title           : RAW Upmixed WAV / 7.1 / 48 kHz / 9 216 kbps
+      BPS             : 9216000
+      DURATION        : 02:49:04.213000000
+      NUMBER_OF_FRAMES: 253606
+      NUMBER_OF_BYTES : 11686133760
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:5(eng): Audio: ac3, 48000 Hz, 5.1(side), fltp, 640 kb/s
+    Metadata:
+      title           : Dolby Digital Surround EX / 5.1 / 48 kHz / 640 kbps
+      BPS             : 640000
+      DURATION        : 02:49:04.224000000
+      NUMBER_OF_FRAMES: 317007
+      NUMBER_OF_BYTES : 811537920
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:6(eng): Audio: ac3, 48000 Hz, 5.1(side), fltp, 640 kb/s
+    Metadata:
+      title           : Dolby Digital / 5.1 / 48 kHz / 640 kbps
+      BPS             : 640000
+      DURATION        : 02:49:04.224000000
+      NUMBER_OF_FRAMES: 317007
+      NUMBER_OF_BYTES : 811537920
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:7(fre): Audio: dts (dca) (DTS-HD MA), 48000 Hz, 5.1(side), s16p
+    Metadata:
+      title           : Surround 5.1
+      BPS             : 2225289
+      DURATION        : 02:49:04.213000000
+      NUMBER_OF_FRAMES: 951020
+      NUMBER_OF_BYTES : 2821726716
+      SOURCE_ID       : 001103
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES SOURCE_ID
+  Stream #0:8(ger): Audio: dts (dca) (DTS-HD MA), 48000 Hz, 5.1(side), s16p
+    Metadata:
+      title           : Surround 5.1
+      BPS             : 2205332
+      DURATION        : 02:49:04.213000000
+      NUMBER_OF_FRAMES: 951020
+      NUMBER_OF_BYTES : 2796420960
+      SOURCE_ID       : 001104
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES SOURCE_ID
+  Stream #0:9(ita): Audio: ac3, 48000 Hz, 5.1(side), fltp, 640 kb/s
+    Metadata:
+      title           : Surround 5.1
+      BPS             : 640000
+      DURATION        : 02:49:04.224000000
+      NUMBER_OF_FRAMES: 317007
+      NUMBER_OF_BYTES : 811537920
+      SOURCE_ID       : 001105
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES SOURCE_ID
+  Stream #0:10(spa): Audio: ac3, 48000 Hz, 5.1(side), fltp, 640 kb/s
+    Metadata:
+      title           : Surround 5.1
+      BPS             : 640000
+      DURATION        : 02:49:04.224000000
+      NUMBER_OF_FRAMES: 317007
+      NUMBER_OF_BYTES : 811537920
+      SOURCE_ID       : 001106
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES SOURCE_ID
+  Stream #0:11(spa): Audio: ac3, 48000 Hz, 5.1(side), fltp, 640 kb/s
+    Metadata:
+      title           : Surround 5.1
+      BPS             : 640000
+      DURATION        : 02:49:04.224000000
+      NUMBER_OF_FRAMES: 317007
+      NUMBER_OF_BYTES : 811537920
+      SOURCE_ID       : 001107
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES SOURCE_ID
+  Stream #0:12(por): Audio: ac3, 48000 Hz, 5.1(side), fltp, 640 kb/s
+    Metadata:
+      title           : Surround 5.1
+      BPS             : 640000
+      DURATION        : 02:49:04.224000000
+      NUMBER_OF_FRAMES: 317007
+      NUMBER_OF_BYTES : 811537920
+      SOURCE_ID       : 001108
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES SOURCE_ID
+  Stream #0:13(cze): Audio: ac3, 48000 Hz, 5.1(side), fltp, 640 kb/s
+    Metadata:
+      title           : Surround 5.1
+      BPS             : 640000
+      DURATION        : 02:49:04.224000000
+      NUMBER_OF_FRAMES: 317007
+      NUMBER_OF_BYTES : 811537920
+      SOURCE_ID       : 001109
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES SOURCE_ID
+  Stream #0:14(pol): Audio: ac3, 48000 Hz, 5.1(side), fltp, 640 kb/s
+    Metadata:
+      title           : Surround 5.1
+      BPS             : 640000
+      DURATION        : 02:49:04.224000000
+      NUMBER_OF_FRAMES: 317007
+      NUMBER_OF_BYTES : 811537920
+      SOURCE_ID       : 00110A
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES SOURCE_ID
+  Stream #0:15(rus): Audio: ac3, 48000 Hz, 5.1(side), fltp, 640 kb/s
+    Metadata:
+      title           : Surround 5.1
+      BPS             : 640000
+      DURATION        : 02:49:04.224000000
+      NUMBER_OF_FRAMES: 317007
+      NUMBER_OF_BYTES : 811537920
+      SOURCE_ID       : 00110B
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES SOURCE_ID
+  Stream #0:16(eng): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : English
+      BPS             : 34389
+      DURATION        : 02:42:27.530000000
+      NUMBER_OF_FRAMES: 3946
+      NUMBER_OF_BYTES : 41901756
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:17(eng): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : English (SDH)
+      BPS             : 37248
+      DURATION        : 02:42:27.321000000
+      NUMBER_OF_FRAMES: 4192
+      NUMBER_OF_BYTES : 45384195
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:18(ara): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Arabic
+      BPS             : 14138
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3978
+      NUMBER_OF_BYTES : 17791259
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:19(bul): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Bulgarian
+      BPS             : 28039
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3970
+      NUMBER_OF_BYTES : 35307939
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:20(chi): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Chinese (Cantonese)
+      BPS             : 23875
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3976
+      NUMBER_OF_BYTES : 30064883
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:21(chi): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Chinese (Mandarin Simplified)
+      BPS             : 25632
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 4238
+      NUMBER_OF_BYTES : 32277993
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:22(chi): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Chinese (Mandarin Traditional)
+      BPS             : 24214
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3978
+      NUMBER_OF_BYTES : 30492284
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:23(hrv): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Croatian
+      BPS             : 28435
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3948
+      NUMBER_OF_BYTES : 35781341
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:24(cze): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Czech
+      BPS             : 25068
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3972
+      NUMBER_OF_BYTES : 31543974
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:25(dan): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Danish
+      BPS             : 28318
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3908
+      NUMBER_OF_BYTES : 35634375
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:26(dut): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Dutch
+      BPS             : 25136
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3516
+      NUMBER_OF_BYTES : 31630344
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:27(est): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Estonian
+      BPS             : 23017
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 4276
+      NUMBER_OF_BYTES : 28984050
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:28(fin): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Finnish
+      BPS             : 23035
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3232
+      NUMBER_OF_BYTES : 28986543
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:29(fre): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : French
+      BPS             : 30019
+      DURATION        : 02:42:27.446000000
+      NUMBER_OF_FRAMES: 4196
+      NUMBER_OF_BYTES : 36577020
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:30(ger): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : German
+      BPS             : 35671
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 4192
+      NUMBER_OF_BYTES : 44886695
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:31(gre): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Greek
+      BPS             : 27507
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3960
+      NUMBER_OF_BYTES : 34612842
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:32(heb): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Hebrew
+      BPS             : 21854
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3966
+      NUMBER_OF_BYTES : 27520192
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:33(hun): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Hungarian
+      BPS             : 28933
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3968
+      NUMBER_OF_BYTES : 36434721
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:34(ice): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Icelandic
+      BPS             : 27230
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3964
+      NUMBER_OF_BYTES : 34264591
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:35(ind): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Indonesian
+      BPS             : 31623
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 4108
+      NUMBER_OF_BYTES : 39792146
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:36(ita): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Italian
+      BPS             : 31849
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 4190
+      NUMBER_OF_BYTES : 40077110
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:37(jpn): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Japanese
+      BPS             : 23117
+      DURATION        : 02:42:27.279000000
+      NUMBER_OF_FRAMES: 4129
+      NUMBER_OF_BYTES : 28166579
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:38(kor): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Korean
+      BPS             : 21073
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3964
+      NUMBER_OF_BYTES : 26536502
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:39(lav): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Latvian
+      BPS             : 24585
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 4300
+      NUMBER_OF_BYTES : 30958644
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:40(lit): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Lithuanian
+      BPS             : 29452
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3972
+      NUMBER_OF_BYTES : 37087687
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:41(nor): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Norwegian
+      BPS             : 26468
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3410
+      NUMBER_OF_BYTES : 33305767
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:42(pol): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Polish
+      BPS             : 24157
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3918
+      NUMBER_OF_BYTES : 30397612
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:43(por): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Portuguese (Brazilian)
+      BPS             : 29018
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3974
+      NUMBER_OF_BYTES : 36541564
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:44(por): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Portuguese (Iberian)
+      BPS             : 30320
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3984
+      NUMBER_OF_BYTES : 38152906
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:45(rum): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Romanian
+      BPS             : 27554
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3786
+      NUMBER_OF_BYTES : 34697792
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:46(rus): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Russian
+      BPS             : 30344
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 4104
+      NUMBER_OF_BYTES : 38211443
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:47(spa): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Spanish (Castilian)
+      BPS             : 28508
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 4002
+      NUMBER_OF_BYTES : 35872760
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:48(spa): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Spanish (Latin American)
+      BPS             : 34598
+      DURATION        : 02:47:47.140000000
+      NUMBER_OF_FRAMES: 3982
+      NUMBER_OF_BYTES : 43537896
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:49(slv): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Slovenian
+      BPS             : 22753
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3058
+      NUMBER_OF_BYTES : 28652527
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:50(swe): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Swedish
+      BPS             : 27406
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3368
+      NUMBER_OF_BYTES : 34485846
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:51(tha): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Thai
+      BPS             : 24244
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3970
+      NUMBER_OF_BYTES : 30529634
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:52(tur): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Turkish
+      BPS             : 28914
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3966
+      NUMBER_OF_BYTES : 36383496
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:53(eng): Subtitle: hdmv_pgs_subtitle (pgssub) (default)
+    Metadata:
+      title           : English
+      BPS             : 34389
+      DURATION        : 02:42:27.530000000
+      NUMBER_OF_FRAMES: 3946
+      NUMBER_OF_BYTES : 41901756
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:54(eng): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : English (SDH)
+      BPS             : 37248
+      DURATION        : 02:42:27.321000000
+      NUMBER_OF_FRAMES: 4192
+      NUMBER_OF_BYTES : 45384195
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:55(ara): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Arabic
+      BPS             : 14138
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3978
+      NUMBER_OF_BYTES : 17791259
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:56(bul): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Bulgarian
+      BPS             : 28039
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3970
+      NUMBER_OF_BYTES : 35307939
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:57(chi): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Chinese (Cantonese)
+      BPS             : 23875
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3976
+      NUMBER_OF_BYTES : 30064883
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:58(chi): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Chinese (Mandarin Simplified)
+      BPS             : 25632
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 4238
+      NUMBER_OF_BYTES : 32277993
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:59(chi): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Chinese (Mandarin Traditional)
+      BPS             : 24214
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3978
+      NUMBER_OF_BYTES : 30492284
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:60(hrv): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Croatian
+      BPS             : 28435
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3948
+      NUMBER_OF_BYTES : 35781341
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:61(cze): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Czech
+      BPS             : 25068
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3972
+      NUMBER_OF_BYTES : 31543974
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:62(dan): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Danish
+      BPS             : 28318
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3908
+      NUMBER_OF_BYTES : 35634375
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:63(dut): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Dutch
+      BPS             : 25136
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3516
+      NUMBER_OF_BYTES : 31630344
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:64(est): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Estonian
+      BPS             : 23017
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 4276
+      NUMBER_OF_BYTES : 28984050
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:65(fin): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Finnish
+      BPS             : 23035
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3232
+      NUMBER_OF_BYTES : 28986543
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:66(fre): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : French
+      BPS             : 30019
+      DURATION        : 02:42:27.446000000
+      NUMBER_OF_FRAMES: 4196
+      NUMBER_OF_BYTES : 36577020
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:67(ger): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : German
+      BPS             : 35671
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 4192
+      NUMBER_OF_BYTES : 44886695
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:68(gre): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Greek
+      BPS             : 27507
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3960
+      NUMBER_OF_BYTES : 34612842
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:69(heb): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Hebrew
+      BPS             : 21854
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3966
+      NUMBER_OF_BYTES : 27520192
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:70(hun): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Hungarian
+      BPS             : 28933
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3968
+      NUMBER_OF_BYTES : 36434721
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:71(ice): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Icelandic
+      BPS             : 27230
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3964
+      NUMBER_OF_BYTES : 34264591
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:72(ind): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Indonesian
+      BPS             : 31623
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 4108
+      NUMBER_OF_BYTES : 39792146
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:73(ita): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Italian
+      BPS             : 31849
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 4190
+      NUMBER_OF_BYTES : 40077110
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:74(jpn): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Japanese
+      BPS             : 23117
+      DURATION        : 02:42:27.279000000
+      NUMBER_OF_FRAMES: 4129
+      NUMBER_OF_BYTES : 28166579
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:75(kor): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Korean
+      BPS             : 21073
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3964
+      NUMBER_OF_BYTES : 26536502
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:76(lav): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Latvian
+      BPS             : 24585
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 4300
+      NUMBER_OF_BYTES : 30958644
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:77(lit): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Lithuanian
+      BPS             : 29452
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3972
+      NUMBER_OF_BYTES : 37087687
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:78(nor): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Norwegian
+      BPS             : 26468
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3410
+      NUMBER_OF_BYTES : 33305767
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:79(pol): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Polish
+      BPS             : 24157
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3918
+      NUMBER_OF_BYTES : 30397612
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:80(por): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Portuguese (Brazilian)
+      BPS             : 29018
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3974
+      NUMBER_OF_BYTES : 36541564
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:81(por): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Portuguese (Iberian)
+      BPS             : 30320
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3984
+      NUMBER_OF_BYTES : 38152906
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:82(rum): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Romanian
+      BPS             : 27554
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3786
+      NUMBER_OF_BYTES : 34697792
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:83(rus): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Russian
+      BPS             : 30344
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 4104
+      NUMBER_OF_BYTES : 38211443
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:84(spa): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Spanish (Castilian)
+      BPS             : 28508
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 4002
+      NUMBER_OF_BYTES : 35872760
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:85(spa): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Spanish (Latin American)
+      BPS             : 34598
+      DURATION        : 02:47:47.140000000
+      NUMBER_OF_FRAMES: 3982
+      NUMBER_OF_BYTES : 43537896
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:86(slv): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Slovenian
+      BPS             : 22753
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3058
+      NUMBER_OF_BYTES : 28652527
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:87(swe): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Swedish
+      BPS             : 27406
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3368
+      NUMBER_OF_BYTES : 34485846
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:88(tha): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Thai
+      BPS             : 24244
+      DURATION        : 02:47:53.938000000
+      NUMBER_OF_FRAMES: 3970
+      NUMBER_OF_BYTES : 30529634
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:89(tur): Subtitle: hdmv_pgs_subtitle (pgssub)
+    Metadata:
+      title           : Turkish
+      BPS             : 28914
+      DURATION        : 02:47:46.598000000
+      NUMBER_OF_FRAMES: 3966
+      NUMBER_OF_BYTES : 36383496
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:90(eng): Subtitle: subrip (srt)
+    Metadata:
+      BPS             : 57
+      DURATION        : 02:42:27.529000000
+      NUMBER_OF_FRAMES: 1973
+      NUMBER_OF_BYTES : 69618
+      _STATISTICS_WRITING_APP: mkvmerge v76.0 ('Celebration') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-11-17 13:35:38
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+  Stream #0:91: Video: png, rgba(pc, gbr/bt709/iec61966-2-1), 499x628 [SAR 3780:3780 DAR 499:628], 90k tbr, 90k tbn (attached pic)
+    Metadata:
+      filename        : cover.png
+      mimetype        : image/png
+[vost#0:0/av1_qsv @ 0x5567f082e5c0] Discarding stream metadata 'BPS' because the stream is being re-encoded. Use '-keep_metadata BPS' to keep it.
+[vost#0:0/av1_qsv @ 0x5567f082e5c0] Discarding stream metadata 'DURATION' because the stream is being re-encoded. Use '-keep_metadata DURATION' to keep it.
+[vost#0:0/av1_qsv @ 0x5567f082e5c0] Discarding stream metadata 'NUMBER_OF_BYTES' because the stream is being re-encoded. Use '-keep_metadata NUMBER_OF_BYTES' to keep it.
+[vost#0:0/av1_qsv @ 0x5567f082e5c0] Discarding stream metadata 'NUMBER_OF_FRAMES' because the stream is being re-encoded. Use '-keep_metadata NUMBER_OF_FRAMES' to keep it.
+[vost#0:0/av1_qsv @ 0x5567f082e5c0] Discarding stream metadata '_STATISTICS_TAGS' because the stream is being re-encoded. Use '-keep_metadata _STATISTICS_TAGS' to keep it.
+[vost#0:0/av1_qsv @ 0x5567f082e5c0] Discarding stream metadata '_STATISTICS_WRITING_APP' because the stream is being re-encoded. Use '-keep_metadata _STATISTICS_WRITING_APP' to keep it.
+[vost#0:0/av1_qsv @ 0x5567f082e5c0] Discarding stream metadata '_STATISTICS_WRITING_DATE_UTC' because the stream is being re-encoded. Use '-keep_metadata _STATISTICS_WRITING_DATE_UTC' to keep it.
+Stream mapping:
+  Stream #0:0 -> #0:0 (hevc (hevc_qsv) -> av1 (av1_qsv))
+Press [q] to stop, [?] for help
+Output #0, matroska, to '/test/cache/vmaf/Sample HDR Film_icq22_45s.mkv':
+  Metadata:
+    title           : Sample HDR Film
+    IMDB            : tt0816692
+    encoded_by      : ArcAV1_QSV_V13
+    TMDB            : movie/157336
+    encoder         : Lavf63.17.100
+  Chapters:
+    Chapter #0:0: start 0.000000, end 45.000000
+      Metadata:
+        title           : Wormhole/Time Dilation
+  Stream #0:0(eng): Video: av1 (AV01 / 0x31305641), p010le(tv, bt2020nc/bt2020/smpte2084, progressive), 3840x2160 [SAR 1:1 DAR 16:9], q=2-31, 23.98 fps, 1k tbn (default)
+    Metadata:
+      encoder         : Lavc63.25.101 av1_qsv
+      title           : HEVC (H.265) Video / 51905 kbps / 2160p / 23.976 fps / IMAX 1.78:1 & 2.40:1 / Main 10 @ Level 5.1 @ High / 4:2:0 / 10 bits / 4000nits / Dolby Vision BL+RPU P8, HDR10 compatible, SMPTE ST 2094 HDR10+ Profile B / BT.2020
+    Side data:
+      Mastering display metadata: has_primaries:1 has_luminance:1 r(0.6800,0.3200) g(0.2650,0.6900) b(0.1500 0.0600) wp(0.3127, 0.3290) min_luminance=0.005000, max_luminance=4000.000000
+      Content light level metadata: MaxCLL=1242, MaxFALL=436
+frame=    0 fps=0.0 q=0.0 size=       0KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:00.50    
+frame=   11 fps= 11 q=-0.0 size=       2KiB time=00:00:00.41 bitrate=  30.1kbits/s speed=0.417x elapsed=0:00:01.00    
+frame=   21 fps= 14 q=-0.0 size=       2KiB time=00:00:00.83 bitrate=  15.0kbits/s speed=0.556x elapsed=0:00:01.50    
+frame=   31 fps= 15 q=-0.0 size=       2KiB time=00:00:01.25 bitrate=  10.0kbits/s speed=0.625x elapsed=0:00:02.00    
+frame=   39 fps= 16 q=-0.0 size=       2KiB time=00:00:01.58 bitrate=   7.9kbits/s speed=0.632x elapsed=0:00:02.50    
+frame=   49 fps= 16 q=-0.0 size=       2KiB time=00:00:02.00 bitrate=   6.3kbits/s speed=0.666x elapsed=0:00:03.00    
+frame=   57 fps= 16 q=-0.0 size=       2KiB time=00:00:02.33 bitrate=   5.4kbits/s speed=0.666x elapsed=0:00:03.50    
+frame=   66 fps= 16 q=-0.0 size=       2KiB time=00:00:02.71 bitrate=   4.6kbits/s speed=0.677x elapsed=0:00:04.00    
+frame=   75 fps= 17 q=-0.0 size=    5376KiB time=00:00:03.08 bitrate=14269.0kbits/s speed=0.685x elapsed=0:00:04.50    
+frame=   86 fps= 17 q=-0.0 size=    5376KiB time=00:00:03.54 bitrate=12422.5kbits/s speed=0.708x elapsed=0:00:05.00    
+frame=   97 fps= 18 q=-0.0 size=    5376KiB time=00:00:04.00 bitrate=10999.0kbits/s speed=0.727x elapsed=0:00:05.50    
+frame=  109 fps= 18 q=-0.0 size=    5376KiB time=00:00:04.50 bitrate=9776.9kbits/s speed=0.75x elapsed=0:00:06.00    
+frame=  153 fps= 24 q=-0.0 size=    9728KiB time=00:00:06.33 bitrate=12570.3kbits/s speed=0.974x elapsed=0:00:06.50    
+frame=  211 fps= 30 q=-0.0 size=   15104KiB time=00:00:08.75 bitrate=14126.7kbits/s speed=1.25x elapsed=0:00:07.00    
+frame=  256 fps= 34 q=-0.0 size=   20480KiB time=00:00:10.63 bitrate=15774.5kbits/s speed=1.42x elapsed=0:00:07.50    
+frame=  289 fps= 36 q=-0.0 size=   26112KiB time=00:00:12.01 bitrate=17808.0kbits/s speed= 1.5x elapsed=0:00:08.00    
+frame=  326 fps= 38 q=-0.0 size=   26112KiB time=00:00:13.55 bitrate=15780.6kbits/s speed=1.59x elapsed=0:00:08.50    
+frame=  359 fps= 40 q=-0.0 size=   26112KiB time=00:00:14.93 bitrate=14326.0kbits/s speed=1.66x elapsed=0:00:09.00    
+frame=  386 fps= 41 q=-0.0 size=   31232KiB time=00:00:16.05 bitrate=15933.3kbits/s speed=1.69x elapsed=0:00:09.50    
+frame=  427 fps= 43 q=-0.0 size=   36352KiB time=00:00:17.76 bitrate=16760.5kbits/s speed=1.77x elapsed=0:00:10.01    
+frame=  460 fps= 44 q=-0.0 size=   36352KiB time=00:00:19.14 bitrate=15555.5kbits/s speed=1.82x elapsed=0:00:10.51    
+frame=  489 fps= 44 q=-0.0 size=   43264KiB time=00:00:20.35 bitrate=17413.0kbits/s speed=1.85x elapsed=0:00:11.01    
+frame=  523 fps= 45 q=-0.0 size=   43264KiB time=00:00:21.77 bitrate=16278.8kbits/s speed=1.89x elapsed=0:00:11.51    
+frame=  555 fps= 46 q=-0.0 size=   48640KiB time=00:00:23.10 bitrate=17244.5kbits/s speed=1.92x elapsed=0:00:12.01    
+frame=  588 fps= 47 q=-0.0 size=   48640KiB time=00:00:24.48 bitrate=16275.1kbits/s speed=1.96x elapsed=0:00:12.51    
+frame=  610 fps= 47 q=-0.0 size=   53248KiB time=00:00:25.40 bitrate=17173.3kbits/s speed=1.95x elapsed=0:00:13.01    
+frame=  622 fps= 46 q=-0.0 size=   53248KiB time=00:00:25.90 bitrate=16841.4kbits/s speed=1.92x elapsed=0:00:13.51    
+frame=  646 fps= 46 q=-0.0 size=   53248KiB time=00:00:26.90 bitrate=16214.8kbits/s speed=1.92x elapsed=0:00:14.01    
+frame=  663 fps= 46 q=-0.0 size=   53248KiB time=00:00:27.61 bitrate=15798.4kbits/s speed= 1.9x elapsed=0:00:14.51    
+frame=  673 fps= 45 q=-0.0 size=   53248KiB time=00:00:28.02 bitrate=15563.3kbits/s speed=1.87x elapsed=0:00:15.01    
+frame=  727 fps= 47 q=-0.0 size=   60672KiB time=00:00:30.28 bitrate=16414.2kbits/s speed=1.95x elapsed=0:00:15.51    
+frame=  777 fps= 49 q=-0.0 size=   60672KiB time=00:00:32.36 bitrate=15356.6kbits/s speed=2.02x elapsed=0:00:16.01    
+frame=  812 fps= 49 q=-0.0 size=   65792KiB time=00:00:33.82 bitrate=15933.8kbits/s speed=2.05x elapsed=0:00:16.51    
+frame=  838 fps= 49 q=-0.0 size=   65792KiB time=00:00:34.90 bitrate=15438.8kbits/s speed=2.05x elapsed=0:00:17.01    
+frame=  887 fps= 51 q=-0.0 size=   76032KiB time=00:00:36.95 bitrate=16855.0kbits/s speed=2.11x elapsed=0:00:17.51    
+frame=  920 fps= 51 q=-0.0 size=   76032KiB time=00:00:38.32 bitrate=16249.8kbits/s speed=2.13x elapsed=0:00:18.01    
+frame=  961 fps= 52 q=-0.0 size=   81152KiB time=00:00:40.04 bitrate=16603.3kbits/s speed=2.16x elapsed=0:00:18.51    
+frame= 1007 fps= 53 q=-0.0 size=   89856KiB time=00:00:41.95 bitrate=17543.5kbits/s speed=2.21x elapsed=0:00:19.01    
+frame= 1036 fps= 53 q=-0.0 size=   89856KiB time=00:00:43.16 bitrate=17051.9kbits/s speed=2.21x elapsed=0:00:19.51    
+frame= 1076 fps= 54 q=-0.0 size=   94976KiB time=00:00:44.83 bitrate=17352.9kbits/s speed=2.24x elapsed=0:00:20.02    
+[out#0/matroska @ 0x5567f156a9c0] video:97993KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.007508%
+frame= 1079 fps= 54 q=-0.0 Lsize=   98000KiB time=00:00:44.96 bitrate=17855.6kbits/s speed=2.24x elapsed=0:00:20.04    

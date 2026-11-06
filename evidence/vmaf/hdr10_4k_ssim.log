@@ -1,0 +1,134 @@
+Input #0, matroska,webm, from '/path/to/source-video.mkv':
+  Metadata:
+    ENCODER         : Lavf63.7.100
+  Duration: 01:33:10.69, start: 0.000000, bitrate: 1145 kb/s
+  Chapters:
+    Chapter #0:0: start 0.000000, end 5189.309000
+      Metadata:
+        title           : Chapter 1
+    Chapter #0:1: start 5189.309000, end 5584.036600
+      Metadata:
+        title           : Credits
+    Chapter #0:2: start 5584.036600, end 5590.688000
+      Metadata:
+        title           : Chapter 2
+  Stream #0:0: Video: av1 (libdav1d) (Main), yuv420p10le(tv, bt2020nc/bt2020/smpte2084, progressive), 3840x1608 [SAR 1:1 DAR 160:67], 23.98 fps, 23.98 tbr, 1k tbn (default)
+    Metadata:
+      ENCODER         : Lavc63.16.100 av1_qsv
+      DURATION        : 01:33:10.669000000
+    Side data:
+      Content light level metadata: MaxCLL=912, MaxFALL=200
+      Mastering display metadata: has_primaries:1 has_luminance:1 r(0.6800,0.3200) g(0.2650,0.6900) b(0.1500 0.0600) wp(0.3127, 0.3290) min_luminance=0.000100, max_luminance=1000.000000
+  Stream #0:1(eng): Audio: eac3 (Dolby Digital Plus + Dolby Atmos), 48000 Hz, 5.1(side), fltp, 640 kb/s (default)
+    Metadata:
+      title           : English
+      BPS             : 640000
+      NUMBER_OF_FRAMES: 174709
+      NUMBER_OF_BYTES : 447255040
+      _STATISTICS_WRITING_APP: mkvmerge v66.0.0 ('Josie') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-09-01 18:06:42
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+      DURATION        : 01:33:10.688000000
+  Stream #0:2(eng): Subtitle: subrip (srt) (default)
+    Metadata:
+      title           : English (SDH)
+      BPS             : 33
+      NUMBER_OF_FRAMES: 1053
+      NUMBER_OF_BYTES : 23139
+      _STATISTICS_WRITING_APP: mkvmerge v66.0.0 ('Josie') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-09-01 18:06:42
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+      DURATION        : 01:32:56.219000000
+  Stream #0:3(spa): Subtitle: subrip (srt)
+    Metadata:
+      title           : Spanish (Latin America)
+      BPS             : 24
+      NUMBER_OF_FRAMES: 742
+      NUMBER_OF_BYTES : 17040
+      _STATISTICS_WRITING_APP: mkvmerge v66.0.0 ('Josie') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-09-01 18:06:42
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+      DURATION        : 01:33:05.371000000
+Input #1, matroska,webm, from '/test/source/The Curse of Sample HDR Film - 4K HDR10 live test.mkv':
+  Metadata:
+    ENCODED_BY      : ArcAV1_SeekHeal_V13
+    ENCODER         : Lavf63.17.100
+  Duration: 00:00:19.85, start: 0.000000, bitrate: 927 kb/s
+  Chapters:
+    Chapter #1:0: start 0.000000, end 15.000000
+      Metadata:
+        title           : Chapter 1
+  Stream #1:0: Video: av1 (libdav1d) (Main), yuv420p10le(tv, bt2020nc/bt2020/smpte2084, progressive), 3840x1608 [SAR 1:1 DAR 160:67], 23.98 fps, 23.98 tbr, 1k tbn (default)
+    Metadata:
+      ENCODER         : Lavc63.16.100 av1_qsv
+      DURATION        : 00:00:19.436000000
+    Side data:
+      Content light level metadata: MaxCLL=912, MaxFALL=200
+      Mastering display metadata: has_primaries:1 has_luminance:1 r(0.6800,0.3200) g(0.2650,0.6900) b(0.1500 0.0600) wp(0.3127, 0.3290) min_luminance=0.000100, max_luminance=1000.000000
+  Stream #1:1(eng): Audio: eac3 (Dolby Digital Plus + Dolby Atmos), 48000 Hz, 5.1(side), fltp, 640 kb/s, start 0.021000 (default)
+    Metadata:
+      title           : English [E-AC-3 5.1]
+      BPS             : 640000
+      NUMBER_OF_FRAMES: 174709
+      NUMBER_OF_BYTES : 447255040
+      _STATISTICS_WRITING_APP: mkvmerge v66.0.0 ('Josie') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-09-01 18:06:42
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+      DURATION        : 00:00:19.413000000
+  Stream #1:2(eng): Subtitle: subrip (srt) (default)
+    Metadata:
+      title           : English (SDH)
+      BPS             : 33
+      NUMBER_OF_FRAMES: 1053
+      NUMBER_OF_BYTES : 23139
+      _STATISTICS_WRITING_APP: mkvmerge v66.0.0 ('Josie') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-09-01 18:06:42
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+      DURATION        : 00:00:19.329000000
+  Stream #1:3(spa): Subtitle: subrip (srt)
+    Metadata:
+      title           : Spanish (Latin America)
+      BPS             : 24
+      NUMBER_OF_FRAMES: 742
+      NUMBER_OF_BYTES : 17040
+      _STATISTICS_WRITING_APP: mkvmerge v66.0.0 ('Josie') 64-bit
+      _STATISTICS_WRITING_DATE_UTC: 2023-09-01 18:06:42
+      _STATISTICS_TAGS: BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES
+      DURATION        : 00:00:19.853000000
+[aost#0:1/pcm_s16le @ 0x56235e1a0240] Discarding stream metadata 'BPS' because the stream is being re-encoded. Use '-keep_metadata BPS' to keep it.
+[aost#0:1/pcm_s16le @ 0x56235e1a0240] Discarding stream metadata 'DURATION' because the stream is being re-encoded. Use '-keep_metadata DURATION' to keep it.
+[aost#0:1/pcm_s16le @ 0x56235e1a0240] Discarding stream metadata 'NUMBER_OF_BYTES' because the stream is being re-encoded. Use '-keep_metadata NUMBER_OF_BYTES' to keep it.
+[aost#0:1/pcm_s16le @ 0x56235e1a0240] Discarding stream metadata 'NUMBER_OF_FRAMES' because the stream is being re-encoded. Use '-keep_metadata NUMBER_OF_FRAMES' to keep it.
+[aost#0:1/pcm_s16le @ 0x56235e1a0240] Discarding stream metadata '_STATISTICS_TAGS' because the stream is being re-encoded. Use '-keep_metadata _STATISTICS_TAGS' to keep it.
+[aost#0:1/pcm_s16le @ 0x56235e1a0240] Discarding stream metadata '_STATISTICS_WRITING_APP' because the stream is being re-encoded. Use '-keep_metadata _STATISTICS_WRITING_APP' to keep it.
+[aost#0:1/pcm_s16le @ 0x56235e1a0240] Discarding stream metadata '_STATISTICS_WRITING_DATE_UTC' because the stream is being re-encoded. Use '-keep_metadata _STATISTICS_WRITING_DATE_UTC' to keep it.
+Stream mapping:
+  Stream #0:0 (libdav1d) -> setpts:default
+  Stream #1:0 (libdav1d) -> setpts:default
+  ssim:default -> Stream #0:0 (wrapped_avframe)
+  Stream #0:1 -> #0:1 (eac3 (native) -> pcm_s16le (native))
+Press [q] to stop, [?] for help
+Output #0, null, to 'pipe:':
+  Metadata:
+    encoder         : Lavf63.17.100
+  Chapters:
+    Chapter #0:0: start 0.000000, end 8.000000
+      Metadata:
+        title           : Chapter 1
+  Stream #0:0: Video: wrapped_avframe, yuv420p10le(tv, bt2020nc/bt2020/smpte2084, progressive), 3840x1608 [SAR 1:1 DAR 160:67], q=2-31, 200 kb/s, 23.98 fps, 23.98 tbn
+    Metadata:
+      encoder         : Lavc63.25.101 wrapped_avframe
+    Side data:
+      Mastering display metadata: has_primaries:1 has_luminance:1 r(0.6800,0.3200) g(0.2650,0.6900) b(0.1500 0.0600) wp(0.3127, 0.3290) min_luminance=0.000122, max_luminance=1000.000000
+      Content light level metadata: MaxCLL=912, MaxFALL=200
+  Stream #0:1(eng): Audio: pcm_s16le, 48000 Hz, 5.1(side), s16, 4608 kb/s (default)
+    Metadata:
+      encoder         : Lavc63.25.101 pcm_s16le
+      title           : English
+frame=   44 fps=0.0 q=-0.0 size=N/A time=00:00:02.04 bitrate=N/A speed= 4.1x elapsed=0:00:00.50    
+frame=   91 fps= 91 q=-0.0 size=N/A time=00:00:03.93 bitrate=N/A speed=3.93x elapsed=0:00:01.00    
+frame=  139 fps= 92 q=-0.0 size=N/A time=00:00:06.04 bitrate=N/A speed=3.99x elapsed=0:00:01.51    
+frame=  186 fps= 92 q=-0.0 size=N/A time=00:00:07.75 bitrate=N/A speed=3.85x elapsed=0:00:02.01    
+[Parsed_ssim_2 @ 0x1554b8004ec0] SSIM Y:0.738582 (5.826642) U:0.996962 (25.173443) V:0.997109 (25.389057) All:0.824733 (7.562996)
+[out#0/null @ 0x56235e16db00] video:80KiB audio:4500KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=  192 fps= 90 q=-0.0 Lsize=N/A time=00:00:08.00 bitrate=N/A speed=3.74x elapsed=0:00:02.14    

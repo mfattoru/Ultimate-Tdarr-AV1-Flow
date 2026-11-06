@@ -1,0 +1,106 @@
+# Tdarr Arc AV1 Flow
+
+V15 is a single-pass Tdarr flow for encoding eligible video with Intel Arc Quick Sync AV1. It applies audio and subtitle policies, validates the source and candidate, and only replaces the library file after the candidate passes its checks.
+
+## At a glance
+
+```mermaid
+flowchart TD
+    A[File enters flow] --> B{ISO?}
+    B -- Yes --> C[Delete ISO]
+    C --> D[Request Arr rescan and send warning]
+    B -- No --> E{Completion marker present?}
+    E -- Yes --> F[Keep file and send info notice]
+    E -- No --> G[Full source precheck]
+    G --> H{Source eligible and healthy?}
+    H -- No --> K[Retain original]
+    H -- Yes --> I[One Arc QSV AV1 encode at ICQ 22]
+    I --> J{Candidate is smaller?}
+    J -- Yes --> L[Full candidate validation]
+    J -- No --> M[Seek-heal remux using source video]
+    M --> L
+    L -- Pass --> N[Replace original and send success notice]
+    L -- Fail --> K
+    K --> O{Known source corruption confirmed?}
+    O -- Yes --> P[Request targeted Arr search]
+    O -- No --> Q[No search request]
+    P --> R[Send failure notice]
+    Q --> R
+```
+
+For the full node-by-node view, see [the flow diagram](flow-diagram.md).
+
+## Processing policy
+
+| Area | V15 behavior |
+| --- | --- |
+| Video encode | One Arc QSV AV1 attempt for each eligible video, using global ICQ 22. The Arc device defaults to `/dev/dri/renderD129`. |
+| Larger encode result | Discard the encode attempt and stream-copy the source video through the seek-healing remux. The remux has no source-size cap; it can replace the source when full validation passes. |
+| Source scan | Full CPU frame, color/HDR, timestamp, and corruption scan before encoding. Retained audio is checked and decoded before the encode. |
+| Candidate checks | Full timeline, stream, color/HDR, subtitle, video decode, and retained-audio checks run before replacement. Candidate video decode uses Arc QSV. |
+| Audio | Keep English, Japanese, Spanish, Italian, and undetermined tracks. Preserve selected audio streams by copy, then run timing and decode checks. |
+| Subtitles | Preserve styled ASS/SSA streams by copy. Validate subtitle packet counts and timing; retain PGS payloads and validate extracted segments. |
+| Notifications | Send success/failure notices, an info notice for already-processed files, and a warning when an ISO is deleted and an Arr rescan is requested. |
+| Arr searches | Route a targeted search only when the flow confirms known source corruption. A queued search does not guarantee a replacement download. |
+
+## Video formats and HDR
+
+The tested SDR paths include H.264, HEVC, AV1, VP8/VP9, MPEG-2, MPEG-4 Part 2, ProRes, and FFV1 samples. The flow accepts listed planar YUV 4:2:0, 4:2:2, and 4:4:4 formats up to 12-bit when a supported color path is established. Unsupported pixel formats, RGB/alpha, interlaced video, and unverified color combinations are held with the original retained.
+
+HDR handling is deliberately signal-aware:
+
+- Verified HDR10 and HLG use their guarded encode paths.
+- HDR10+ is converted using its static HDR10 base; dynamic HDR10+ metadata is not retained.
+- Verified Dolby Vision Profile 7 base-layer and Profile 8.1 paths produce HDR10. Dolby Vision dynamic metadata and Profile 7 enhancement-layer detail are not retained.
+- Profile 5, unverified hybrids, and unvalidated Profile 8.4 inputs are held.
+- Missing color data is not invented except for the documented limited-range default on supported untagged SDR YUV.
+
+See [codec coverage](CODEC_COVERAGE.md) and [HDR validation](HDR_LIVE_VALIDATION.md) for tested cases and remaining limits.
+
+## Runtime configuration
+
+Configure these variables in the Tdarr node/container environment:
+
+| Variable | Purpose |
+| --- | --- |
+| `TDARR_ARC_DEVICE` | Arc render device; defaults to `/dev/dri/renderD129`. |
+| `TDARR_QSV_ICQ` | Global QSV quality value; defaults to `22`. |
+| `TDARR_DECODE_THREADS` | CPU decode threads per job; defaults to `4`, accepted range `1–16`. `TDARR_PRECHECK_THREADS` is a compatibility alias. |
+| `TDARR_DISCORD_WEBHOOK` | Discord notification endpoint. |
+| `TDARR_ARR_RADARR_URL`, `TDARR_ARR_RADARR_API_KEY` | Radarr endpoint and key. |
+| `TDARR_ARR_SONARR_TV_URL`, `TDARR_ARR_SONARR_TV_API_KEY` | TV Sonarr endpoint and key. |
+| `TDARR_ARR_SONARR_ANIME_URL`, `TDARR_ARR_SONARR_ANIME_API_KEY` | Anime Sonarr endpoint and key. |
+
+Unset Arr settings disable that target. The local `.env` is ignored by Git and does not load automatically in Tdarr; `.env.example` lists the variable names without values. Keep production secrets in the Tdarr node environment.
+
+## Progress and scratch space
+
+The worker reports progress during the source scan, audio checks, Arc encode, seek-heal remux, output scan, and decode validation. The Status field changes to show the current phase. Metadata-only work has no meaningful FPS value.
+
+Jobs coordinate scratch capacity through shared reservations rather than a single-job lock. `/dev/shm` is preferred when capacity and host-RAM headroom allow it; otherwise the configured disk cache is used. Each job records its own scratch directory and reservation heartbeat.
+
+## Quality evidence and limits
+
+ICQ 22 is the current provisional value. It was selected from representative SDR and HDR tests and should not be read as a guarantee for every codec, source, or display. VMAF results and captured test evidence are in [`evidence/vmaf/`](evidence/vmaf/README.md); source titles and media paths have been anonymized.
+
+The evidence uses short matched excerpts, not full-length viewing tests. VMAF is model-based, HDR scores can exceed 100, and HDR scores are not directly comparable to SDR scores. Review [the quality decision](QUALITY_DECISION.md) for methodology and limitations.
+
+## Build and references
+
+From the repository root:
+
+```sh
+python3 build.py
+node --test *.test.js
+```
+
+The builder regenerates `flow.json`. V12 and V14 snapshots and older archives are under [`work/`](work/). Useful references:
+
+- [Failure diagnostics](FAILURE_DIAGNOSTICS.md)
+- [Subtitle mux validation](SUBTITLE_MUX_TEST_REPORT.md)
+- [Audio and HDR repair results](HDR_AUDIO_REPAIR_TEST_REPORT.md)
+- [Live test scope](LIVE_TEST_REPORT.md)
+- [Performance benchmark](PERFORMANCE_BENCHMARK_2026-11-04.md)
+- [Precheck thread benchmark](PRECHECK_THREAD_BENCHMARK_2026-11-05.md)
+
+The test reports cover specific samples and routes. They do not claim an exhaustive codec matrix or a full end-to-end production validation of every input combination.

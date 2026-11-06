@@ -1,0 +1,110 @@
+libva info: VA-API version 1.24.0
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+libva info: Trying to open /usr/local/lib/dri/iHD_drv_video.so
+libva info: Found init function __vaDriverInit_1_24
+libva info: va_openDriver() returns 0
+libva info: VA-API version 1.24.0
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+libva info: Trying to open /usr/local/lib/dri/iHD_drv_video.so
+libva info: Found init function __vaDriverInit_1_24
+libva info: va_openDriver() returns 0
+libva info: VA-API version 1.24.0
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+libva info: Trying to open /usr/local/lib/dri/iHD_drv_video.so
+libva info: Found init function __vaDriverInit_1_24
+libva info: va_openDriver() returns 0
+libva info: VA-API version 1.24.0
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+libva info: Trying to open /usr/local/lib/dri/iHD_drv_video.so
+libva info: Found init function __vaDriverInit_1_24
+libva info: va_openDriver() returns 0
+Input #0, matroska,webm, from '/path/to/source-video.mkv':
+  Metadata:
+    ENCODER         : Lavf63.5.101
+  Duration: 02:35:26.66, start: 0.000000, bitrate: 1295 kb/s
+  Chapters:
+    Chapter #0:0: start 0.000000, end 196.154000
+      Metadata:
+        title           : Capitolo 01
+    Chapter #0:1: start 196.154000, end 774.816000
+      Metadata:
+        title           : Capitolo 02
+    Chapter #0:2: start 774.816000, end 1320.736000
+      Metadata:
+        title           : Capitolo 03
+    Chapter #0:3: start 1320.736000, end 1756.922000
+      Metadata:
+        title           : Capitolo 04
+    Chapter #0:4: start 1756.922000, end 2350.932000
+      Metadata:
+        title           : Capitolo 05
+    Chapter #0:5: start 2350.932000, end 2839.795000
+      Metadata:
+        title           : Capitolo 06
+    Chapter #0:6: start 2839.795000, end 3413.493000
+      Metadata:
+        title           : Capitolo 07
+    Chapter #0:7: start 3413.493000, end 4010.381000
+      Metadata:
+        title           : Capitolo 08
+    Chapter #0:8: start 4010.381000, end 4604.892000
+      Metadata:
+        title           : Capitolo 09
+    Chapter #0:9: start 4604.892000, end 5160.655000
+      Metadata:
+        title           : Capitolo 10
+    Chapter #0:10: start 5160.655000, end 5760.380000
+      Metadata:
+        title           : Capitolo 11
+    Chapter #0:11: start 5760.380000, end 6309.470000
+      Metadata:
+        title           : Capitolo 12
+    Chapter #0:12: start 6309.470000, end 6830.323000
+      Metadata:
+        title           : Capitolo 13
+    Chapter #0:13: start 6830.323000, end 7418.536000
+      Metadata:
+        title           : Capitolo 14
+    Chapter #0:14: start 7418.536000, end 7933.342000
+      Metadata:
+        title           : Capitolo 15
+    Chapter #0:15: start 7933.342000, end 8445.771000
+      Metadata:
+        title           : Capitolo 16
+    Chapter #0:16: start 8445.771000, end 8847.797000
+      Metadata:
+        title           : Capitolo 17
+    Chapter #0:17: start 8847.797000, end 9326.624000
+      Metadata:
+        title           : Capitolo 18
+  Stream #0:0(eng): Video: av1 (libdav1d) (Main), yuv420p(tv, progressive), 1920x804 [SAR 1:1 DAR 160:67], 23.98 fps, 23.98 tbr, 1k tbn (default)
+    Metadata:
+      ENCODER         : Lavc63.6.101 libsvtav1
+      DURATION        : 02:35:26.609000000
+  Stream #0:1(eng): Audio: eac3, 48000 Hz, 5.1(side), fltp, 448 kb/s
+    Metadata:
+      ENCODER         : Lavc63.6.101 eac3
+      DURATION        : 02:35:26.656000000
+[vost#0:0/av1_qsv @ 0x563b73681300] Discarding stream metadata 'DURATION' because the stream is being re-encoded. Use '-keep_metadata DURATION' to keep it.
+Stream mapping:
+  Stream #0:0 -> #0:0 (av1 (av1_qsv) -> av1 (av1_qsv))
+Press [q] to stop, [?] for help
+Output #0, matroska, to '/test/cache/vmaf/Sample 4K Film_icq22.mkv':
+  Metadata:
+    encoder         : Lavf63.17.100
+  Chapters:
+    Chapter #0:0: start 0.000000, end 60.000000
+      Metadata:
+        title           : Capitolo 08
+  Stream #0:0(eng): Video: av1 (AV01 / 0x31305641), p010le(tv, progressive), 1920x804 [SAR 1:1 DAR 160:67], q=2-31, 23.98 fps, 1k tbn (default)
+    Metadata:
+      encoder         : Lavc63.25.101 av1_qsv
+frame=  269 fps=0.0 q=-0.0 size=    2048KiB time=00:00:11.17 bitrate=1500.9kbits/s speed=22.4x elapsed=0:00:00.50    
+frame=  624 fps=624 q=-0.0 size=    4608KiB time=00:00:25.98 bitrate=1452.8kbits/s speed=  26x elapsed=0:00:01.00    
+frame=  906 fps=604 q=-0.0 size=    6144KiB time=00:00:37.74 bitrate=1333.4kbits/s speed=25.2x elapsed=0:00:01.50    
+frame= 1069 fps=507 q=-0.0 size=    6912KiB time=00:00:44.54 bitrate=1271.2kbits/s speed=21.1x elapsed=0:00:02.11    
+frame= 1201 fps=457 q=-0.0 size=    7680KiB time=00:00:50.13 bitrate=1254.9kbits/s speed=19.1x elapsed=0:00:02.62    
+frame= 1386 fps=437 q=-0.0 size=    9216KiB time=00:00:57.76 bitrate=1307.0kbits/s speed=18.2x elapsed=0:00:03.17    
+[out#0/matroska @ 0x563b738f7880] video:10069KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.079643%
+frame= 1439 fps=411 q=-0.0 Lsize=   10077KiB time=00:00:59.97 bitrate=1376.4kbits/s speed=17.1x elapsed=0:00:03.49    
+exit=0

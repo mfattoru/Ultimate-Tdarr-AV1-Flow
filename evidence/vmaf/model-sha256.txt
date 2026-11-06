@@ -1,0 +1,3 @@
+e4cf8c147e1368b35497d772920bc92f98c1ad7853c1033d8a836947f427140e  /test/models/netflix-vmaf-v1/vmaf_v1.0.16_3d0h.json
+64e12d9c1e4ed5d79da7fa515b82fac7247a9e2ccc91e0ebce31d05489500385  /test/models/netflix-vmaf-v1/vmaf_v1.0.16_5d0h.json
+6e1bb29ade13e1cad05e1d13fed2ad76fc8e3d3621bd5e02ab23e5c98c0afffd  /test/models/netflix-vmaf-v1/hdr_vmaf_v1.1.8_3d0h_2160.json
