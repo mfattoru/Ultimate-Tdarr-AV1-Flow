@@ -67,6 +67,7 @@ one('''function runTimelineProcess(bin, argv, onLine) {
     if (typeof trackReservationChild==='function') trackReservationChild(proc);
     let stderr = '';
     let timeoutReason = '';
+    let lineError=null;
     const terminate=()=>{ if (typeof terminateReservationChild==='function') terminateReservationChild(proc,'SIGKILL'); else proc.kill('SIGKILL'); };
     const timer = setTimeout(() => { timeoutReason = `maximum runtime ${Math.round(timeoutMs/60000)} minutes`; terminate(); }, timeoutMs);
     if (timer.unref) timer.unref();
@@ -79,9 +80,15 @@ one('''function runTimelineProcess(bin, argv, onLine) {
     };
     refreshIdleTimer();
     proc.stdout.on('data',refreshIdleTimer);
-    proc.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-8192); refreshIdleTimer(); });
+    proc.stderr.on('data', chunk => {
+      stderr = (stderr + chunk.toString()).slice(-8192);
+      refreshIdleTimer();
+      if(typeof onDiagnostic==='function'&&!lineError){
+        try { onDiagnostic(stderr,true); }
+        catch(err) { lineError=err; terminate(); }
+      }
+    });
     const lines = timelineReadline.createInterface({input:proc.stdout, crlfDelay:Infinity});
-    let lineError=null;
     let progressRecord={};
     const sampleFps=createFpsSampler();
     lines.on('line', line => {
@@ -154,6 +161,17 @@ one('''async function measureStreamTimeline(ffprobe, file, streamIndex, type) {
   let first=Infinity, last=-Infinity, count=0, packetCount=0, invalid=0, missingPtsCount=0, missingTimestampCount=0;
   let previousDts=null,outputDtsNonIncreasingCount=0;
   const missingPtsPackets=[],missingTimestampPackets=[];
+  let missingPtsBitmap=Buffer.alloc(0),missingTimestampBitmap=Buffer.alloc(0);
+  const markMissingPacket=(bitmap,ordinal)=>{
+    const byteIndex=Math.floor(ordinal/8);
+    if(byteIndex>=bitmap.length){
+      const grown=Buffer.alloc(Math.max(byteIndex+1,bitmap.length?bitmap.length*2:1024));
+      bitmap.copy(grown);
+      bitmap=grown;
+    }
+    bitmap[byteIndex]|=1<<(ordinal%8);
+    return bitmap;
+  };
   let fileBytes=0,lastPosition=0,lastRatio=0,lastReported=-1,lastReportAt=0,hasPacketPosition=false;
   try { fileBytes=fs.statSync(file).size; } catch (_) {}
   const emitProgress=(packet)=>{
@@ -176,8 +194,16 @@ one('''async function measureStreamTimeline(ffprobe, file, streamIndex, type) {
       if (previousDts!==null && dts<=previousDts) outputDtsNonIncreasingCount++;
       previousDts=dts;
     }
-    if(!Number.isFinite(pts)){missingPtsCount++;if(missingPtsPackets.length<1024)missingPtsPackets.push(packetOrdinal);}
-    if(!Number.isFinite(pts)&&!Number.isFinite(dts)){missingTimestampCount++;if(missingTimestampPackets.length<1024)missingTimestampPackets.push(packetOrdinal);}
+    if(!Number.isFinite(pts)){
+      missingPtsCount++;
+      if(missingPtsPackets.length<1024)missingPtsPackets.push(packetOrdinal);
+      if(type==='audio')missingPtsBitmap=markMissingPacket(missingPtsBitmap,packetOrdinal);
+    }
+    if(!Number.isFinite(pts)&&!Number.isFinite(dts)){
+      missingTimestampCount++;
+      if(missingTimestampPackets.length<1024)missingTimestampPackets.push(packetOrdinal);
+      if(type==='audio')missingTimestampBitmap=markMissingPacket(missingTimestampBitmap,packetOrdinal);
+    }
     const duration=durMatch && durMatch[1] !== 'N/A' ? Number(durMatch[1]) : 0;
     emitProgress({pts:Number.isFinite(pts)?pts:dts,position:posMatch&&posMatch[1]!=='N/A'?Number(posMatch[1]):NaN});
     const timelineTime=type==='audio'&&!Number.isFinite(pts)?dts:pts;
@@ -195,7 +221,8 @@ one('''async function measureStreamTimeline(ffprobe, file, streamIndex, type) {
   if (count===0 && type==='subtitle') return {empty:true};
   if (count===0 && type==='audio' && packetCount>0) throw new Error(`audio ${role} stream ${streamIndex} has no packets with usable PTS or DTS`);
   if (count===0 || !Number.isFinite(first) || !Number.isFinite(last) || (type==='video' && (count<2 || !(last>first)))) throw new Error(`${type} ${role} stream ${streamIndex} timeline is unavailable or too short to verify`);
-  return {first,last,duration:last-first,packets:count,totalPackets:packetCount,outputDtsNonIncreasingCount,missingPtsCount,missingPtsPackets,missingPtsTruncated:missingPtsCount>missingPtsPackets.length,missingTimestampCount,missingTimestampPackets,missingTimestampsTruncated:missingTimestampCount>missingTimestampPackets.length,empty:false};
+  const bitmapBytes=Math.ceil(packetCount/8);
+  return {first,last,duration:last-first,packets:count,totalPackets:packetCount,outputDtsNonIncreasingCount,missingPtsCount,missingPtsPackets,missingPtsTruncated:missingPtsCount>missingPtsPackets.length,missingPtsBitmap:missingPtsBitmap.subarray(0,bitmapBytes),missingTimestampCount,missingTimestampPackets,missingTimestampsTruncated:missingTimestampCount>missingTimestampPackets.length,missingTimestampBitmap:missingTimestampBitmap.subarray(0,bitmapBytes),empty:false};
 }''')
 one("  const decode=['-v','error','-xerror','-i',output,'-map',`0:${outputIndex}`];", "  const arcDevice=process.env.TDARR_ARC_DEVICE || '/dev/dri/renderD129';\n  const decode=['-v','error','-xerror','-progress','pipe:1','-nostats','-init_hw_device',`vaapi=va:${arcDevice}`,'-init_hw_device','qsv=hw@va','-hwaccel','qsv','-hwaccel_device','hw','-hwaccel_output_format','qsv','-i',output,'-map',`0:${outputIndex}`];")
 one("  for (const [,dstIndex] of tracks.audio) decode.push('-map',`0:${dstIndex}`);", '')
@@ -392,18 +419,65 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
     if (!preflightInfoVideo) throw Error(`MediaInfo could not match selected video stream ${mainVideo.index}`);
     preflightBasic=classifyVideo(mainVideo,preflightInfoVideo);
   } catch (err) {
-    log(`[HDR guard] ${err.message || err}; original retained.`);
+    args.variables.user.failure_reason=`[Video guard] ${err.message || err}; original retained.`;
+    log(args.variables.user.failure_reason);
+    return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
+  }
+  let selectedQuality;
+  try {
+    selectedQuality=selectQualityValue();
+    // These checks depend only on the probed stream header. Ignore field_order
+    // here because the full decoded-frame scan remains authoritative for it.
+    guardSourceVideo({...mainVideo,field_order:"progressive"});
+    validateAspect(mainVideo,mainVideo,false);
+    if (is12Bit && preflightBasic !== "sdr") throw new Error("12-bit conversion is only verified for tagged SDR sources; HDR, Dolby Vision, and untagged 12-bit video remain held");
+    if (preflightBasic !== "sdr") validateMediaInfoHdrColors(mainVideo,preflightInfoVideo);
+  } catch (err) {
+    args.variables.user.failure_reason=`[Video guard] ${err.message || err}; original retained.`;
+    log(args.variables.user.failure_reason);
     return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
   }
   try {
-    const hybridPreflight=preflightHybridHdr(mainVideo,preflightInfoVideo);
+    fs.accessSync(gpuDevice,fs.constants.R_OK|fs.constants.W_OK);
+  } catch(err) {
+    args.variables.user.failure_reason=`[Arc GPU] Device not accessible: ${gpuDevice}: ${err.message || err}; original retained.`;
+    log(args.variables.user.failure_reason);
+    return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
+  }
+  let hybridPreflight='not_hybrid';
+  try {
+    hybridPreflight=preflightHybridHdr(mainVideo,preflightInfoVideo);
     if(hybridPreflight==='dovi81_hdr10plus_candidate') log("[HDR preflight] DV 8.1/HDR10+ hybrid has a verified HDR10 base candidate; continuing full source scan and strict output validation.");
+    if(hybridPreflight==='dovi7_hdr10plus_candidate') log("[HDR preflight] DV Profile 7/HDR10+ hybrid has a verified HDR10-compatible base layer; continuing full source scan and strict output validation.");
   } catch(err) {
     const reason=`[HDR guard] ${err.message || err}; original retained.`;
     args.variables.user.failure_reason=reason;log(reason);
     return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
   }
-  const scanOptions={staticMetadata:true,timestamps:true,threads:getDecodeThreadCount(),expectedColor:mainVideo,expectedFrames:frameEstimate,expectedDuration:Number(mainVideo.duration || args.inputFileObj?.ffProbeData?.format?.duration || 0),assertUnchanged:assertOriginalUnchanged,onProgress:(frames,total,complete,fps,ratio)=>reportWorkerProgress(args.updateWorker,{percentage:1+7*(complete?1:Number.isFinite(ratio)?Math.min(0.99,Math.max(0,ratio)):total>0?Math.min(0.99,frames/total):0),fps,status:"Precheck: full source video scan"},initialWorkerProgressDetails)};
+  let preflightDoviRoute=null,preflightHdrSource=null,preflightHdrLightOverride=null,preflightLevel6=null;
+  try {
+    preflightDoviRoute=preflightDolbyHdrRoute(mainVideo,preflightInfoVideo,hybridPreflight);
+    if(preflightDoviRoute) {
+      initialWorkerProgressDetails.status="Precheck: Dolby Vision metadata";
+      initialWorkerProgressDetails.workerLog="Checking Dolby Vision base-layer metadata before the full source scan.";
+      reportWorkerProgress(args.updateWorker,{percentage:0.5,fps:0,status:initialWorkerProgressDetails.status},initialWorkerProgressDetails);
+      const preflightHdrFrames=readHdrFrames(ffprobeBin,inputPath,mainVideo.index);
+      preflightHdrSource=mergeHdrMetadata(mainVideo,preflightHdrFrames,{allowMissingLight:true});
+      const resolved=await resolveHdrLight(preflightHdrSource,preflightDoviRoute,async()=>{
+        preflightLevel6=await extractDolbyLevel6(ffmpegBin,inputPath,mainVideo.index,null,true);
+        return preflightLevel6.value;
+      });
+      preflightHdrSource=resolved.metadata;
+      preflightHdrLightOverride=resolved.override;
+      const level6Status=preflightLevel6?" and Dolby Level 6 checks":"";
+      log(`[HDR preflight] Dolby Vision route ${preflightDoviRoute} passed metadata${level6Status} before the full source scan.`);
+    }
+  } catch(err) {
+    args.variables.user.failure_reason=`[HDR guard] ${err.message || err}; original retained.`;
+    log(args.variables.user.failure_reason);
+    return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
+  }
+  const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scanRole:"source",sourceBasic:preflightBasic,threads:getDecodeThreadCount(),expectedColor:mainVideo,expectedFrames:frameEstimate,expectedDuration:Number(mainVideo.duration || args.inputFileObj?.ffProbeData?.format?.duration || 0),assertUnchanged:assertOriginalUnchanged,onProgress:(frames,total,complete,fps,ratio)=>reportWorkerProgress(args.updateWorker,{percentage:1+7*(complete?1:Number.isFinite(ratio)?Math.min(0.99,Math.max(0,ratio)):total>0?Math.min(0.99,frames/total):0),fps,status:"Precheck: full source video scan"},initialWorkerProgressDetails)};
   let frameScan;
   try {
     initialWorkerProgressDetails.status="Precheck: full source video scan";
@@ -412,13 +486,10 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
     log("[Source precheck] Running the full CPU source frame, color, HDR, and timestamp scan before encoding.");
     frameScan=await inspectVideoFrames(ffprobeBin,inputPath,mainVideo.index,scanOptions);
     assertOriginalUnchanged();
+    if(preflightLevel6 && preflightLevel6.frames!==frameScan.frames) throw Error(`Dolby Level 6 frame count mismatch (${preflightLevel6.frames} / ${frameScan.frames})`);
     if (frameScan.interlaced) throw Error("Interlaced video frames are unsupported");
     if (frameScan.colorInfo.conflict) throw Error("Source frame color signaling conflicts with the stream");
     validateSdrFrameSignaling(preflightBasic,frameScan);
-    guardSourceVideo({...mainVideo,field_order:"progressive"});
-    // Stream field_order is only a hint for the source. The full decoded-frame
-    // scan above decides whether this input is actually interlaced.
-    validateAspect(mainVideo, mainVideo, false);
   } catch (err) {
     const detail=String(err?.message || err);
     const sourceCorruption=isKnownVideoCorruptionDiagnostic(detail) || detail.toLowerCase().includes('[source media corruption]');
@@ -438,7 +509,7 @@ one('  // 2. Audio & Subtitle stream count & codec checks', '''  if (expected.re
     reportWorkerProgress(expected.updateWorker,{percentage:82,fps:0,status:"Validation: output frame, color, and HDR scan"});
     const expectedFrames=expected.sourceFrameScan?.frames || estimateVideoFrames(video[0],Number(dst.format?.duration || 0));
     if(typeof expected.assertOriginalUnchanged==='function')expected.assertOriginalUnchanged();
-    outputFrameScan = await inspectVideoFrames(ffprobeBin,outputPath,video[0].index,{staticMetadata:!!expected.hdr10 || !!expected.hlg || !!expected.untagged,timestamps:!!expected.sourceFrameScan,threads:getDecodeThreadCount(),expectedColor:video[0],expectedFrames,assertUnchanged:expected.assertOriginalUnchanged,onProgress:(frames,total,complete,fps)=>reportWorkerProgress(expected.updateWorker,{percentage:82+8*(complete?1:total>0?Math.min(0.99,frames/total):0),fps,status:"Validation: output frame, color, and HDR scan"})});
+    outputFrameScan = await inspectVideoFrames(ffprobeBin,outputPath,video[0].index,{staticMetadata:!!expected.hdr10 || !!expected.hlg || !!expected.untagged,timestamps:!!expected.sourceFrameScan,failFast:true,scanRole:"candidate",rejectDolbyVision:!!expected.hdr10 || !!expected.hlg || !!expected.untagged,rejectHdr10Plus:!!expected.hdr10 || !!expected.hlg || !!expected.untagged,threads:getDecodeThreadCount(),expectedColor:video[0],expectedFrames,assertUnchanged:expected.assertOriginalUnchanged,onProgress:(frames,total,complete,fps)=>reportWorkerProgress(expected.updateWorker,{percentage:82+8*(complete?1:total>0?Math.min(0.99,frames/total):0),fps,status:"Validation: output frame, color, and HDR scan"})});
     if(typeof expected.assertOriginalUnchanged==='function')expected.assertOriginalUnchanged();
     reportWorkerProgress(expected.updateWorker,{percentage:90,fps:0,status:"Validation: output frame scan complete"});
     if (outputFrameScan.colorInfo.conflict) throw Error("Output frame color signaling conflicts with the stream");
@@ -467,7 +538,6 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
   try {
     const infoVideos = [preflightInfoVideo];
     const basic = preflightBasic;
-    if (is12Bit && basic !== "sdr") throw new Error("12-bit conversion is only verified for tagged SDR sources; HDR, Dolby Vision, and untagged 12-bit video remain held");
     if (isVerifiedSdr(basic,frameScan)) {
       validateEffectiveSdrTransfer(mainVideo,infoVideos[0],frameScan);
       sdrSource = effectiveSdrSource(mainVideo,infoVideos[0],frameScan);
@@ -488,11 +558,17 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
         hdrSource = mainVideo;
         validateHlg(hdrSource,hdrSource);
       } else {
-        const canUseDolbyLevel6 = hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10";
-        hdrSource = mergeHdrMetadata(mainVideo,readHdrFrames(ffprobeBin,inputPath,mainVideo.index),{allowMissingLight:canUseDolbyLevel6,allowMissingAll:hdrClass==="hdr10"});
+        const canUseDolbyLevel6 = hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10";
+        const doviProfile=route=>/^dovi(7|81)_hdr10(?:plus_hdr10)?$/.exec(String(route || ''))?.[1] || '';
+        if(doviProfile(preflightDoviRoute) && doviProfile(preflightDoviRoute)===doviProfile(hdrClass) && preflightHdrSource) {
+          hdrSource=preflightHdrSource;
+          hdrLightOverride=preflightHdrLightOverride;
+        } else {
+          hdrSource = mergeHdrMetadata(mainVideo,readHdrFrames(ffprobeBin,inputPath,mainVideo.index),{allowMissingLight:canUseDolbyLevel6,allowMissingAll:hdrClass==="hdr10"});
+          const resolved = await resolveHdrLight(hdrSource,hdrClass,() => extractDolbyLevel6(ffmpegBin,inputPath,mainVideo.index,frameScan.frames));
+          hdrSource = resolved.metadata; hdrLightOverride = resolved.override;
+        }
         checkHdrFrameStatic(hdrSource,frameScan,!canUseDolbyLevel6 && hdrClass!=="hdr10",hdrClass!=="hdr10");
-        const resolved = await resolveHdrLight(hdrSource,hdrClass,() => extractDolbyLevel6(ffmpegBin,inputPath,mainVideo.index,frameScan.frames));
-        hdrSource = resolved.metadata; hdrLightOverride = resolved.override;
       }
       if (hdrClass === "hdr10plus_hdr10") {
         args.variables.user.hdr_conversion = "HDR10+ to HDR10 base layer; HDR10+ dynamic metadata removed";
@@ -500,6 +576,10 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
       }
       if (hdrClass === "dovi81_hdr10plus_hdr10") {
         args.variables.user.hdr_conversion = "Hybrid Dolby Vision 8.1 and HDR10+ to verified HDR10; both dynamic metadata formats removed";
+        log(`[HDR] ${args.variables.user.hdr_conversion}`);
+      }
+      if (hdrClass === "dovi7_hdr10plus_hdr10") {
+        args.variables.user.hdr_conversion = "Hybrid Dolby Vision Profile 7 and HDR10+ to verified HDR10 base layer; Dolby Vision and HDR10+ dynamic metadata removed";
         log(`[HDR] ${args.variables.user.hdr_conversion}`);
       }
       if (hdrClass === "dovi81_hdr10") {
@@ -521,7 +601,7 @@ b=e.index('\n  // 10-bit & Hardware Compatibility Detection',a)
 e=e[:a]+'''  // Every eligible source, including AV1 produced by older flows, is re-encoded.
   const isOversizedAV1 = false;
   const isAlreadyAV1 = false;
-  quality = selectQualityValue();
+  quality = selectedQuality;
 '''+e[b:]
 one('  const rawSizeMB = (args.originalLibraryFile?.file_size || args.inputFileObj?.file_size || (fs.statSync(inputPath).size / (1024 * 1024)));','  const rawSizeMB = fs.statSync(inputPath).size / (1024 * 1024);')
 one('  const isTargetRam = typeof targetDir === "string" && targetDir.startsWith("/dev/shm");', '  const isTargetRam = BigInt.asUintN(32,fs.statfsSync(targetDir,{bigint:true}).type) === 16914836n;')
@@ -549,14 +629,14 @@ one('''      if (useHybrid) {
       }''', '''      const baseVideoFilter=useHybrid ? "format=p010le" : is10Bit ? "vpp_qsv" : "vpp_qsv=format=p010";
       const sourceHasContentLight=(hdrSource?.side_data_list || []).some(x=>x.side_data_type==="Content light level metadata");
       const videoFilter=composeVideoFilterChain(baseVideoFilter,{
-        removeHdr10Plus:hdrClass==="hdr10plus_hdr10" || hdrClass==="dovi81_hdr10plus_hdr10",
+        removeHdr10Plus:hdrClass==="hdr10plus_hdr10" || hdrClass==="dovi81_hdr10plus_hdr10" || hdrClass==="dovi7_hdr10plus_hdr10",
         removeContentLight:isHdr && !sourceHasContentLight
       });
       cmdArgs.push("-vf",videoFilter);''')
 one('    const cmdArgs = ["-y", "-fflags", "+genpts+igndts"];', '    const cmdArgs = ["-y", "-xerror", "-fflags", "+genpts+igndts"];')
 one('encoded_by=ArcAV1_QSV','encoded_by=ArcAV1_QSV_V15')
 one('cmdArgs.push("-metadata:g", "encoded_by=ArcAV1_QSV_V15");', 'cmdArgs.push("-metadata:g", forceStreamCopy ? "encoded_by=ArcAV1_SeekHeal_V15" : "encoded_by=ArcAV1_QSV_V15");')
-one('      codec: expectedVideoCodec,\n', '      codec: expectedVideoCodec,\n      requireMarker: true,\n      hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10",\n      optionalHdrStatic: hdrClass === "hdr10",\n      hlg: hdrClass === "hlg",\n      untagged: hdrClass === "untagged",\n      sourceClass: hdrClass,\n      sourceHdr: hdrSource,\n      sdrSource,\n      sourceFrameScan: frameScan,\n      outputMarker: isBloat ? \"ArcAV1_SeekHeal_V15\" : \"ArcAV1_QSV_V15\",\n')
+one('      codec: expectedVideoCodec,\n', '      codec: expectedVideoCodec,\n      requireMarker: true,\n      hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10",\n      optionalHdrStatic: hdrClass === "hdr10",\n      hlg: hdrClass === "hlg",\n      untagged: hdrClass === "untagged",\n      sourceClass: hdrClass,\n      sourceHdr: hdrSource,\n      sdrSource,\n      sourceFrameScan: frameScan,\n      outputMarker: isBloat ? \"ArcAV1_SeekHeal_V15\" : \"ArcAV1_QSV_V15\",\n')
 one('      sourceFrameScan: frameScan,\n', '      sourceFrameScan: frameScan,\n      updateWorker: args.updateWorker,\n      assertOriginalUnchanged: assertOriginalUnchanged,\n      audioTimestampRepairIndices: Array.from(audioTimestampRepairs.keys()),\n')
 one('    const valResult = await validateOutput(ffprobeBin, inputPath, outputPath, {', '    reportWorkerProgress(args.updateWorker,{percentage:80,fps:0,status:"Validation: output streams and metadata"});\n    const valResult = await validateOutput(ffprobeBin, inputPath, outputPath, {')
 a=e.index('  log(`[Arc AV1 Single-Pass] Processing:')

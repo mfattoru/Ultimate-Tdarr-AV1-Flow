@@ -40,11 +40,11 @@ function startMock(kind, contentRoot, fileName, id) {
 function testEnvironment(mocks) {
   return {
     TDARR_ARR_RADARR_URL: mocks.movie.url,
-    TDARR_ARR_RADARR_API_KEY: 'rkey-test',
+    TDARR_ARR_RADARR_API_KEY: mocks.movie.key,
     TDARR_ARR_SONARR_TV_URL: mocks.tv.url,
-    TDARR_ARR_SONARR_TV_API_KEY: 'tvkey-test',
+    TDARR_ARR_SONARR_TV_API_KEY: mocks.tv.key,
     TDARR_ARR_SONARR_ANIME_URL: mocks.anime.url,
-    TDARR_ARR_SONARR_ANIME_API_KEY: 'akey-test'
+    TDARR_ARR_SONARR_ANIME_API_KEY: mocks.anime.key
   };
 }
 

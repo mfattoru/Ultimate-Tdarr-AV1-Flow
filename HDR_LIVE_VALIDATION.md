@@ -7,13 +7,13 @@ These jobs ran through the V15 Tdarr flow in the existing `tdarr-flow-live-test-
 | Input | V15 result | Validation |
 | --- | --- | --- |
 | Genuine Dolby Vision Profile 7, `Sample HDR Film-p7.mkv` | Arc AV1 Main10, 3840×2160, PQ/BT.2020; 21,920,460 bytes from 125,996,583 bytes | Passed. Static mastering and content-light metadata matched; Dolby Vision metadata was absent after the HDR10-compatible fallback. |
-| Genuine Dolby Vision Profile 8.1, `soul-p81.mkv` | Arc AV1 Main10; 6,545,324 bytes from 106,355,854 bytes | Passed. Static HDR metadata matched the selected fallback; Dolby Vision metadata was absent. |
+| Genuine Dolby Vision Profile 8.1 fixture | Arc AV1 Main10; 6,545,324 bytes from 106,355,854 bytes | Passed. Static HDR metadata matched the selected fallback; Dolby Vision metadata was absent. |
 | HDR10+, `birds-hdr10plus.mkv` | Arc AV1 candidate: 11,605,199 bytes from 167,234,814 bytes | Rejected. Candidate decoded-frame mastering display metadata conflicts with the source; original was retained and Discord failure notice arrived. |
 | Synthetic HLG, `synthetic-hlg.mkv` | Size guard selected source-video seek-heal remux; 6,589,174 bytes from 6,589,120 bytes | Passed as an HLG/BT.2020 metadata-preserving remux. This does not verify an encoded HLG output. |
 
 ### Dolby Vision 8.1 + HDR10+ hybrid test — 2026-11-05
 
-The source `Sample Feature Film (2002) WEBDL-2160p.mkv` is a single-layer HEVC Dolby Vision Profile 8.1 stream with HDR10-compatible base-layer signaling and HDR10+ Profile B metadata. The read-only original remained on `/mnt/media`; a capped 8-second Arc QSV sample was written to `/test/v15-fixes-20261105/Sample Feature Film-hybrid-hdr10-implemented-8s.mkv`.
+An anonymized single-layer HEVC Dolby Vision Profile 8.1 stream with HDR10-compatible base-layer signaling and HDR10+ Profile B metadata was tested. The read-only original remained on `/mnt/media`; a capped 8-second Arc QSV sample was written under `/test/v15-fixes-20261105/`.
 
 - The Arc QSV AV1 sample completed in 1.28 seconds. Output color tags remained limited-range BT.2020 non-constant matrix, PQ, and BT.2020 primaries.
 - FFprobe found only mastering-display and content-light frame side data in the output; Dolby Vision RPU/metadata and HDR10+ dynamic metadata were absent. Numeric mastering values matched within V15's existing tolerance (maximum field delta `0.0000221`); content-light values matched exactly.
@@ -27,6 +27,20 @@ A follow-up 8-second encode using the same Arc QSV decode, `vpp_qsv`, and `av1_q
 A 48-frame 4K `libaom-av1` encode with `-dolbyvision 1` preserved both source Dolby Vision metadata and HDR10+ metadata exactly in FFprobe's parsed per-frame structures. The output was AV1 Dolby Vision Profile 10 with HDR10 compatibility ID 1, and its full decode passed. It took 6.4 seconds for about 2 seconds of source video at `-cpu-used 8 -crf 40` (about 0.31× real time); this was a metadata proof, not a quality test. The earlier injector prototypes still fail their metadata checks. No change was made to V15. See [HDR_AUDIO_REPAIR_TEST_REPORT.md](HDR_AUDIO_REPAIR_TEST_REPORT.md) for the timing caveats, candidate path, and remaining production/device validation.
 
 See [HDR_AUDIO_REPAIR_TEST_REPORT.md](HDR_AUDIO_REPAIR_TEST_REPORT.md) for the exact test commands, output paths, and logs.
+
+### Hybrid policy failures and corrections — 2026-11-06
+
+Three production-log sources exposed two false rejections and one safe fallback case:
+
+- A Dolby Vision Profile 8.1 + HDR10+ source was misclassified as containing unsupported dynamic HDR because the detector searched serialized MediaInfo, including the free-text title. The title contained an abbreviated SMPTE ST 2094 label that remained after HDR10+ text was stripped.
+- A verified Dolby Vision Profile 7 + HDR10+ source was rejected because the policy had no route for this hybrid.
+- A Profile 7 source had valid HDR10 mastering data but unknown content-light values (`0/0`). The Dolby Vision Level 6 mastering values are unrelated when its content-light values are unknown, so comparing those luminance values against the HDR10 base caused a false conflict.
+
+The policy now classifies dynamic HDR from structured MediaInfo HDR fields and decoded frame side data, ignoring free-text titles. It permits a Profile 7 + HDR10+ fallback only when the stream is HEVC, limited-range PQ/BT.2020, and its Dolby Vision configuration confirms Profile 7 with BL, EL, and RPU present and compatibility ID 6. Decoded frames must still confirm HDR10+ before the route is selected. For Level 6 `0/0` content-light values, the flow preserves valid HDR10 mastering metadata and omits content-light metadata instead of comparing or inventing values. Every route still runs the full source scan and strict HDR10 output checks.
+
+Two additional live Profile 7 sources (one plain HDR10-compatible base, one HDR10+ hybrid) failed after 71–85 minutes with `HDR light metadata conflicts with decoded frames`. Read-only one-second probes in the existing test container showed `max_content=0` and `max_average=0` on the decoded frames. FFmpeg uses that pair to mean the CLL is unspecified; the frame collector had treated it as real metadata and compared it against the valid Level 6-derived value. The collector now ignores only the `0/0` placeholder while retaining checks for actual nonzero frame metadata. The sources were kept. Discord delivery succeeded for both jobs. The one-second probes confirm the false mismatch trigger; the full flow has not been rerun on these large sources.
+
+The three source classes were exercised in the existing test container with isolated 120-frame Arc QSV samples using the flow's QSV decode, filter, and AV1 encode path. All produced AV1 with limited-range PQ/BT.2020 signaling. The Profile 7 source with unknown content light retained mastering metadata and omitted content-light metadata; the Profile 7 + HDR10+ and Profile 8.1 + HDR10+ samples retained static HDR10 metadata while their HDR10+ and Dolby Vision frame side data were absent. Temporary outputs were removed after probing. These are metadata/encode smoke tests, not full-flow replacement validation, full-file decode tests, or HDR visual-quality assessments.
 
 ### HDR10+ rejection details
 

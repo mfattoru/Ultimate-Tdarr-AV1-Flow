@@ -11,21 +11,24 @@ flowchart TD
     C --> D[Request Arr rescan and send warning]
     B -- No --> E{Completion marker present?}
     E -- Yes --> F[Keep file and send info notice]
-    E -- No --> G[Full source precheck]
-    G --> H{Source eligible and healthy?}
+    E -- No --> G[Header, Arc device, and configuration guards]
+    G --> H{Static checks pass?}
+    H -- Yes --> I[Full source frame/HDR scan; stop at decisive failure]
     H -- No --> K[Retain original]
-    H -- Yes --> I[One Arc QSV AV1 encode at ICQ 22]
-    I --> J{Candidate is smaller?}
-    J -- Yes --> L[Full candidate validation]
-    J -- No --> M[Seek-heal remux using source video]
+    I --> J{Source scan passes?}
+    J -- Yes --> N[One Arc QSV AV1 encode at ICQ 22]
+    J -- No --> K
+    N --> O{Candidate is smaller?}
+    O -- Yes --> L[Candidate validation; stop early on mismatch]
+    O -- No --> M[Seek-heal remux using source video]
     M --> L
-    L -- Pass --> N[Replace original and send success notice]
+    L -- Pass --> P[Replace original and send success notice]
     L -- Fail --> K
-    K --> O{Known source corruption confirmed?}
-    O -- Yes --> P[Request targeted Arr search]
-    O -- No --> Q[No search request]
-    P --> R[Send failure notice]
-    Q --> R
+    K --> Q{Known source corruption confirmed?}
+    Q -- Yes --> R[Request targeted Arr search]
+    Q -- No --> S[No search request]
+    R --> T[Send failure notice]
+    S --> T
 ```
 
 For the full node-by-node view, see [the flow diagram](flow-diagram.md).
@@ -36,8 +39,8 @@ For the full node-by-node view, see [the flow diagram](flow-diagram.md).
 | --- | --- |
 | Video encode | One Arc QSV AV1 attempt for each eligible video, using global ICQ 22. The Arc device defaults to `/dev/dri/renderD129`. |
 | Larger encode result | Discard the encode attempt and stream-copy the source video through the seek-healing remux. The remux has no source-size cap; it can replace the source when full validation passes. |
-| Source scan | Full CPU frame, color/HDR, timestamp, and corruption scan before encoding. Retained audio is checked and decoded before the encode. |
-| Candidate checks | Full timeline, stream, color/HDR, subtitle, video decode, and retained-audio checks run before replacement. Candidate video decode uses Arc QSV. |
+| Source scan | Header-only pixel/depth, aspect-ratio, Arc device access, ICQ, 12-bit, and applicable HDR color checks run first. Supported Dolby Vision routes validate required Level 6 metadata before the full CPU frame, color/HDR, timestamp, and corruption scan. The scan stops on a decisive failure; eligible clean sources are still scanned end to end. Retained audio is checked and decoded before the encode. |
+| Candidate checks | Candidate frame scanning stops on its first decisive mismatch; a clean candidate still receives a full timeline and timestamp comparison, stream/color/HDR/subtitle checks, and video/audio decode validation before replacement. Candidate video decode uses Arc QSV. |
 | Audio | Keep English, Japanese, Spanish, Italian, and undetermined tracks. Preserve selected audio streams by copy, then run timing and decode checks. |
 | Subtitles | Preserve styled ASS/SSA streams by copy. Validate subtitle packet counts and timing; retain PGS payloads and validate extracted segments. |
 | Notifications | Send success/failure notices, an info notice for already-processed files, and a warning when an ISO is deleted and an Arr rescan is requested. |
@@ -51,7 +54,8 @@ HDR handling is deliberately signal-aware:
 
 - Verified HDR10 and HLG use their guarded encode paths.
 - HDR10+ is converted using its static HDR10 base; dynamic HDR10+ metadata is not retained.
-- Verified Dolby Vision Profile 7 base-layer and Profile 8.1 paths produce HDR10. Dolby Vision dynamic metadata and Profile 7 enhancement-layer detail are not retained.
+- Verified Dolby Vision Profile 7 HDR10-compatible base layers and Profile 8.1 paths produce HDR10. A Profile 7 plus HDR10+ hybrid is accepted only with verified BL/EL/RPU presence and compatibility ID 6; Profile 8.1 plus HDR10+ still requires its verified single-layer HDR10 base. Dolby Vision and HDR10+ dynamic metadata, and Profile 7 enhancement-layer detail, are discarded; static HDR10 metadata is validated before replacement.
+- A decoded CLL pair of `0/0` means unspecified; the flow does not treat it as conflicting with CLL values taken from Dolby Level 6.
 - Profile 5, unverified hybrids, and unvalidated Profile 8.4 inputs are held.
 - Missing color data is not invented except for the documented limited-range default on supported untagged SDR YUV.
 

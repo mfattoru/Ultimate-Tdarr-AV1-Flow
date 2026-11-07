@@ -21,12 +21,12 @@ flowchart TD
     IGNOREEMPTY --> MARKER
     EXTRADECODE -->|Frame, diagnostic, failure, or missing result| ENGINEFAIL[Return failure with reason]
     MARKER -->|V15, V14, or supported older marker| DONE[Return already-processed outcome]
-    MARKER -->|Needs processing| GUARD[Check codec, pixel format/depth, stream tags, and color/HDR/DV class]
+    MARKER -->|Needs processing| GUARD[Header/config checks: pixel/depth, aspect ratio, Arc access, ICQ, 12-bit policy, and HDR color mapping]
     GUARD -->|Unsupported, ambiguous, unsafe, or unverified DV Profile 8.4| ENGINEFAIL[Return failure with reason]
-    GUARD -->|Eligible| HDRPREFLIGHT{DV and HDR10+ hybrid?}
-    HDRPREFLIGHT -->|Not hybrid or exact verified DV 8.1/HDR10 base candidate| FULLSOURCE[Full CPU source frame, color/HDR, and timestamp scan]
-    HDRPREFLIGHT -->|Other or ambiguous hybrid| ENGINEFAIL[Return failure with reason]
-    FULLSOURCE -->|Corruption, unsupported frames, or conflict| ENGINEFAIL
+    GUARD -->|Eligible| HDRPREFLIGHT[Check DV profile/base-layer flags; resolve required Dolby Level 6 metadata]
+    HDRPREFLIGHT -->|Static route rejected or Level 6 conflict| ENGINEFAIL
+    HDRPREFLIGHT -->|Static checks pass| FULLSOURCE[Full CPU source frame, color/HDR, and timestamp scan]
+    FULLSOURCE -->|First decisive corruption, unsupported frame, or metadata conflict| ENGINEFAIL
     FULLSOURCE -->|Scan passes| AUDIOCHECK[Scan retained audio DTS; full-decode retained source audio]
     AUDIOCHECK -->|Recognized source audio corruption| ENGINEFAIL
     AUDIOCHECK -->|No backward DTS (equal-only ties allowed), or repair plan within 100 ms; source decode passes| CACHE[Reclaim safe stale leases; reserve scratch capacity]
@@ -55,8 +55,8 @@ flowchart TD
     AV1VALID --> OUTPROBE[Re-probe candidate streams, codec, color/HDR, and marker]
     REMUXVALID --> OUTPROBE
     OUTPROBE -->|Probe, stream, or metadata check failed| VALIDFAIL[Reject candidate; keep original]
-    OUTPROBE -->|Passed| FRAMESCAN[Full candidate frame scan and full source/output timeline comparison]
-    FRAMESCAN -->|Frame scan or timestamp check failed| VALIDFAIL
+    OUTPROBE -->|Passed| FRAMESCAN[Candidate frame scan; stop at first decisive mismatch, then compare full timestamps if clean]
+    FRAMESCAN -->|First frame mismatch or timestamp check failed| VALIDFAIL
     FRAMESCAN -->|Passed| TIMELINE[Compare stream timelines; repaired audio must keep packet count and have strictly increasing DTS; verify ASS/SSA hashes and ≤0.5 s repair; verify PGS segments]
     TIMELINE -->|Failed| VALIDFAIL
     TIMELINE -->|Passed| FULLDECODE[Strict candidate video decode on configurable Arc QSV; audio decode on CPU]
@@ -116,7 +116,9 @@ A remux can repair container indexes and packet timestamps. It cannot reconstruc
 
 ## Full validation and process diagnostics
 
-Every eligible source gets a complete CPU frame, color/HDR, and timestamp scan before encoding. A cheap metadata preflight holds unsupported DV/HDR10+ hybrids before that scan; only the specific single-layer DV 8.1/HDR10-compatible base candidate proceeds, and it still receives full checks. FFprobe in the test node cannot use the Arc device for the metadata scan. After encoding or remux, V15 scans the candidate's full timeline and compares every frame timestamp against the source; checked timestamps must be present and differ by no more than 50 ms. It then checks stream counts/codecs, color/HDR metadata, audio/subtitle packet timelines, subtitle counts, and PGS payloads. Equal audio DTS values without any backward transitions are preserved, including time-base quantization ties. A bounded source DTS regression may be repaired by a timestamp-only bitstream filter by at most 100 ms; when repair runs, the candidate must retain packet count and have strictly increasing DTS. Larger or unprovable audio repair keeps the original and does not request an Arr search. Copied ASS/SSA packet payloads and counts must match exactly; subtitle timestamp repair remains limited to 0.5 seconds per packet.
+Before the full source scan, V15 checks probed pixel format/depth, sample aspect ratio, Arc render-device access, ICQ configuration, the 12-bit policy, and applicable MediaInfo color mappings. Dolby Vision profile/base-layer eligibility and any required Dolby Level 6 extraction are also checked before the scan; the extracted Level 6 row count is then matched to the full decoded-frame count. Unsupported inputs and metadata conflicts can therefore stop before the expensive decode pass.
+
+Every eligible source that passes preflight still gets a complete CPU frame, color/HDR, and timestamp scan before encoding. The scanner exits as soon as it finds known bitstream corruption, interlaced frames, conflicting color or static HDR metadata, or unsupported dynamic HDR; otherwise it reaches the end of the source. FFprobe in the test node cannot use the Arc device for the metadata scan. After encoding or remux, V15 scans the candidate and exits at the first decisive frame/metadata mismatch; a clean candidate still gets a complete scan and full source/output timestamp comparison. Checked timestamps must be present and differ by no more than 50 ms. It then checks stream counts/codecs, color/HDR metadata, audio/subtitle packet timelines, subtitle counts, and PGS payloads. Equal audio DTS values without any backward transitions are preserved, including time-base quantization ties. A bounded source DTS regression may be repaired by a timestamp-only bitstream filter by at most 100 ms; when repair runs, the candidate must retain packet count and have strictly increasing DTS. Larger or unprovable audio repair keeps the original and does not request an Arr search. Copied ASS/SSA packet payloads and counts must match exactly; subtitle timestamp repair remains limited to 0.5 seconds per packet.
 
 Strict candidate video decode uses Arc QSV with `TDARR_ARC_DEVICE` (default `/dev/dri/renderD129`). Retained audio is decoded separately on the CPU. For the strict video decode, FFmpeg progress advances the Tdarr percentage and reports FPS; stream-copy remux and full frame scans also report progress/FPS. Metadata-only phases do not have a meaningful frame rate. Process stderr is preserved as diagnostic detail, but a clean exit status succeeds; recognized `-v error` source-corruption signatures are classified separately.
 

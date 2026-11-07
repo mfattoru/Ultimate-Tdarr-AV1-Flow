@@ -146,7 +146,8 @@ test('source and output timelines are fully scanned with source and output inter
  const sourceScan=engine.indexOf('frameScan=await inspectVideoFrames(ffprobeBin,inputPath,mainVideo.index');
  const encode=engine.indexOf('runSingleQuality(');
  assert.ok(sourceScan>=0&&encode>sourceScan,'every eligible source must be fully scanned before encoding');
- assert.ok(engine.includes('validateAspect(mainVideo, mainVideo, false)'),'source metadata must not be treated as output metadata after its frame scan');
+ const sourceAspectValidation=engine.search(/validateAspect\(mainVideo,\s*mainVideo,\s*false\)/);
+ assert.ok(sourceAspectValidation>=0&&sourceAspectValidation<sourceScan,'source aspect metadata must be validated before the full frame scan');
  assert.ok(engine.includes('if (frameScan.interlaced) throw Error("Interlaced video frames are unsupported")'),'decoded interlaced source frames must remain held');
  assert.ok(engine.includes('if (order && ![\'progressive\',\'unknown\'].includes(order)) throw Error(\'Output has interlaced field order\')'),'encoded output field-order guard must remain');
 });

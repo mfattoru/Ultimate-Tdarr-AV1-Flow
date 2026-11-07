@@ -136,6 +136,31 @@ test('verified Dolby Vision 8.1 plus HDR10+ uses its compatible HDR10 base layer
   assert.throws(()=>p.testHdrRoute({...video,color_transfer:'bt709'},info,scan),/color|not verified/i);
 });
 
+test('free-text title does not turn a verified Dolby Vision 8.1 and HDR10+ hybrid into unsupported dynamic HDR',()=>{
+ const dovi={side_data_type:'DOVI configuration record',dv_profile:8,dv_level:6,
+  rpu_present_flag:1,el_present_flag:0,bl_present_flag:1,dv_bl_signal_compatibility_id:1};
+ const video={codec_name:'hevc',color_range:'tv',color_primaries:'bt2020',
+  color_transfer:'smpte2084',color_space:'bt2020nc',side_data_list:[dovi]};
+ const info={HDR_Format:'Dolby Vision / SMPTE ST 2094 App 4',
+  HDR_Format_Compatibility:'HDR10 / HDR10+ Profile B',
+  Title:'HEVC video / Dolby Vision BL+RPU / HDR10 compatible / SMPTE ST 2094 HDR10+ Profile B'};
+ const scan={frames:1,interlaced:0,dovi:1,hdr10plus:1,otherDynamic:0};
+ assert.equal(p.testHdrRoute(video,info,scan),'dovi81_hdr10plus_hdr10');
+});
+
+test('verified Dolby Vision Profile 7 and HDR10+ can use the HDR10-compatible base layer',()=>{
+ const dovi={side_data_type:'DOVI configuration record',dv_profile:7,dv_level:6,
+  rpu_present_flag:1,el_present_flag:1,bl_present_flag:1,dv_bl_signal_compatibility_id:6};
+ const video={codec_name:'hevc',color_range:'tv',color_primaries:'bt2020',
+  color_transfer:'smpte2084',color_space:'bt2020nc',side_data_list:[dovi]};
+ const info={HDR_Format:'Dolby Vision / SMPTE ST 2094 App 4',
+  HDR_Format_Compatibility:'Blu-ray / HDR10+ Profile B'};
+ const scan={frames:1,interlaced:0,dovi:1,hdr10plus:1,otherDynamic:0};
+ assert.equal(p.testHybridPreflight(video,info),'dovi7_hdr10plus_candidate');
+ assert.equal(p.testHdrRoute(video,info,scan),'dovi7_hdr10plus_hdr10');
+ assert.throws(()=>p.testHdrRoute({...video,side_data_list:[{...dovi,dv_bl_signal_compatibility_id:1}]},info,scan),/verified HDR10-compatible base layer/i);
+});
+
 test('HDR10 validation requires unchanged PQ colors and static metadata',()=>{
   assert.equal(typeof p.testHdr,'function','HDR10 output validation missing');
   const mastering={side_data_type:'Mastering display metadata',red_x:'17/25',red_y:'8/25',green_x:'53/200',green_y:'69/100',blue_x:'3/20',blue_y:'3/50',white_point_x:'3127/10000',white_point_y:'329/1000',min_luminance:'1/200',max_luminance:'1000/1'};
@@ -468,7 +493,7 @@ test('full source scan classifies known H264 NAL corruption despite zero exit',a
   fs.writeFileSync(media,'fixture');
   fs.writeFileSync(ffprobe,'#!/usr/bin/env node\nprocess.stdout.write("frame|best_effort_timestamp_time=0|interlaced_frame=0\\n");\nprocess.stderr.write("[h264] Invalid NAL unit size (999 > 8)\\n");\n');
   fs.chmodSync(ffprobe,0o755);
-  await assert.rejects(()=>p.testScanFrames(ffprobe,media,0),/Source media corruption.*Invalid NAL unit size/i);
+  await assert.rejects(()=>p.testScanFrames(ffprobe,media,0,{scanRole:'source'}),/Source media corruption.*Invalid NAL unit size/i);
  } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });
 
@@ -741,7 +766,7 @@ test('Profile 7 Blu-ray with verified HDR10 base can fall back to static HDR10',
  assert.throws(()=>p.testHdrRoute({...v,side_data_list:[{...v.side_data_list[0],dv_bl_signal_compatibility_id:3}]},i,{...pqScan,dovi:100}),/Dolby|HDR10/i);
  assert.throws(()=>p.testHdrRoute({...v,side_data_list:[{...v.side_data_list[0],el_present_flag:0}]},i,{...pqScan,dovi:100}),/Dolby|HDR10/i);
  assert.throws(()=>p.testHdrRoute(v,i,{...pqScan,dovi:0}),/Dolby/i);
- assert.throws(()=>p.testHdrRoute(v,{...i,HDR_Format:'Dolby Vision / HDR10+'},{...pqScan,dovi:100,hdr10plus:1}),/hybrid|Dolby/i);
+ assert.equal(p.testHdrRoute(v,{...i,HDR_Format:'Dolby Vision / HDR10+'},{...pqScan,dovi:100,hdr10plus:1}),'dovi7_hdr10plus_hdr10');
 });
 
 test('rejects the observed QSV mastering green-coordinate clamp',()=>{
@@ -759,4 +784,13 @@ test('Profile 7 may recover missing HDR content-light values from verified Level
  const resolved=await p.testResolveLight(src,'dovi7_hdr10',async()=>l6);
  assert.equal(resolved.override,'992,120');assert.equal(resolved.metadata.side_data_list[1].max_content,992);
  await assert.rejects(()=>p.testResolveLight(src,'dovi7_hdr10',async()=>({...l6,max_luminance:1000})),/conflict/i);
+});
+
+test('Profile 7 fallback omits unavailable content-light data without comparing unused Level 6 mastering values',async()=>{
+ const mastering={side_data_type:'Mastering display metadata',red_x:'34000/50000',red_y:'16000/50000',green_x:'13250/50000',green_y:'34500/50000',blue_x:'7500/50000',blue_y:'3000/50000',white_point_x:'15635/50000',white_point_y:'16450/50000',min_luminance:'1/10000',max_luminance:'10000000/10000'};
+ const src={...pqVideo,side_data_list:[mastering,{side_data_type:'Content light level metadata',max_content:0,max_average:0}]};
+ const unknown={max_content:0,max_average:0,max_luminance:4000,min_luminance:0.005};
+ const resolved=await p.testResolveLight(src,'dovi7_hdr10',async()=>unknown);
+ assert.equal(resolved.override,null);
+ assert.deepEqual(resolved.metadata.side_data_list,[mastering]);
 });
