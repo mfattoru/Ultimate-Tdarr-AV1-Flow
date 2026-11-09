@@ -37,12 +37,12 @@ For the full node-by-node view, see [the flow diagram](flow-diagram.md).
 
 | Area | V15 behavior |
 | --- | --- |
-| Video encode | One Arc QSV AV1 attempt for each eligible video, using global ICQ 22. The Arc device defaults to `/dev/dri/renderD129`. |
+| Video encode | One Arc QSV AV1 attempt for each eligible video, using global ICQ 22. HDR sources whose mastering green-y falls in the documented Intel QSV clamp range route directly to one software SVT-AV1 encode at CRF 28; strict output HDR checks still apply. The Arc device defaults to `/dev/dri/renderD129`. |
 | Larger encode result | Discard the encode attempt and stream-copy the source video through the seek-healing remux. The remux has no source-size cap; it can replace the source when full validation passes. |
 | Source scan | Header-only pixel/depth, aspect-ratio, Arc device access, ICQ, 12-bit, and applicable HDR color checks run first. Supported Dolby Vision routes validate required Level 6 metadata before the full CPU frame, color/HDR, timestamp, and corruption scan. The scan stops on a decisive failure; eligible clean sources are still scanned end to end. Retained audio is checked and decoded before the encode. |
 | Candidate checks | Candidate frame scanning stops on its first decisive mismatch; a clean candidate still receives a full timeline and timestamp comparison, stream/color/HDR/subtitle checks, and video/audio decode validation before replacement. Candidate video decode uses Arc QSV. |
 | Audio | Keep English, Japanese, Spanish, Italian, and undetermined tracks. Preserve selected audio streams by copy, then run timing and decode checks. |
-| Subtitles | Preserve styled ASS/SSA streams by copy. Validate subtitle packet counts and timing; retain PGS payloads and validate extracted segments. |
+| Subtitles | Preserve styled ASS/SSA streams by copy. Validate subtitle packet counts and timing; retain PGS payloads and validate extracted segments. Muxing uses a ten-second interleave bound so sparse subtitle packets cannot hold output open indefinitely. |
 | Notifications | Send success/failure notices, an info notice for already-processed files, and a warning when an ISO is deleted and an Arr rescan is requested. |
 | Arr searches | Route a targeted search only when the flow confirms known source corruption. A queued search does not guarantee a replacement download. |
 

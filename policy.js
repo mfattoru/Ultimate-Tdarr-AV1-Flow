@@ -15,7 +15,7 @@ const isCompletedEncode = (codec, tags) => {
   if (!key) return false;
   const marker=String(tags[key]);
   return ['ArcAV1_SeekHeal_V12','ArcAV1_SeekHeal_V13','ArcAV1_SeekHeal_V14','ArcAV1_SeekHeal_V15'].includes(marker)
-    || (codec === 'av1' && ['ArcAV1_QSV_V4','ArcAV1_QSV_V5','ArcAV1_QSV_V6','ArcAV1_QSV_V7','ArcAV1_QSV_V8','ArcAV1_QSV_V9','ArcAV1_QSV_V11','ArcAV1_QSV_V12','ArcAV1_QSV_V13','ArcAV1_QSV_V14','ArcAV1_QSV_V15'].includes(marker));
+    || (codec === 'av1' && ['ArcAV1_QSV_V4','ArcAV1_QSV_V5','ArcAV1_QSV_V6','ArcAV1_QSV_V7','ArcAV1_QSV_V8','ArcAV1_QSV_V9','ArcAV1_QSV_V11','ArcAV1_QSV_V12','ArcAV1_QSV_V13','ArcAV1_QSV_V14','ArcAV1_QSV_V15','ArcAV1_SVTAV1_HDRFallback_V15'].includes(marker));
 };
 
 // Only a positively identified HDR10 source with PQ/BT.2020 is eligible for
@@ -504,6 +504,23 @@ const sameHdrSideData = (a,b,fields) => fields.every(field => {
   const tolerance=field==='max_luminance'?0.1:field.startsWith('max_')?0:0.0001;
   return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x-y)<=tolerance;
 });
+const isQsvHdrMasteringClampRisk = source => {
+  const mastering=(source?.side_data_list || []).find(item=>item.side_data_type==='Mastering display metadata');
+  const greenY=rationalValue(mastering?.green_y),qsvClamp=50000/65536;
+  return Number.isFinite(greenY) && greenY>qsvClamp+0.0001 && greenY<0.84;
+};
+const isKnownQsvHdrMasteringClamp = (source,output,error) => {
+  if (String(error?.message || error || '') !== 'HDR mastering metadata conflicts with decoded frames') return false;
+  const sourceMastering=(source?.side_data_list || []).find(item=>item.side_data_type==='Mastering display metadata');
+  const outputMastering=(output?.side_data_list || []).find(item=>item.side_data_type==='Mastering display metadata');
+  if (!sourceMastering || !outputMastering) return false;
+  const sourceGreenY=rationalValue(sourceMastering.green_y), outputGreenY=rationalValue(outputMastering.green_y);
+  const qsvClamp=50000/65536;
+  if (!Number.isFinite(sourceGreenY) || !Number.isFinite(outputGreenY)
+      || Math.abs(outputGreenY-qsvClamp)>0.0001
+      || sourceGreenY<=qsvClamp+0.0001 || sourceGreenY>=0.84) return false;
+  return sameHdrSideData(sourceMastering,outputMastering,hdrMasterFields.filter(field=>field!=='green_y'));
+};
 const collectHdrFrameStatic = (line, info) => {
   for (const [prefix,key,type,fields] of [
     ['side_datum/mastering_display_metadata:','mastering','Mastering display metadata',hdrMasterFields],
@@ -528,7 +545,13 @@ const checkHdrFrameStatic = (metadata, scan, requireLight=true, requireMastering
   const side=metadata.side_data_list || [];
   const mastering=side.find(s=>s.side_data_type==='Mastering display metadata');
   const light=side.find(s=>s.side_data_type==='Content light level metadata');
-  if (current.mastering && (!mastering || !sameHdrSideData(mastering,current.mastering,hdrMasterFields))) throw Error('HDR mastering metadata conflicts with decoded frames');
+  if (current.mastering && (!mastering || !sameHdrSideData(mastering,current.mastering,hdrMasterFields))) {
+    const mismatch=Error('HDR mastering metadata conflicts with decoded frames');
+    if (isKnownQsvHdrMasteringClamp(metadata,{side_data_list:[current.mastering]},mismatch)) {
+      throw Error(`${mismatch.message} (identified Intel QSV AV1 green-y clamp)`);
+    }
+    throw mismatch;
+  }
   if (current.light && (!light || !sameHdrSideData(light,current.light,['max_content','max_average']))) throw Error('HDR light metadata conflicts with decoded frames');
 };
 const hdrFrameMetadataRequirements = (source, optionalHdrStatic=false) => {

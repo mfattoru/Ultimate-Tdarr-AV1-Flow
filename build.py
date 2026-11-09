@@ -607,8 +607,22 @@ one('  const rawSizeMB = (args.originalLibraryFile?.file_size || args.inputFileO
 one('  const isTargetRam = typeof targetDir === "string" && targetDir.startsWith("/dev/shm");', '  const isTargetRam = BigInt.asUintN(32,fs.statfsSync(targetDir,{bigint:true}).type) === 16914836n;')
 one('Math.abs((d.first-s.first)-shift)>tolerance || Math.abs((d.last-s.last)-shift)>tolerance', 'Math.abs((d.first-s.first)-shift)>0.1 || Math.abs((d.last-s.last)-shift)>0.1')
 one('        "-look_ahead", "1",\n        "-look_ahead_depth", "40",\n','')
-one('  const needsProactiveHybrid = isH26410bit || isVC1 || isNon420Chroma;', '  const needsProactiveHybrid = !useQsvDecode(mainVideo);')
+one('  const needsProactiveHybrid = isH26410bit || isVC1 || isNon420Chroma;', '  const needsProactiveHybrid = !useQsvDecode(mainVideo);\n  const softwareHdrFallback = isHdr && isQsvHdrMasteringClampRisk(hdrSource);\n  quality = softwareHdrFallback ? 28 : selectedQuality;\n  const qualityLabel = softwareHdrFallback ? "SVT-AV1 CRF" : "ICQ";')
+one('''  if (!isAlreadyAV1 && isHdr) {
+    pipelineMode += isHlg ? " [HLG]" : " [HDR10]";
+  }''', '''  if (!isAlreadyAV1 && isHdr) {
+    pipelineMode += isHlg ? " [HLG]" : " [HDR10]";
+  }
+  if (softwareHdrFallback) {
+    pipelineMode = "Software SVT-AV1 HDR encode (QSV mastering clamp avoidance)";
+    log(`[Arc AV1] Source HDR mastering metadata falls in the known Intel QSV green-y clamp range; using SVT-AV1 CRF 28 so static metadata remains verifiable.`);
+  }''')
 one('    cmdArgs.push("-i", inputPath);', '    if (hdrLightOverride) cmdArgs.push("-content_light", hdrLightOverride);\n    if (useHybrid && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));\n    cmdArgs.push("-i", inputPath);\n    if (is12Bit && !forceStreamCopy) cmdArgs.push("-sws_dither", "ed");')
+one('    if (useHybrid && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));', '    if ((useHybrid || useSoftwareFallback) && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));')
+one('const runFfmpeg = (useHybrid = false, forceStreamCopy = false, useIcqOnly = false) => {', 'const runFfmpeg = (useHybrid = false, forceStreamCopy = false, useSoftwareFallback = false) => {')
+one('''    if (!doCopyVideo) {
+      // Both Full Hardware and Hybrid modes require VAAPI->QSV device context for av1_qsv encoder''', '''    if (!doCopyVideo && !useSoftwareFallback) {
+      // Both Full Hardware and Hybrid modes require VAAPI->QSV device context for av1_qsv encoder''')
 one('''        } else {
           cmdArgs.push(`-c:s:${idx}`, "copy");
         }
@@ -626,7 +640,9 @@ one('''      if (useHybrid) {
         cmdArgs.push("-vf", "vpp_qsv");
       } else {
         cmdArgs.push("-vf", "vpp_qsv=format=p010");
-      }''', '''      const baseVideoFilter=useHybrid ? "format=p010le" : is10Bit ? "vpp_qsv" : "vpp_qsv=format=p010";
+      }''', '''      const baseVideoFilter=useSoftwareFallback
+        ? "sidedata=mode=delete:type=DOVI_METADATA,format=yuv420p10le"
+        : useHybrid ? "format=p010le" : is10Bit ? "vpp_qsv" : "vpp_qsv=format=p010";
       const sourceHasContentLight=(hdrSource?.side_data_list || []).some(x=>x.side_data_type==="Content light level metadata");
       const videoFilter=composeVideoFilterChain(baseVideoFilter,{
         removeHdr10Plus:hdrClass==="hdr10plus_hdr10" || hdrClass==="dovi81_hdr10plus_hdr10" || hdrClass==="dovi7_hdr10plus_hdr10",
@@ -634,42 +650,65 @@ one('''      if (useHybrid) {
       });
       cmdArgs.push("-vf",videoFilter);''')
 one('    const cmdArgs = ["-y", "-fflags", "+genpts+igndts"];', '    const cmdArgs = ["-y", "-xerror", "-fflags", "+genpts+igndts"];')
+one('''      cmdArgs.push(
+        "-c:v", "av1_qsv",
+        "-preset", "slow",
+        "-global_quality", `${quality}`,
+        "-extbrc", "1",
+        "-adaptive_i", "1",
+        "-adaptive_b", "1",
+        "-b_strategy", "1",
+        "-g", "120"
+      );''', '''      if (useSoftwareFallback) {
+        cmdArgs.push("-c:v", "libsvtav1", "-preset", "8", "-crf", "28", "-svtav1-params", "lp=4", "-dolbyvision", "0");
+      } else {
+        cmdArgs.push(
+          "-c:v", "av1_qsv",
+          "-preset", "slow",
+          "-global_quality", `${quality}`,
+          "-extbrc", "1",
+          "-adaptive_i", "1",
+          "-adaptive_b", "1",
+          "-b_strategy", "1",
+          "-g", "120"
+        );
+      }''')
 one('encoded_by=ArcAV1_QSV','encoded_by=ArcAV1_QSV_V15')
-one('cmdArgs.push("-metadata:g", "encoded_by=ArcAV1_QSV_V15");', 'cmdArgs.push("-metadata:g", forceStreamCopy ? "encoded_by=ArcAV1_SeekHeal_V15" : "encoded_by=ArcAV1_QSV_V15");')
-one('      codec: expectedVideoCodec,\n', '      codec: expectedVideoCodec,\n      requireMarker: true,\n      hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10",\n      optionalHdrStatic: hdrClass === "hdr10",\n      hlg: hdrClass === "hlg",\n      untagged: hdrClass === "untagged",\n      sourceClass: hdrClass,\n      sourceHdr: hdrSource,\n      sdrSource,\n      sourceFrameScan: frameScan,\n      outputMarker: isBloat ? \"ArcAV1_SeekHeal_V15\" : \"ArcAV1_QSV_V15\",\n')
+one('cmdArgs.push("-metadata:g", "encoded_by=ArcAV1_QSV_V15");', 'cmdArgs.push("-metadata:g", forceStreamCopy ? "encoded_by=ArcAV1_SeekHeal_V15" : useSoftwareFallback ? "encoded_by=ArcAV1_SVTAV1_HDRFallback_V15" : "encoded_by=ArcAV1_QSV_V15");')
+one('      codec: expectedVideoCodec,\n', '      codec: expectedVideoCodec,\n      requireMarker: true,\n      hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10",\n      optionalHdrStatic: hdrClass === "hdr10",\n      hlg: hdrClass === "hlg",\n      untagged: hdrClass === "untagged",\n      sourceClass: hdrClass,\n      sourceHdr: hdrSource,\n      sdrSource,\n      sourceFrameScan: frameScan,\n      outputMarker: isBloat ? \"ArcAV1_SeekHeal_V15\" : softwareHdrFallback ? \"ArcAV1_SVTAV1_HDRFallback_V15\" : \"ArcAV1_QSV_V15\",\n')
 one('      sourceFrameScan: frameScan,\n', '      sourceFrameScan: frameScan,\n      updateWorker: args.updateWorker,\n      assertOriginalUnchanged: assertOriginalUnchanged,\n      audioTimestampRepairIndices: Array.from(audioTimestampRepairs.keys()),\n')
 one('    const valResult = await validateOutput(ffprobeBin, inputPath, outputPath, {', '    reportWorkerProgress(args.updateWorker,{percentage:80,fps:0,status:"Validation: output streams and metadata"});\n    const valResult = await validateOutput(ffprobeBin, inputPath, outputPath, {')
 a=e.index('  log(`[Arc AV1 Single-Pass] Processing:')
 b=e.index('\n  // Cleanup temporary clamped chapters file',a)
-e=e[:a]+'''  log(`[Arc AV1] Processing ${inputPath} using global ICQ ${quality}; ${pipelineMode}`);
+e=e[:a]+'''  log(`[Arc AV1] Processing ${inputPath} using ${qualityLabel} ${quality}; ${pipelineMode}`);
   const sourceBytes = Number(originalSnapshot.size);
   if (!Number.isSafeInteger(sourceBytes) || sourceBytes < 1) throw new Error("Original size is invalid");
   args.variables.user.original_size_mb = sourceBytes / (1024 * 1024);
   let isBloat = false;
   const attempt = await runSingleQuality(quality, sourceBytes, async (q) => {
     if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-    let result = await runFfmpeg(needsProactiveHybrid, false);
+    let result = await runFfmpeg(needsProactiveHybrid, false, softwareHdrFallback);
     if (result.error) return {ok:false, ffmpeg:result};
     const reachedLimit = r => fs.existsSync(outputPath) && fs.statSync(outputPath).size >= sourceBytes && (r.signal === 'SIGXFSZ' || /file too large/i.test(String(r.stderr || '')));
-    if (reachedLimit(result)) { log(`[Size guard] ICQ ${q} encode hit the source-size cap.`); return {ok:true,size:sourceBytes,ffmpeg:result}; }
+    if (reachedLimit(result)) { log(`[Size guard] ${qualityLabel} ${q} encode hit the source-size cap.`); return {ok:true,size:sourceBytes,ffmpeg:result}; }
     const decodeFailure = /error while decoding|failed to decode|decoder[^\\n]*(?:error|failed)|error submitting packet to decoder|failed to get (?:a )?frame/i.test(String(result.stderr || ""));
-    if (result.status !== 0 && !needsProactiveHybrid && decodeFailure) {
+    if (result.status !== 0 && !needsProactiveHybrid && !softwareHdrFallback && decodeFailure) {
       log(`[Arc AV1] Full GPU decode failed at ICQ ${q}: ${extractFfmpegError(result.stderr)}. Trying CPU decode with Arc encode.`);
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
       result = await runFfmpeg(true, false);
       pipelineMode = `Hybrid (CPU Decode + Arc QSV AV1 Encode)`;
-      if (reachedLimit(result)) { log(`[Size guard] ICQ ${q} encode hit the source-size cap.`); return {ok:true,size:sourceBytes,ffmpeg:result}; }
+      if (reachedLimit(result)) { log(`[Size guard] ${qualityLabel} ${q} encode hit the source-size cap.`); return {ok:true,size:sourceBytes,ffmpeg:result}; }
     }
     if (result.status !== 0 || !fs.existsSync(outputPath)) return {ok:false, ffmpeg:result};
     const size = fs.statSync(outputPath).size;
-    log(`[Arc AV1] ICQ ${q} produced ${size} bytes; source ${sourceBytes} bytes.`);
+    log(`[Arc AV1] ${qualityLabel} ${q} produced ${size} bytes; source ${sourceBytes} bytes.`);
     return {ok:true, size, ffmpeg:result};
   });
-  let res = attempt.result?.ffmpeg || {status: 1, stderr: `No smaller output at ICQ ${attempt.quality}`};
+  let res = attempt.result?.ffmpeg || {status: 1, stderr: `No smaller output at ${qualityLabel} ${attempt.quality}`};
   if (!attempt.ok && attempt.reason !== "encoder") {
-    if (attempt.reason !== "quality_floor") log(`[Arc AV1] Could not verify a valid output size at ICQ ${attempt.quality}.`);
+    if (attempt.reason !== "quality_floor") log(`[Arc AV1] Could not verify a valid output size at ${qualityLabel} ${attempt.quality}.`);
     if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-    res = {status:1, qualityFloor:attempt.reason === "quality_floor", stderr:`No smaller output at ICQ ${attempt.quality}: ${attempt.reason}`};
+    res = {status:1, qualityFloor:attempt.reason === "quality_floor", stderr:`No smaller output at ${qualityLabel} ${attempt.quality}: ${attempt.reason}`};
   }
 '''+e[b:]
 a=e.index('  // Bloat Protection (> maxRatioPct for tier)')
@@ -682,12 +721,12 @@ one('    return spawnSync(ffmpegBin, cmdArgs, { encoding: "utf8", maxBuffer: 50 
     const processSizeLimit=forceStreamCopy?reservedOutputBytes:sourceBytes;
     const processReason=forceStreamCopy
       ? "Size guard fallback: stream-copy the source video with seek-healing mux flags; preserve audio/subtitle processing."
-      : `Arc QSV AV1 encode at ICQ ${quality}; validate the resulting video, color metadata, audio, and subtitles.`;
+      : `${softwareHdrFallback ? "SVT-AV1 encode at CRF 28" : `Arc QSV AV1 encode at ICQ ${quality}`}; validate the resulting video, color metadata, audio, and subtitles.`;
     const workerDetails={
       CLIType:ffmpegBin,
       preset:cmdArgs.join(" "),
       workerLog:processReason,
-      status:forceStreamCopy?"Fallback: seek-healing remux":`Encoding: Arc QSV AV1 at ICQ ${quality}`,
+      status:forceStreamCopy?"Fallback: seek-healing remux":softwareHdrFallback?"Encoding: SVT-AV1 at CRF 28":`Encoding: Arc QSV AV1 at ICQ ${quality}`,
       sourceFileSizeInBytes:sourceBytes,
       outputPath,
       lastPluginDetails:{
@@ -711,7 +750,7 @@ one('    return spawnSync(ffmpegBin, cmdArgs, { encoding: "utf8", maxBuffer: 50 
 one('    const cmdArgs = ["-y", "-xerror", "-fflags", "+genpts+igndts"];', '    const cmdArgs = ["-y", "-xerror", "-progress", "pipe:1", "-nostats", "-fflags", "+genpts+igndts"];')
 one('    const errReason = errTail\n      ? `FFmpeg exit ${res.status}: ${errTail}`', '    const errReason = res.error\n      ? `Unable to start the size-limited encoder: ${res.error.message || res.error}`\n      : errTail\n      ? `FFmpeg exit ${res.status}: ${errTail}`')
 one('  if (res.status !== 0 || !fs.existsSync(outputPath)) {', '''  if (res.qualityFloor) {
-    log(`[Size guard] No smaller output at ICQ ${attempt.quality}; trying a source-video stream-copy remux with seek healing.`);
+    log(`[Size guard] No smaller output at ${qualityLabel} ${attempt.quality}; trying a source-video stream-copy remux with seek healing.`);
     try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
     const remuxRes = await runFfmpeg(false, true);
     cleanupChapters();
