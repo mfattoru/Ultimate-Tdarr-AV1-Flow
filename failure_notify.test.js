@@ -143,6 +143,26 @@ test('oversized ASS/SSA conversion failures point to styled subtitle preservatio
  assert.match(embed.description,/original file/i);
 });
 
+test('inconclusive verification explains that the check could not finish without claiming corruption',async()=>{
+ const h=harness();
+ h.args.variables.user.failure_reason='[Validation inconclusive] Cannot allocate memory. Original retained.';
+ h.args.variables.user.validation_report={outcome:'inconclusive',failure:{stage:'video_decode',code:'decode_unverified'}};
+ await h.run(h.args);const embed=h.requests[0].body.embeds[0];
+ assert.match(embed.description,/could not complete/i);
+ assert.match(embed.description,/does not establish.*damag/i);
+ assert.match(embed.footer.text,/validation inconclusive/i);
+ assert.match(embed.description,/original.*kept/i);
+});
+
+test('a rejected metadata contract is explained without calling the source corrupt',async()=>{
+ const h=harness();h.args.variables.user.failure_reason='[Validation rejected] HDR mastering metadata conflicts with decoded frames. Original retained.';
+ h.args.variables.user.validation_report={outcome:'rejected',failure:{stage:'hdr_color',code:'validation_mismatch',sourceCorruption:false}};
+ await h.run(h.args);const embed=h.requests[0].body.embeds[0];
+ assert.match(embed.description,/did not preserve/i);
+ assert.match(embed.footer.text,/candidate rejected/i);
+ assert.doesNotMatch(embed.description,/targeted.*search/i);
+});
+
 test('ambiguous HDR signaling is described without recommending an automatic replacement',async()=>{
  const h=harness();h.args.variables.user.failure_reason='[HDR guard] HDR color signaling is unsupported or ambiguous; original retained.';
  await h.run(h.args);const embed=h.requests[0].body.embeds[0];

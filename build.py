@@ -11,7 +11,7 @@ def one(old,new):
  e=e.replace(old,new,1)
 source_identity=(root/'source_identity.js').read_text().rstrip()
 audio_timing=(root/'audio_timing.js').read_text().rstrip()
-e=(root/'policy.js').read_text()+'\n'+audio_timing+'\n'+source_identity+'\n'+e
+e=(root/'validation.js').read_text()+'\n'+(root/'policy.js').read_text()+'\n'+audio_timing+'\n'+source_identity+'\n'+e
 one('''module.exports = async (args) => {
   if (!args.variables) args.variables = {};''', '''module.exports = async (args) => {
   let originalGuardFd=null;
@@ -66,6 +66,7 @@ one('''function runTimelineProcess(bin, argv, onLine) {
     catch (e) { reject(e); return; }
     if (typeof trackReservationChild==='function') trackReservationChild(proc);
     let stderr = '';
+    let pendingDiagnostic='',completeDiagnostics='',firstInfrastructureDiagnostic='';
     let timeoutReason = '';
     let lineError=null;
     const terminate=()=>{ if (typeof terminateReservationChild==='function') terminateReservationChild(proc,'SIGKILL'); else proc.kill('SIGKILL'); };
@@ -82,10 +83,20 @@ one('''function runTimelineProcess(bin, argv, onLine) {
     proc.stdout.on('data',refreshIdleTimer);
     proc.stderr.on('data', chunk => {
       stderr = (stderr + chunk.toString()).slice(-8192);
+      if(!firstInfrastructureDiagnostic){
+        const match=stderr.match(VERIFICATION_INFRASTRUCTURE_RE);
+        if(match)firstInfrastructureDiagnostic=stderr.slice(Math.max(0,match.index-60),match.index+300);
+      }
       refreshIdleTimer();
       if(typeof onDiagnostic==='function'&&!lineError){
-        try { onDiagnostic(stderr,true); }
-        catch(err) { lineError=err; terminate(); }
+        pendingDiagnostic=(pendingDiagnostic+chunk.toString()).slice(-8192);
+        const newline=pendingDiagnostic.lastIndexOf('\\n');
+        if(newline>=0){
+          completeDiagnostics=(completeDiagnostics+pendingDiagnostic.slice(0,newline+1)).slice(-8192);
+          pendingDiagnostic=pendingDiagnostic.slice(newline+1);
+          try { onDiagnostic(completeDiagnostics,true); }
+          catch(err) { lineError=err; terminate(); }
+        }
       }
     });
     const lines = timelineReadline.createInterface({input:proc.stdout, crlfDelay:Infinity});
@@ -106,7 +117,7 @@ one('''function runTimelineProcess(bin, argv, onLine) {
         progressRecord={};
       }
     });
-    proc.on('error', err => { clearTimeout(timer); if(idleTimer)clearTimeout(idleTimer); if (typeof untrackReservationChild==='function') untrackReservationChild(proc); reject(err); });
+    proc.on('error', err => { clearTimeout(timer); if(idleTimer)clearTimeout(idleTimer); if (typeof untrackReservationChild==='function') untrackReservationChild(proc); err.processFailure={bin,status:null,signal:null,timedOut:false,diagnostic:stderr}; reject(err); });
     proc.on('close', (status, signal) => {
       clearTimeout(timer);
       if(idleTimer)clearTimeout(idleTimer);
@@ -114,12 +125,17 @@ one('''function runTimelineProcess(bin, argv, onLine) {
       const processReason = timeoutReason ? `timed out: ${timeoutReason}` : `failed (${status ?? signal})`;
       if (typeof onDiagnostic==='function') { try { onDiagnostic(stderr); } catch (_) {} }
       if(lineError) { reject(lineError); return; }
-      if (status !== 0) reject(new Error(`${bin} ${processReason}: ${stderr.trim().slice(-800)}`));
+      if (status !== 0 || firstInfrastructureDiagnostic) {
+        const diagnostic=stderr.trim().slice(-800)+(firstInfrastructureDiagnostic?`; tool/resource cause: ${firstInfrastructureDiagnostic}`:'');
+        const error=new Error(`${bin} ${processReason}: ${diagnostic}`);
+        error.processFailure={bin,status,signal,timedOut:!!timeoutReason,infrastructure:!!firstInfrastructureDiagnostic,diagnostic:stderr};
+        reject(error);
+      }
       else resolve(stderr);
     });
   });
 }''')
-one('async function verifyVideoTimeline(ffprobe, ffmpeg, source, output, sourceIndex, outputIndex, tracks) {', 'async function verifyVideoTimeline(ffprobe, ffmpeg, source, output, sourceIndex, outputIndex, tracks, updateWorker, durationHints, assertSourceStable, audioTimestampRepairIndices=[]) {')
+one('async function verifyVideoTimeline(ffprobe, ffmpeg, source, output, sourceIndex, outputIndex, tracks) {', 'async function verifyVideoTimeline(ffprobe, ffmpeg, source, output, sourceIndex, outputIndex, tracks, updateWorker, durationHints, assertSourceStable, audioTimestampRepairIndices=[], validationReport=newValidationReport(), canUseQsv=true) {')
 one("  const a=await measureStreamTimeline(ffprobe,source,sourceIndex,'video');\n  const b=await measureStreamTimeline(ffprobe,output,outputIndex,'video');", '''  const timelinePairCount=1+tracks.audio.length+tracks.subtitle.length;
   let completedTimelinePairs=0,lastTimelinePercent=90;
   const scanTimelinePair=async operation=>{
@@ -216,58 +232,51 @@ one('''async function measureStreamTimeline(ffprobe, file, streamIndex, type) {
   if (invalid && type!=='audio') {
     const firstMissing=(missingTimestampPackets[0] ?? missingPtsPackets[0]);
     const packetText=firstMissing===undefined?'':' (first at packet '+(firstMissing+1)+')';
-    throw new Error(`${type} ${role} stream ${streamIndex} has ${invalid} packets without a usable ${type==='audio'?'PTS or DTS':'PTS'}${packetText}`);
+    throw validationUnavailable(`${type} ${role} stream ${streamIndex} has ${invalid} packets without a usable ${type==='audio'?'PTS or DTS':'PTS'}${packetText}`);
   }
   if (count===0 && type==='subtitle') return {empty:true};
-  if (count===0 && type==='audio' && packetCount>0) throw new Error(`audio ${role} stream ${streamIndex} has no packets with usable PTS or DTS`);
-  if (count===0 || !Number.isFinite(first) || !Number.isFinite(last) || (type==='video' && (count<2 || !(last>first)))) throw new Error(`${type} ${role} stream ${streamIndex} timeline is unavailable or too short to verify`);
+  if (count===0 && type==='audio' && packetCount>0) throw validationUnavailable(`audio ${role} stream ${streamIndex} has no packets with usable PTS or DTS`);
+  if (count===0 || !Number.isFinite(first) || !Number.isFinite(last) || (type==='video' && (count<2 || !(last>first)))) throw validationUnavailable(`${type} ${role} stream ${streamIndex} timeline is unavailable or too short to verify`);
   const bitmapBytes=Math.ceil(packetCount/8);
   return {first,last,duration:last-first,packets:count,totalPackets:packetCount,outputDtsNonIncreasingCount,missingPtsCount,missingPtsPackets,missingPtsTruncated:missingPtsCount>missingPtsPackets.length,missingPtsBitmap:missingPtsBitmap.subarray(0,bitmapBytes),missingTimestampCount,missingTimestampPackets,missingTimestampsTruncated:missingTimestampCount>missingTimestampPackets.length,missingTimestampBitmap:missingTimestampBitmap.subarray(0,bitmapBytes),empty:false};
 }''')
 one("  const decode=['-v','error','-xerror','-i',output,'-map',`0:${outputIndex}`];", "  const arcDevice=process.env.TDARR_ARC_DEVICE || '/dev/dri/renderD129';\n  const decode=['-v','error','-xerror','-progress','pipe:1','-nostats','-init_hw_device',`vaapi=va:${arcDevice}`,'-init_hw_device','qsv=hw@va','-hwaccel','qsv','-hwaccel_device','hw','-hwaccel_output_format','qsv','-i',output,'-map',`0:${outputIndex}`];")
 one("  for (const [,dstIndex] of tracks.audio) decode.push('-map',`0:${dstIndex}`);", '')
 one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(updateWorker,{percentage:96,fps:0,status:"Validation: strict output video decode"});
-  try {
-    await runTimelineProcess(ffmpeg,decode,null,(timeUs,fps)=>{
-      const ratio=a.duration>0?Math.min(1,Math.max(0,timeUs/1000000/a.duration)):0;
-      const data={percentage:96+3*ratio,status:"Validation: strict output video decode"};
-      if(Number.isFinite(fps)&&fps>0)data.fps=fps;
-      reportWorkerProgress(updateWorker,data);
-    });
-    if (tracks.audio.length) {
+  await verifyCandidateDecodes({
+    report:validationReport,canUseQsv,audioTracks:tracks.audio,sourceVideoIndex:sourceIndex,
+    isCorruption:type=>type==='video'?isKnownVideoCorruptionDiagnostic:isKnownAudioCorruptionDiagnostic,
+    runVideo:async mode=>{
+      const argv=mode==='qsv'?decode:withDecoderThreads(['-v','error','-xerror','-progress','pipe:1','-nostats','-i',output,'-map',`0:${outputIndex}`,'-f','null','-'],getDecodeThreadCount());
+      const status=mode==='qsv'?"Validation: strict output video decode":"Validation: strict software video decode";
+      reportWorkerProgress(updateWorker,{percentage:96,fps:0,status});
+      return await runTimelineProcess(ffmpeg,argv,null,(timeUs,fps)=>{
+        const ratio=a.duration>0?Math.min(1,Math.max(0,timeUs/1000000/a.duration)):0;
+        const data={percentage:96+3*ratio,status};
+        if(Number.isFinite(fps)&&fps>0)data.fps=fps;
+        reportWorkerProgress(updateWorker,data);
+      });
+    },
+    runAudio:async indices=>{
       const audioDecode=withDecoderThreads(['-v','error','-xerror','-progress','pipe:1','-nostats','-i',output],getDecodeThreadCount());
-      for (const [,dstIndex] of tracks.audio) audioDecode.push('-map',`0:${dstIndex}`);
+      for (const dstIndex of indices) audioDecode.push('-map',`0:${dstIndex}`);
       audioDecode.push('-f','null','-');
-      await runTimelineProcess(ffmpeg,audioDecode,null,(timeUs,fps)=>{
+      return await runTimelineProcess(ffmpeg,audioDecode,null,(timeUs,fps)=>{
         const duration=Number(durationHints?.output)||a.duration;
         const ratio=duration>0?Math.min(1,Math.max(0,timeUs/1000000/duration)):0;
         const data={percentage:99+0.9*ratio,status:"Validation: retained audio decode"};
         if(Number.isFinite(fps)&&fps>0)data.fps=fps;
         reportWorkerProgress(updateWorker,data);
       });
-    }
-  } catch (outputError) {
-    const sourceCorruption=[],sourceDiagnostics=[];
-    const decodeSource=async (index,type) => {
+    },
+    checkSource:async(type,index)=>{
       const args=withDecoderThreads(['-v','error','-xerror','-i',source,'-map',`0:${index}`,'-f','null','-'],getDecodeThreadCount());
-      try {
-        await runTimelineProcess(ffmpeg,args);
-        sourceDiagnostics.push(`${type} source stream ${index}: decoded cleanly`);
-      } catch (sourceError) {
-        const detail=String(sourceError?.message || sourceError);
-        const recognized=type==='video'?isKnownVideoCorruptionDiagnostic(detail):isKnownAudioCorruptionDiagnostic(detail);
-        sourceDiagnostics.push(`${type} source stream ${index}: ${recognized?'recognized corruption':'decode diagnostic'}: ${detail.slice(-300)}`);
-        if(recognized)sourceCorruption.push(`${type} source stream ${index}: ${detail.slice(-500)}`);
-      }
-    };
-    await decodeSource(sourceIndex,'video');
-    for (const [srcIndex] of tracks.audio) await decodeSource(srcIndex,'audio');
-    const candidateDetail=String(outputError?.message || outputError).slice(-500);
-    const sourceDetail=sourceDiagnostics.join(' | ').slice(-700) || 'source decode details unavailable';
-    if(sourceCorruption.length)throw new Error(`[Source media corruption] ${sourceCorruption.join(' | ')}; candidate decode failed: ${candidateDetail}; source decode details: ${sourceDetail}`);
-    throw new Error(`Candidate video/audio decode failed; strict source decodes did not confirm known source corruption. Source decode details: ${sourceDetail}; candidate decode: ${candidateDetail}`);
-  }''')
-one('  return await verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks);', '  return await verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks, expected.updateWorker, {source:resolveProbeDuration(src),output:resolveProbeDuration(dst)}, expected.assertOriginalUnchanged, expected.audioTimestampRepairIndices || []);')
+      if(typeof assertSourceStable==='function')assertSourceStable();
+      try {return await runTimelineProcess(ffmpeg,args);}
+      finally {if(typeof assertSourceStable==='function')assertSourceStable();}
+    }
+  });''')
+one('  return await verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks);', '  return await validationStage(validationReport,"timelines",()=>verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks, expected.updateWorker, {source:resolveProbeDuration(src),output:resolveProbeDuration(dst)}, expected.assertOriginalUnchanged, expected.audioTimestampRepairIndices || [],validationReport,useQsvDecode(video[0])),"rejected");')
 one('    const specific = lines.filter(l => /error|failed|unsupported|invalid|cannot|only one of them|ratecontrol|qsv|vaapi/i.test(l));\n    const chosen = specific.length > 0 ? specific.slice(-3) : lines.slice(-3);\n    return chosen.join(" | ").substring(0, 240);',
 r'''    const specific = lines.filter(l => /\b(?:error|failed|unsupported|invalid|cannot|could not|only one of them|ratecontrol)\b/i.test(l)
       && !/discarding stream metadata .* because the stream is being re-encoded/i.test(l));
@@ -716,6 +725,7 @@ b=e.index('\n  // 10. Persist Pipeline Metadata',a)
 e=e[:a]+'  cleanupChapters();\n'+e[b:]
 one('  const isBloat = !isAlreadyAV1 && (ratioPct > maxRatioPct);','  // isBloat is set only by the strictly smaller, validated seek-heal fallback.')
 exec((root/'build_additions.py').read_text())
+exec((root/'build_validation.py').read_text())
 one('    return spawnSync(ffmpegBin, cmdArgs, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });', '''    const progressStart=forceStreamCopy?80:10,progressEnd=forceStreamCopy?82:80;
     // Encodes stop at source size. Remux file-size limits grow only after the shared cache ledger grants capacity.
     const processSizeLimit=forceStreamCopy?reservedOutputBytes:sourceBytes;

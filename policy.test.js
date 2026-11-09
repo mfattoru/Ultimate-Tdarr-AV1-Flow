@@ -10,6 +10,12 @@ const p=mod.exports;
 const knownQsvHdrClamp = new Function('require','module','exports',engine+'\nreturn typeof isKnownQsvHdrMasteringClamp === "function" ? isKnownQsvHdrMasteringClamp : null;')(require,{exports:{}},{});
 const knownQsvHdrClampRisk = new Function('require','module','exports',engine+'\nreturn typeof isQsvHdrMasteringClampRisk === "function" ? isQsvHdrMasteringClampRisk : null;')(require,{exports:{}},{});
 
+test('missing candidate video timestamps reject a proven timing regression while missing source timing is inconclusive',()=>{
+  const clean={frames:3,timestamps:[0,0.04,0.08]},missing={frames:3,timestamps:[0,NaN,0.08]};
+  assert.throws(()=>p.testCompareTimes(clean,missing),e=>e.validation?.outcome==='rejected');
+  assert.throws(()=>p.testCompareTimes(missing,clean),e=>e.validation?.outcome==='inconclusive');
+});
+
 test('decoder thread setting defaults to four, prefers the shared setting, and accepts the legacy alias',()=>{
   assert.equal(typeof p.testDecodeThreads,'function','decoder thread policy is missing');
   const previousDecode=process.env.TDARR_DECODE_THREADS,previousPrecheck=process.env.TDARR_PRECHECK_THREADS;

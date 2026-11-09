@@ -1,3 +1,6 @@
+function subtitleMeasurementUnavailable(message) {
+  return Object.assign(new Error(message),{validation:{outcome:'inconclusive',stage:'timelines',code:'subtitle_measurement_unavailable',message}});
+}
 function parseSubtitlePacketLine(line) {
   const fields = {};
   for (const entry of String(line || '').split('|')) {
@@ -48,9 +51,9 @@ async function readSubtitlePackets(ffprobe, file, streamIndex, onProgress, durat
 }
 
 function validateCopiedSubtitlePackets(sourcePackets, outputPackets, globalShiftSeconds, maxRepairSeconds = 0.5) {
-  if (!Array.isArray(sourcePackets) || !Array.isArray(outputPackets)) throw new Error('ASS/SSA subtitle packet scan is unavailable');
+  if (!Array.isArray(sourcePackets) || !Array.isArray(outputPackets)) throw subtitleMeasurementUnavailable('ASS/SSA subtitle packet scan is unavailable');
   if (sourcePackets.length !== outputPackets.length) throw new Error(`ASS/SSA subtitle packet count changed (${sourcePackets.length} source, ${outputPackets.length} output)`);
-  if (!Number.isFinite(globalShiftSeconds) || !Number.isFinite(maxRepairSeconds) || maxRepairSeconds < 0) throw new Error('Invalid ASS/SSA subtitle timestamp comparison');
+  if (!Number.isFinite(globalShiftSeconds) || !Number.isFinite(maxRepairSeconds) || maxRepairSeconds < 0) throw subtitleMeasurementUnavailable('Invalid ASS/SSA subtitle timestamp comparison');
   if (sourcePackets.length === 0) return {packetCount:0,adjustedPackets:0,maxAdjustmentSeconds:0};
 
   let previousOutputPts = -Infinity;
@@ -61,8 +64,9 @@ function validateCopiedSubtitlePackets(sourcePackets, outputPackets, globalShift
 
   for (let index = 0; index < sourcePackets.length; index++) {
     const source = sourcePackets[index], output = outputPackets[index];
-    if (!Number.isFinite(source.pts) || !Number.isFinite(output.pts)) throw new Error(`ASS/SSA subtitle packet ${index} has missing or invalid PTS`);
-    if (!source.payloadHash || !output.payloadHash) throw new Error(`ASS/SSA subtitle packet ${index} is missing its payload hash`);
+    if (!Number.isFinite(source.pts)) throw subtitleMeasurementUnavailable(`ASS/SSA source subtitle packet ${index} has missing or invalid PTS`);
+    if (!Number.isFinite(output.pts)) throw new Error(`ASS/SSA subtitle packet ${index} has missing or invalid PTS newly in candidate`);
+    if (!source.payloadHash || !output.payloadHash) throw subtitleMeasurementUnavailable(`ASS/SSA subtitle packet ${index} is missing its payload hash`);
     if (source.payloadHash !== output.payloadHash) throw new Error(`ASS/SSA subtitle packet ${index} payload changed`);
     if (output.pts < previousOutputPts) throw new Error(`ASS/SSA subtitle output PTS is not monotonic at packet ${index}`);
     previousOutputPts = output.pts;
@@ -76,7 +80,8 @@ function validateCopiedSubtitlePackets(sourcePackets, outputPackets, globalShift
 
     let packetAdjustment = Math.abs(output.pts - (source.pts + globalShiftSeconds));
     if (source.dts !== null) {
-      if (!Number.isFinite(source.dts) || !Number.isFinite(output.dts)) throw new Error(`ASS/SSA subtitle packet ${index} has missing or invalid DTS`);
+      if (!Number.isFinite(source.dts)) throw subtitleMeasurementUnavailable(`ASS/SSA source subtitle packet ${index} has missing or invalid DTS`);
+      if (!Number.isFinite(output.dts)) throw new Error(`ASS/SSA subtitle packet ${index} has missing or invalid DTS newly in candidate`);
       if (output.dts < previousOutputDts) throw new Error(`ASS/SSA subtitle output DTS is not monotonic at packet ${index}`);
       previousOutputDts = output.dts;
       packetAdjustment = Math.max(packetAdjustment, Math.abs(output.dts - (source.dts + globalShiftSeconds)));

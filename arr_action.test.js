@@ -78,7 +78,7 @@ function testTransport(mocks) {
   };
 }
 
-async function invoke(filePath, reason, env, mocks) {
+async function invoke(filePath, reason, env, mocks, validationReport) {
   const module = { exports: {} };
   const fakeHttp = testTransport(mocks);
   const mockRequire = name => name === 'http' || name === 'https' ? fakeHttp : require(name);
@@ -95,12 +95,24 @@ async function invoke(filePath, reason, env, mocks) {
   const args = {
     inputFileObj: { _id: filePath },
     originalLibraryFile: { _id: filePath },
-    variables: { user: { failure_reason: reason } },
+    variables: { user: { failure_reason: reason, ...(validationReport?{validation_report:validationReport}:{}) } },
     jobLog() {}
   };
   await module.exports(args);
   return args.variables.user;
 }
+
+test('inconclusive and candidate-only validation failures cannot request Arr searches from diagnostic text',async()=>{
+ for(const outcome of ['inconclusive','rejected']){
+  const user=await invoke('/media/movies/Test Movie/Test.mkv','[Source media corruption] Invalid data found',{}, {},{outcome,failure:{sourceCorruption:false}});
+  assert.equal(user.arr_corruption_search_status,'not_applicable');
+ }
+});
+
+test('legacy source diagnostic matching cannot mistake decoder memory failures for corruption',async()=>{
+ const user=await invoke('/media/movies/Test Movie/Test.mkv','[Video guard] ffprobe failed (1): Error while decoding stream #0:0: Cannot allocate memory; original retained.',{},{});
+ assert.equal(user.arr_corruption_search_status,'not_applicable');
+});
 
 test('ISO rescan uses the matching anime, TV, or movie Arr target and payload', { skip: !envConfigReady }, async () => {
   const mocks = {

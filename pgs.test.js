@@ -2,6 +2,7 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const {Readable}=require('node:stream');
 const pgs=require('./pgs');
+const {newValidationReport,validationStage}=require('./validation');
 function segment(pts,type,payload) {
  const content=Buffer.from(payload),header=Buffer.alloc(13);header.write('PG',0,'ascii');header.writeUInt32BE(pts>>>0,2);header.writeUInt32BE(pts>>>0,6);header[10]=type;header.writeUInt16BE(content.length,11);return Buffer.concat([header,content]);
 }
@@ -45,4 +46,23 @@ test('PGS extraction accepts benign stderr when the process exits zero',async()=
   assert.equal(found.length,1);
   assert.equal(found[0].type,0x80);
  } finally {fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('missing PGS extraction executable remains an inconclusive process failure',async()=>{
+ for(const extract of [()=>pgs.extractPgsSegments('/nonexistent/tdarr-ffmpeg','unused.mkv',0),()=>pgs.extractPgsSegmentsBatch('/nonexistent/tdarr-ffmpeg','unused.mkv',[0])]){
+  const report=newValidationReport();
+  await assert.rejects(validationStage(report,'timelines',extract,'rejected'),e=>e.validation?.outcome==='inconclusive');
+ }
+});
+
+test('nonzero PGS extraction exit remains inconclusive after empty output parsing',async()=>{
+ const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'v15-pgs-error-')),tool=path.join(dir,'ffmpeg-stub');
+ try{
+  fs.writeFileSync(tool,"#!/usr/bin/env node\nprocess.stderr.write('Cannot allocate memory\\n');process.exitCode=1;\n");fs.chmodSync(tool,0o755);
+  for(const extract of [()=>pgs.extractPgsSegments(tool,'unused.mkv',0),()=>pgs.extractPgsSegmentsBatch(tool,'unused.mkv',[0])]){
+   const report=newValidationReport();
+   await assert.rejects(validationStage(report,'timelines',extract,'rejected'),e=>e.validation?.outcome==='inconclusive');
+  }
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });

@@ -1,9 +1,21 @@
-const humanizeFailure = reason => {
+const humanizeFailure = (reason,validationReport) => {
   const text = String(reason || '').trim().replace(/^(?:\[Safety check failed\]\s*){2,}/i, '[Safety check failed] ');
   const details = text.replace(/```/g, "'").replace(/\s+/g, ' ').trim().slice(0, 1100);
   const retained = /original (?:will not be replaced|retained)|original retained/i.test(text);
+  if(validationReport?.outcome==='inconclusive')return {
+    category:'validation_inconclusive',severity:'warning',
+    summary:'The output verification could not complete. This result does not establish that the source or candidate is damaged.',
+    fileState:'The original was kept; the unapproved candidate was discarded.',
+    action:`Review the ${String(validationReport.failure?.stage || 'unknown').replace(/_/g,' ')} check and diagnostic detail. Resolve the tool or measurement problem before retrying. This result does not request an Arr replacement.`,details
+  };
+  if(validationReport?.outcome==='rejected'&&!validationReport.failure?.sourceCorruption)return {
+    category:'candidate_rejected',severity:'warning',
+    summary:'The candidate did not preserve the required stream, timing, color, or decode properties.',
+    fileState:'The candidate was discarded and the original was kept.',
+    action:`Review the ${String(validationReport.failure?.stage || 'unknown').replace(/_/g,' ')} mismatch. This output rejection alone does not establish source corruption.`,details
+  };
   const knownVideoDamage = /\[video guard\].*ffprobe (?:exited 0 but emitted stderr|failed \([^)]*\))/i.test(text)
-    && /invalid nal unit(?: size| type)?|error splitting the input into nal units|missing picture in access unit|corrupt decoded frame|error while decoding|invalid data found when processing input|invalid bitstream|corrupt packet|packet corrupt|invalid obu|error parsing obu|invalid frame marker|invalid sync code|could not find ref with poc|concealing \d+.*(?:dc|ac|mv) errors|premature end of file|truncated (?:packet|frame)|unexpected end of file/i.test(text);
+    && /invalid nal unit(?: size| type)?|error splitting the input into nal units|missing picture in access unit|corrupt decoded frame|invalid data found when processing input|invalid bitstream|corrupt packet|packet corrupt|invalid obu|error parsing obu|invalid frame marker|invalid sync code|could not find ref with poc|concealing \d+.*(?:dc|ac|mv) errors|premature end of file|truncated (?:packet|frame)|unexpected end of file/i.test(text);
   const verifiedSourceDamage = /\[source media corruption\]/i.test(text);
   if (knownVideoDamage || verifiedSourceDamage) {
     const h264Nal = /\[h264(?:\s|@|\])/i.test(text) && /invalid nal unit|error splitting the input into nal units|missing picture in access unit/i.test(text);
@@ -169,7 +181,7 @@ module.exports = async (args) => {
     if (target.protocol !== 'https:') throw new Error('Invalid webhook protocol');
     const file = args.originalLibraryFile?._id || args.inputFileObj?._id;
     const name = typeof file === 'string' ? file.split(/[\\/]/).pop().replace(/\.[^/.]+$/, '').slice(0, 220) : 'Unknown file';
-  const explanation = humanizeFailure(reason);
+  const explanation = humanizeFailure(reason,user.validation_report);
   const qualityFloor = explanation.category === 'quality_floor';
     const arrStatus = String(user.arr_refetch_status || 'unknown');
     const corruptionSearchStatus = String(user.arr_corruption_search_status || 'unknown');

@@ -40,3 +40,14 @@ test('rejects missing PTS and non-monotonic repaired output',()=>{
  assert.throws(()=>validateCopiedSubtitlePackets([packet(null,1,0.2,'a')],[packet(1,1,0.2,'a')],0),/missing or invalid PTS/);
  assert.throws(()=>validateCopiedSubtitlePackets([packet(1,1,0.2,'a'),packet(2,2,0.2,'b')],[packet(1,1,0.2,'a'),packet(0.9,0.9,0.2,'b')],0),/output PTS is not monotonic/);
 });
+test('unavailable source subtitle measurements stay inconclusive while newly lost candidate PTS rejects',async()=>{
+ const {newValidationReport,validationStage}=require('./validation');
+ const {validateCopiedSubtitlePackets}=require('./subtitle_timing');
+ const packet={pts:1,dts:1,duration:1,payloadHash:'same'};
+ for(const source of [{...packet,pts:null},{...packet,payloadHash:''}]){
+  const report=newValidationReport();
+  await assert.rejects(validationStage(report,'timelines',()=>validateCopiedSubtitlePackets([source],[packet],0),'rejected'),e=>e.validation?.outcome==='inconclusive');
+ }
+ const report=newValidationReport();
+ await assert.rejects(validationStage(report,'timelines',()=>validateCopiedSubtitlePackets([packet],[{...packet,pts:null}],0),'rejected'),e=>e.validation?.outcome==='rejected');
+});

@@ -237,7 +237,8 @@ new_desc_block='''  const wasEncoded=Boolean(transcodeStartTs&&transcodeEndTs);
     `💬 **Subtitles:** ${subtitleCount} track${subtitleCount===1?'':'s'} • ${subtitleLanguages}${subtitleStyle}`,
     `✅ **Validation:** Full stream, timing, subtitle, and A/V decode checks passed`,
     `⏱️ **Processing time:** ${totalDurationStr} • ${mediumTag} scratch`
-  ];'''
+  ];
+  if(args.variables?.user?.validation_report?.outcome==='recovered')descLines.push('🛠️ **Verification recovery:** Arc verification failed; full software video verification passed.');'''
 success_code=success_code[:desc_start]+new_desc_block+success_code[desc_end:]
 old_footer='text: isFallback ? "Tdarr AV1 Flow • Size Bloat Fallback Success" : (statusStr.includes("Compliant") ? "Tdarr AV1 Flow • Verified Compliant" : "Tdarr AV1 Flow • Transcode Success")'
 new_footer='text: isFallback ? "Tdarr AV1 Flow • Seek-heal remux validated • Source video preserved" : (statusStr.includes("Compliant") ? "Tdarr AV1 Flow • Validated remux" : "Tdarr AV1 Flow • AV1 encode validated")'
@@ -278,6 +279,7 @@ one('  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.
         const ratio=durationSec>0 && Number.isFinite(decodedSec)?Math.min(1,Math.max(0,decodedSec/durationSec)):0;
         reportWorkerProgress(args.updateWorker,{percentage:startPercent+(endPercent-startPercent)*ratio,fps:0,status:"Precheck: retained audio decode"},initialWorkerProgressDetails);
       });
+      if(isVerificationInfrastructureDiagnostic(stderr))throw Error(String(stderr).trim());
       return String(stderr || "").trim();
     };
     const logTrackPassed=(stream,diagnostic)=>{

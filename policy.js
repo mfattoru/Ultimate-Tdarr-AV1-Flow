@@ -1,9 +1,9 @@
 // QSV ICQ is global across resolution and HDR class; larger values produce lower quality.
 const DEFAULT_ICQ = 22;
-const VIDEO_BITSTREAM_CORRUPTION_RE = /invalid nal unit(?: size| type)|error splitting the input into nal units|missing picture in access unit|corrupt decoded frame|error while decoding|invalid data found when processing input|invalid bitstream|corrupt packet|packet corrupt|invalid obu|error parsing obu|invalid frame marker|invalid sync code|could not find ref with poc|concealing \d+.*(?:dc|ac|mv) errors|premature end of file|truncated (?:packet|frame)|unexpected end of file/i;
-const AUDIO_BITSTREAM_CORRUPTION_RE = /error while decoding|invalid data found when processing input|invalid bitstream|corrupt (?:input )?packet|packet corrupt|crc mismatch|frame crc mismatch|header missing|invalid frame size|invalid packet|input buffer exhausted|premature end of file|truncated (?:packet|frame)|unexpected end of file/i;
-const isKnownVideoCorruptionDiagnostic = text => VIDEO_BITSTREAM_CORRUPTION_RE.test(String(text || ''));
-const isKnownAudioCorruptionDiagnostic = text => AUDIO_BITSTREAM_CORRUPTION_RE.test(String(text || ''));
+const VIDEO_BITSTREAM_CORRUPTION_RE = /invalid nal unit(?: size| type)|error splitting the input into nal units|missing picture in access unit|corrupt decoded frame|invalid data found when processing input|invalid bitstream|corrupt packet|packet corrupt|invalid obu|error parsing obu|invalid frame marker|invalid sync code|could not find ref with poc|concealing \d+.*(?:dc|ac|mv) errors|premature end of file|truncated (?:packet|frame)|unexpected end of file/i;
+const AUDIO_BITSTREAM_CORRUPTION_RE = /invalid data found when processing input|invalid bitstream|corrupt (?:input )?packet|packet corrupt|crc mismatch|frame crc mismatch|header missing|invalid frame size|invalid packet|input buffer exhausted|premature end of file|truncated (?:packet|frame)|unexpected end of file/i;
+const isKnownVideoCorruptionDiagnostic = text => !isVerificationInfrastructureDiagnostic(text) && VIDEO_BITSTREAM_CORRUPTION_RE.test(String(text || ''));
+const isKnownAudioCorruptionDiagnostic = text => !isVerificationInfrastructureDiagnostic(text) && AUDIO_BITSTREAM_CORRUPTION_RE.test(String(text || ''));
 const selectQualityValue = () => {
   const raw = process.env.TDARR_QSV_ICQ;
   const value = raw === undefined || raw === '' ? DEFAULT_ICQ : Number(raw);
@@ -398,16 +398,19 @@ const inspectVideoFrames = async (ffprobe, file, index, options={}) => {
     if (scan.frames===1 || scan.frames%256===0 || now-lastProgressAt>=1000) { update(false); lastProgressAt=now; }
   }, null, (diagnostic,streaming=false)=>{
     scannerDiagnostics=String(diagnostic || '');
+    if(streaming && options.failFast && isVerificationInfrastructureDiagnostic(scannerDiagnostics))
+      throw validationUnavailable(`Frame scanner could not complete: ${scannerDiagnostics.trim().slice(-800)}`);
     if(streaming && options.failFast && isKnownVideoCorruptionDiagnostic(scannerDiagnostics)) {
       const prefix=options.scanRole==='source'?'[Source media corruption]':'[Candidate validation]';
       throw Error(`${prefix} ${scannerDiagnostics.trim().slice(-800)}`);
     }
   });
+  if(isVerificationInfrastructureDiagnostic(scannerDiagnostics))throw validationUnavailable(`Frame scanner could not complete: ${scannerDiagnostics.trim().slice(-800)}`);
   if (isKnownVideoCorruptionDiagnostic(scannerDiagnostics)) {
     const prefix=options.scanRole==='source'?'[Source media corruption]':'[Candidate validation]';
     throw Error(`${prefix} ${scannerDiagnostics.trim().slice(-800)}`);
   }
-  if (!scan.frames) throw Error('Decoded frame metadata unavailable');
+  if (!scan.frames) throw validationUnavailable('Decoded frame metadata unavailable');
   update(true);
   return scan;
 };
@@ -574,14 +577,16 @@ const compareVideoTimestamps = (source, output) => {
   const sourceFrames=frameCount(source,a),outputFrames=frameCount(output,b);
   const timestampCount=timestamps=>Array.isArray(timestamps)?timestamps.length:'unavailable';
   const summary=`source ${sourceFrames} frames/${timestampCount(a)} timestamps; output ${outputFrames} frames/${timestampCount(b)} timestamps`;
-  if (!Array.isArray(a) || !Array.isArray(b) || !a.length || !b.length) throw Error(`Video presentation timestamp scan is unavailable (${summary})`);
-  if (sourceFrames!==a.length || outputFrames!==b.length) throw Error(`Video presentation timestamp scan is incomplete (${summary})`);
+  if (!Array.isArray(a) || !Array.isArray(b) || !a.length || !b.length) throw validationUnavailable(`Video presentation timestamp scan is unavailable (${summary})`);
+  if (sourceFrames!==a.length || outputFrames!==b.length) throw validationUnavailable(`Video presentation timestamp scan is incomplete (${summary})`);
   if (sourceFrames!==outputFrames || a.length!==b.length) throw Error(`Video frame count differs (${summary})`);
   const missing=(timestamps)=>timestamps.flatMap((value,index)=>Number.isFinite(value)?[]:[index]).slice(0,5);
   const missingSource=missing(a),missingOutput=missing(b);
   if (missingSource.length || missingOutput.length) {
     const describe=(indices,total)=>indices.length?`${indices.join(', ')}${total>indices.length?', …':''}`:'none';
-    throw Error(`Video presentation timestamps missing or invalid (${summary}; first source frame indexes: ${describe(missingSource,a.filter(x=>!Number.isFinite(x)).length)}; first output frame indexes: ${describe(missingOutput,b.filter(x=>!Number.isFinite(x)).length)})`);
+    const message=`Video presentation timestamps missing or invalid (${summary}; first source frame indexes: ${describe(missingSource,a.filter(x=>!Number.isFinite(x)).length)}; first output frame indexes: ${describe(missingOutput,b.filter(x=>!Number.isFinite(x)).length)})`;
+    if(!missingSource.length)throw validationFailure('rejected','frames','video_timestamps_lost',message);
+    throw validationUnavailable(message);
   }
   for (let i=0;i<a.length;i++) {
     const delta=Math.abs((a[i]-a[0])-(b[i]-b[0]));

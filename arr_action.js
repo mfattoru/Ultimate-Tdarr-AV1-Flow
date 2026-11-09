@@ -11,10 +11,12 @@ module.exports = async args => {
   if (!args.variables.user) args.variables.user = {};
   const user = args.variables.user;
   const reason = String(user.failure_reason || '');
-  const videoCorruption = /invalid nal unit(?: size| type)?|error splitting the input into nal units|missing picture in access unit|corrupt decoded frame|error while decoding|invalid data found when processing input|invalid bitstream|corrupt packet|packet corrupt|invalid obu|error parsing obu|invalid frame marker|invalid sync code|could not find ref with poc|concealing \d+.*(?:dc|ac|mv) errors|premature end of file|truncated (?:packet|frame)|unexpected end of file/i;
+  const videoCorruption = /invalid nal unit(?: size| type)?|error splitting the input into nal units|missing picture in access unit|corrupt decoded frame|invalid data found when processing input|invalid bitstream|corrupt packet|packet corrupt|invalid obu|error parsing obu|invalid frame marker|invalid sync code|could not find ref with poc|concealing \d+.*(?:dc|ac|mv) errors|premature end of file|truncated (?:packet|frame)|unexpected end of file/i;
   const videoScanCorruption = /\[video guard\].*ffprobe (?:exited 0 but emitted stderr|failed \([^)]*\))/i.test(reason) && videoCorruption.test(reason);
   const verifiedDecodeCorruption = /\[source media corruption\]/i.test(reason);
-  const sourceCorruption = videoScanCorruption || verifiedDecodeCorruption;
+  const validationAllowsSearch=!user.validation_report || (user.validation_report.outcome==='rejected' && user.validation_report.failure?.sourceCorruption===true);
+  const resourceFailure=/cannot allocate memory|out of memory|no space left on device|permission denied|resource temporarily unavailable|too many open files|input\/output error|tool\/resource cause/i.test(reason);
+  const sourceCorruption = validationAllowsSearch && !resourceFailure && (videoScanCorruption || verifiedDecodeCorruption);
   const isoRemoval = /disc image removed/i.test(reason);
   user.arr_refetch_status = 'not_attempted';
   user.arr_corruption_search_status = sourceCorruption ? 'not_attempted' : 'not_applicable';

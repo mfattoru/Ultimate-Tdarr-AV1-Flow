@@ -18,11 +18,18 @@ child.execFileSync('ffmpeg',['-v','error','-i',source,'-map','0:0','-map','0:1',
 child.execFileSync('ffmpeg',['-v','error','-i',multiAudioSource,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',multiAudioCandidate],{stdio:'ignore'});
 assert.ok(fs.statSync(multiAudioCandidate).size < fs.statSync(multiAudioSource).size);
 function argsFor(file,logs=[]) { const f={_id:file,container:'mkv',file_size:fs.statSync(file).size/1024/1024}; return {inputFileObj:{...f},originalLibraryFile:{...f},workDir:dir,variables:{user:{min_cache_free_mb:1}},ffmpegPath:'ffmpeg',librarySettings:{folder:dir},jobLog:m=>logs.push(String(m))}; }
-function load({alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,hdr=false,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,inputPath=source,smallerOutput=candidate}={}) {
+function load({sourceDiagnosticChunks,qsvValidationFailure=false,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,hdr=false,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,inputPath=source,smallerOutput=candidate}={}) {
   const calls=[],commands=[],logs=[],audioDecodeCommands=[]; let initialProbe=true,moverSimulated=false;
   const fakeFs=new Proxy(fs,{get(t,p){if(p==='unlinkSync' && denyIso)return name=>{if(String(name).endsWith('.iso'))throw Error('simulated ISO permission error');return t.unlinkSync(name)};if(p==='accessSync')return (name,...args)=>name==='/dev/dri/renderD129'?undefined:t.accessSync(name,...args);return t[p]}});
   const fakeChild={...child,
     spawn(cmd,args,opts){
+      const candidateVideoDecode=cmd==='ffmpeg'&&args.includes('-f')&&args[args.indexOf('-f')+1]==='null'&&args.includes('-progress')&&args[args.indexOf('-i')+1]!==inputPath&&args[args.indexOf('-map')+1]==='0:0';
+      if(candidateVideoDecode&&((qsvValidationFailure&&args.includes('-hwaccel'))||(cpuValidationFailure&&!args.includes('-hwaccel')))){
+        const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
+        const process=new EventEmitter();process.stdout=new PassThrough();process.stderr=new PassThrough();process.kill=()=>{};
+        queueMicrotask(()=>{process.stdout.end();process.stderr.end(args.includes('-hwaccel')?'Device creation failed: unavailable Arc device':'Cannot allocate memory');process.emit('close',1,null);});
+        return process;
+      }
       if(cmd==='ffmpeg'&&args.includes('-frames:v')&&extraVideo){
         const mapIndex=args.indexOf('-map'),map=mapIndex>=0?args[mapIndex+1]:'';
         if(map==='0:999'){
@@ -59,7 +66,7 @@ function load({alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=f
       if(cmd==='ffprobe'&&sourceCorruption){
         const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
         const process=new EventEmitter();process.stdout=new PassThrough();process.stderr=new PassThrough();process.kill=()=>{};
-        queueMicrotask(()=>{process.stdout.end('frame|best_effort_timestamp_time=0|interlaced_frame=0\n');process.stderr.end(`${sourceCorruptionDiagnostic}\n`);process.emit('close',0,null);});
+        queueMicrotask(()=>{process.stdout.end('frame|best_effort_timestamp_time=0|interlaced_frame=0\n');for(const chunk of sourceDiagnosticChunks || [sourceCorruptionDiagnostic+'\n'])process.stderr.write(chunk);process.stderr.end();process.emit('close',0,null);});
         return process;
       }
       // The local runner has no Arc device. Exercise validation wiring here;
@@ -89,7 +96,8 @@ function load({alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=f
         process.stdout.write('out_time_us=2000000\nfps=24\nprogress=continue\n');
         if(limitOnFirst&&q===22){fs.copyFileSync(source,av[av.length-1]);process.emit('close',null,'SIGXFSZ');return;}
         if(failEncoding){process.stderr.write('simulated failure');process.emit('close',1,null);return;}
-        fs.copyFileSync(alwaysLarge||q===20?inputPath:smallerOutput,av[av.length-1]);process.emit('close',0,null);
+        if(dropCandidateAudio)child.execFileSync('ffmpeg',['-v','error','-i',smallerOutput,'-map','0:0','-c','copy','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',av[av.length-1]],{stdio:'ignore'});
+        else fs.copyFileSync(alwaysLarge||q===20?inputPath:smallerOutput,av[av.length-1]);process.emit('close',0,null);
       });
       return process;
     },
@@ -130,6 +138,32 @@ function load({alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=f
   return {fn:m.exports,calls,commands,logs,audioDecodeCommands,moverSimulated:()=>moverSimulated};
 }
 async function run(x,args) {try{return await x.fn(args);}finally{const h=args.variables?.user?.cache_reservation;if(h){await x.fn.releaseForTest(h);delete args.variables.user.cache_reservation;}}}
+
+test('unavailable QSV verification recovers using real full candidate CPU decode',async()=>{
+ const x=load({qsvValidationFailure:true}),args=argsFor(source,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,1);
+ assert.equal(args.variables.user.validation_report.outcome,'recovered');
+ assert.equal(args.variables.user.validation_report.stage,'complete');
+ assert.ok(x.audioDecodeCommands.some(c=>c.input!==source&&c.maps.length===1&&c.maps[0]==='0:0'),'the complete candidate video must be decoded in software');
+ assert.equal(args.variables.user.arr_corruption_search_status,undefined);
+});
+
+test('verification process failure is inconclusive and retains the original',async()=>{
+ const x=load({qsvValidationFailure:true,cpuValidationFailure:true}),args=argsFor(source,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,2);assert.equal(r.outputFileObj._id,source);
+ assert.equal(args.variables.user.validation_report.outcome,'inconclusive');
+ assert.equal(args.variables.user.validation_report.failure.stage,'video_decode');
+ assert.match(args.variables.user.failure_reason,/\[Validation inconclusive\]/);
+ assert.doesNotMatch(args.variables.user.failure_reason,/Source media corruption/);
+});
+
+test('missing retained audio remains a hard candidate rejection',async()=>{
+ const x=load({dropCandidateAudio:true}),args=argsFor(source,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,2);assert.equal(r.outputFileObj._id,source);
+ assert.equal(args.variables.user.validation_report.outcome,'rejected');
+ assert.equal(args.variables.user.validation_report.failure.stage,'streams');
+ assert.match(args.variables.user.failure_reason,/audio count 0/);
+});
 
 test('source precheck and candidate validation batch retained audio tracks into one pass',async()=>{
  const x=load({inputPath:multiAudioSource,smallerOutput:multiAudioCandidate}),args=argsFor(multiAudioSource,x.logs),r=await run(x,args);
@@ -179,6 +213,20 @@ test('source corruption failure reason has a single category prefix',async()=>{
  assert.match(reason,/^\[Source media corruption\] \[h264\] Invalid NAL unit size/);
  assert.equal((reason.match(/\[Source media corruption\]/g)||[]).length,1);
  assert.deepEqual(x.calls,[],'confirmed source corruption should stop before the AV1 encoder');
+});
+
+test('source scanner memory errors stop before encoding without claiming source corruption',async()=>{
+ const x=load({sourceCorruption:true,sourceCorruptionDiagnostic:'[av1] Error while decoding stream #0:0: Cannot allocate memory'}),args=argsFor(source,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,2);assert.deepEqual(x.calls,[]);
+ assert.match(args.variables.user.failure_reason,/Frame scanner could not complete/);
+ assert.doesNotMatch(args.variables.user.failure_reason,/\[Source media corruption\]/);
+});
+
+test('split diagnostic chunks cannot turn a scanner resource failure into source corruption',async()=>{
+ const x=load({sourceCorruption:true,sourceDiagnosticChunks:['[av1] Error while decoding stream #0:0:',' Cannot allocate memory\n']}),args=argsFor(source,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,2);assert.deepEqual(x.calls,[]);
+ assert.doesNotMatch(args.variables.user.failure_reason,/\[Source media corruption\]/);
+ assert.match(args.variables.user.failure_reason,/could not complete/);
 });
 
 test('zero-frame extra video is ignored so AV1 source corruption reaches the precheck before encoding',async()=>{
