@@ -50,7 +50,17 @@ Two controlled test-container QSV encodes reproduced the same mismatch: CPU deco
 
 FFmpeg's documented `av1_metadata` bitstream filter can modify AV1 color-description fields, but its documented options do not include mastering-display chromaticity rewriting. FFmpeg 8.1's QSV AV1 encoder passes mastering-display frame side data into the oneVPL encode control. [FFmpeg AV1 bitstream filter documentation](https://www.ffmpeg.org/ffmpeg-bitstream-filters.html), [FFmpeg QSV encoder source](https://www.ffmpeg.org/doxygen/8.1/qsvenc__av1_8c_source.html).
 
-No flow code change was made, consistent with the instruction to leave driver/runtime bugs alone. The validator remains strict and the original stays safe.
+The strict validator remains in place. V15 now recognizes this narrowly defined QSV clamp risk from the source mastering green-y before encoding and routes those HDR sources to a single software SVT-AV1 encode at CRF 28. The production file passed the full source scan and its original remained safe; this is an encoder-path limitation, not evidence of source corruption.
+
+### Production clamp and software fallback sample — 2026-11-08
+
+A production log for an approximately 69 GiB 4K HEVC HDR10-compatible Dolby Vision Profile 7 remux showed that the source frame, HDR, timestamp, and retained-audio checks completed successfully. The Arc QSV encode ran for about 49 minutes, then strict output validation rejected a candidate whose green-y mastering coordinate had been clamped from `39850/50000` (0.797) to `50000/65536` (about 0.763). This matches the Intel oneVPL issue described above. Nothing in the log established source corruption.
+
+The updated route was exercised directly in the isolated `tdarr-flow-live-test-20261102` container against a read-only production mount. A 15-second software SVT-AV1 sample used the flow's CRF 28 settings, copied all four audio and four PGS tracks, and used the new ten-second mux interleave bound. The output was 13,496,040 bytes versus 125,282,675 bytes for a copy-remux of the same source interval (about 89.2% smaller). It retained AV1 10-bit video, limited-range PQ/BT.2020 signaling, the fallback marker, and all eight selected audio/subtitle streams; a full video-and-audio decode of the sample completed without errors.
+
+A second capped run completed 2,158 frames over 90.016 seconds and wrote 147,616,094 bytes. FFprobe confirmed four audio and four PGS subtitle streams; 34 PGS packets were present across the four output tracks. Full video-and-audio decoding returned status 0. This exercises sparse subtitle muxing for a longer interval, though it does not compare every source and output PGS segment as the full-flow validator does.
+
+This short sample verifies that the encoder route can produce a materially smaller candidate and retain the expected metadata and stream layout. It is not a full-length transcode, frame-by-frame full-file validator run, or perceptual HDR quality assessment. A candidate replaces a library source only after the existing full output validation succeeds and the candidate is smaller; otherwise the original remains. The SVT quality result should be reviewed on playback before treating CRF 28 as suitable for every display or source.
 
 ## Scope and limitations
 

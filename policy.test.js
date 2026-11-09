@@ -7,6 +7,8 @@ const engine = flow.flowPlugins.find(p => p.id === 'arc_av1_monolithic').inputsD
 const mod = {exports:{}};
 new Function('require','module','exports',engine + '\nmodule.exports.testPolicy = typeof selectQualityValue === "function" ? selectQualityValue : null; module.exports.testRun = typeof runSingleQuality === "function" ? runSingleQuality : null; module.exports.testDone = typeof isCompletedEncode === "function" ? isCompletedEncode : null; module.exports.testClassify = typeof classifyVideo === "function" ? classifyVideo : null; module.exports.testHdr = typeof validateHdr10 === "function" ? validateHdr10 : null; module.exports.testColor = typeof validateSdrColor === "function" ? validateSdrColor : null; module.exports.testVideoGuard = typeof guardSourceVideo === "function" ? guardSourceVideo : null; module.exports.testQsvDecode = typeof useQsvDecode === "function" ? useQsvDecode : null; module.exports.testAspect = typeof validateAspect === "function" ? validateAspect : null; module.exports.testHdrRoute = typeof determineHdrRoute === "function" ? determineHdrRoute : null; module.exports.testHybridPreflight = typeof preflightHybridHdr === "function" ? preflightHybridHdr : null; module.exports.testMergeHdr = typeof mergeHdrMetadata === "function" ? mergeHdrMetadata : null; module.exports.testRecordFrame = typeof recordHdrFrame === "function" ? recordHdrFrame : null; module.exports.testScanFrames = typeof inspectVideoFrames === "function" ? inspectVideoFrames : null; module.exports.testDecodeThreads = typeof getDecodeThreadCount === "function" ? getDecodeThreadCount : null; module.exports.testFrameScanArgs = typeof buildFrameScanArguments === "function" ? buildFrameScanArguments : null; module.exports.testWithDecoderThreads = typeof withDecoderThreads === "function" ? withDecoderThreads : null; module.exports.testL6 = typeof parseDolbyLevel6 === "function" ? parseDolbyLevel6 : null; module.exports.testCompareTimes = typeof compareVideoTimestamps === "function" ? compareVideoTimestamps : null; module.exports.testHlg = typeof validateHlg === "function" ? validateHlg : null; module.exports.testProcess = typeof runTimelineProcess === "function" ? runTimelineProcess : null; module.exports.testSdrSignal = typeof isVerifiedSdr === "function" ? isVerifiedSdr : null; module.exports.testL6Rows = typeof summarizeLevel6Rows === "function" ? summarizeLevel6Rows : null; module.exports.testResolveLight = typeof resolveHdrLight === "function" ? resolveHdrLight : null; module.exports.testHdrFrameRequirements = typeof hdrFrameMetadataRequirements === "function" ? hdrFrameMetadataRequirements : null; module.exports.testHdrStatic = typeof checkHdrFrameStatic === "function" ? checkHdrFrameStatic : null; module.exports.testVideoFilter = typeof composeVideoFilterChain === "function" ? composeVideoFilterChain : null; module.exports.testSdrTransfer = typeof validateEffectiveSdrTransfer === "function" ? validateEffectiveSdrTransfer : null; module.exports.testSdrSource = typeof effectiveSdrSource === "function" ? effectiveSdrSource : null; module.exports.testUntagged = typeof isUntaggedVideo === "function" ? isUntaggedVideo : null; module.exports.testUntaggedOutput = typeof validateUntaggedOutput === "function" ? validateUntaggedOutput : null; module.exports.testUntaggedRange = typeof inferUntaggedColorRange === "function" ? inferUntaggedColorRange : null; module.exports.testUntaggedRangeArgs = typeof untaggedColorRangeArgs === "function" ? untaggedColorRangeArgs : null; module.exports.testFreeSpace = typeof getFreeSpaceMB === "function" ? getFreeSpaceMB : null;')(require,mod,mod.exports);
 const p=mod.exports;
+const knownQsvHdrClamp = new Function('require','module','exports',engine+'\nreturn typeof isKnownQsvHdrMasteringClamp === "function" ? isKnownQsvHdrMasteringClamp : null;')(require,{exports:{}},{});
+const knownQsvHdrClampRisk = new Function('require','module','exports',engine+'\nreturn typeof isQsvHdrMasteringClampRisk === "function" ? isQsvHdrMasteringClampRisk : null;')(require,{exports:{}},{});
 
 test('decoder thread setting defaults to four, prefers the shared setting, and accepts the legacy alias',()=>{
   assert.equal(typeof p.testDecodeThreads,'function','decoder thread policy is missing');
@@ -404,6 +406,7 @@ test('V5 recognizes both its own and the completed V4 output markers',()=>{
 test('V15 treats V14 and V15 marked AV1 files as already processed',()=>{
  assert.equal(p.testDone('av1',{ENCODED_BY:'ArcAV1_QSV_V14'}),true);
  assert.equal(p.testDone('av1',{ENCODED_BY:'ArcAV1_QSV_V15'}),true);
+ assert.equal(p.testDone('av1',{ENCODED_BY:'ArcAV1_SVTAV1_HDRFallback_V15'}),true);
  assert.equal(p.testDone('h264',{ENCODED_BY:'ArcAV1_QSV_V14'}),false);
 });
 
@@ -775,6 +778,26 @@ test('rejects the observed QSV mastering green-coordinate clamp',()=>{
  const source={...pqVideo,side_data_list:[mastering,light]};
  const output={...source,side_data_list:[{...mastering,green_y:'50000/65536'},light]};
  assert.throws(()=>p.testHdr(source,output),/metadata changed/i);
+});
+
+test('recognizes only the documented QSV AV1 HDR green-coordinate clamp for software fallback',()=>{
+ const mastering={side_data_type:'Mastering display metadata',red_x:'35400/50000',red_y:'14600/50000',green_x:'8500/50000',green_y:'39850/50000',blue_x:'6550/50000',blue_y:'2300/50000',white_point_x:'15635/50000',white_point_y:'16450/50000',min_luminance:'20/10000',max_luminance:'10000000/10000'};
+ const source={side_data_list:[mastering]},output={side_data_list:[{...mastering,green_y:'50000/65536'}]};
+ assert.equal(typeof knownQsvHdrClamp,'function');
+ assert.equal(knownQsvHdrClamp(source,output,'HDR mastering metadata conflicts with decoded frames'),true);
+ assert.equal(knownQsvHdrClamp(source,output,'HDR light metadata conflicts with decoded frames'),false);
+ assert.equal(knownQsvHdrClamp(source,{side_data_list:[{...mastering,green_y:'76000/100000'}]},'HDR mastering metadata conflicts with decoded frames'),false);
+ assert.equal(knownQsvHdrClamp(source,{side_data_list:[{...mastering,green_y:'50000/65536',red_x:'1/2'}]},'HDR mastering metadata conflicts with decoded frames'),false);
+ assert.throws(()=>p.testHdrStatic(source,{staticInfo:{conflict:false,mastering:{...mastering,green_y:'50000/65536'},light:{side_data_type:'Content light level metadata',max_content:992,max_average:518}}}),/identified Intel QSV AV1 green-y clamp/);
+});
+
+test('preselects software AV1 for source mastering coordinates in the known QSV clamp range',()=>{
+ const mastering={side_data_type:'Mastering display metadata',green_y:'39850/50000'};
+ assert.equal(typeof knownQsvHdrClampRisk,'function');
+ assert.equal(knownQsvHdrClampRisk({side_data_list:[mastering]}),true);
+ assert.equal(knownQsvHdrClampRisk({side_data_list:[{...mastering,green_y:'34500/50000'}]}),false);
+ assert.equal(knownQsvHdrClampRisk({side_data_list:[{...mastering,green_y:'85000/100000'}]}),false);
+ assert.equal(knownQsvHdrClampRisk({side_data_list:[]}),false);
 });
 
 test('Profile 7 may recover missing HDR content-light values from verified Level 6',async()=>{

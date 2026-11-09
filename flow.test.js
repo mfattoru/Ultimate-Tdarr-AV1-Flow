@@ -48,6 +48,19 @@ test('V15 engine performs full source and output scans without sampling branches
  assert.match(engine,/compareVideoTimestamps\(expected\.sourceFrameScan,\s*outputFrameScan\)/);
 });
 
+test('known Intel QSV HDR mastering clamp selects a single-pass SVT-AV1 fallback',()=>{
+ assert.ok(engine.includes('const softwareHdrFallback = isHdr && isQsvHdrMasteringClampRisk(hdrSource)'), 'the known source mastering range should be detected before encoding');
+ assert.ok(engine.includes('"libsvtav1"'), 'the fallback must use the verified software AV1 encoder');
+ assert.ok(engine.includes('"-preset", "8", "-crf", "28"'), 'the fallback quality settings must match the test-container sample');
+ assert.ok(engine.includes('ArcAV1_SVTAV1_HDRFallback_V15'), 'software output needs a distinct idempotence marker');
+ assert.ok(engine.includes('isKnownQsvHdrMasteringClamp'), 'strict validation should retain a narrow diagnostic for the known QSV clamp');
+});
+
+test('sparse subtitle streams cannot hold the mux queue without a time bound',()=>{
+ assert.ok(engine.includes('"-max_interleave_delta", "10000000"'), 'use FFmpeg’s documented ten-second interleave bound');
+ assert.ok(!engine.includes('"-max_interleave_delta", "0"'), 'zero would wait indefinitely for packets from every selected subtitle stream');
+});
+
 test('the shared decoder thread setting covers CPU decode work across the flow',()=>{
  assert.match(engine,/getDecodeThreadCount/);
  assert.ok((engine.match(/threads:getDecodeThreadCount\(\)/g)||[]).length>=2,'source and candidate frame scans must share the setting');
@@ -56,7 +69,7 @@ test('the shared decoder thread setting covers CPU decode work across the flow',
   'const args=withDecoderThreads([\'-v\',\'error\',\'-xerror\',\'-i\',source',
   'const decodeArgs=withDecoderThreads(',
   'withDecoderThreads([\n          "-v","error","-xerror"',
-  'if (useHybrid && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()))',
+  'if ((useHybrid || useSoftwareFallback) && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()))',
   "'-threads',String(getDecodeThreadCount()),'-select_streams'",
   '"-threads",String(getDecodeThreadCount()),"-select_streams"'
  ]) assert.ok(engine.includes(fragment),`CPU decode path must use the shared decoder setting: ${fragment}`);

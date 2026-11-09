@@ -215,10 +215,13 @@ desc_start=success_code.index('  const descLines = [')
 desc_end=success_code.index('\n  const payload = JSON.stringify({',desc_start)
 new_desc_block='''  const wasEncoded=Boolean(transcodeStartTs&&transcodeEndTs);
   const cpuDecode=/CPU Decode|Downsample/i.test(String(pipelineMode||''));
+  const softwareEncode=/Software SVT-AV1/i.test(String(pipelineMode||''));
   const methodLine=isFallback
     ? `🛠️ **Result:** AV1 was not smaller; validated seek-heal remux kept the original video stream.`
     : wasEncoded
-      ? `⚙️ **Method:** Intel Arc QSV AV1 encode • ${cpuDecode?'CPU decode/conversion':'Arc QSV decode'}`
+      ? softwareEncode
+        ? `⚙️ **Method:** Software SVT-AV1 encode at CRF 28`
+        : `⚙️ **Method:** Intel Arc QSV AV1 encode • ${cpuDecode?'CPU decode/conversion':'Arc QSV decode'}`
       : `🛠️ **Method:** Validated seek-heal remux • original video stream copied`;
   const audioCount=Number(args.variables?.user?.audio_track_count||0);
   const audioLanguages=String(args.variables?.user?.audio_track_languages||'not reported');
