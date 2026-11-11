@@ -117,7 +117,7 @@ The evidence uses short matched excerpts, not full-length viewing tests. VMAF is
 
 ## Build and references
 
-The custom Tdarr DeNiX image has a pinned upstream base and a Renovate update-PR configuration. GitHub Actions builds base-image update candidates without publishing them; the Arc hardware smoke check remains a manual step on Unraid. See [the image deployment guide](deployment/tdarr-denix-vpl-pr385/README.md) for setup and release steps.
+The custom Tdarr DeNiX image has a pinned upstream base and a daily Renovate update-PR configuration. GitHub Actions builds PR candidates, publishes a commit-tagged candidate after merge, and promotes it to `latest` only after the Arc hardware smoke check on Unraid. See [the image deployment guide](deployment/tdarr-denix-vpl-pr385/README.md) for required Docker Hub secrets, promotion steps, and Unraid update notifications.
 
 From the repository root:
 
