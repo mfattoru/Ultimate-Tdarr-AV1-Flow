@@ -1,5 +1,13 @@
 # HDR and Dolby Vision live validation — 2026-11-03
 
+## Follow-up test-container job — 2026-11-10
+
+A full V15 job on `Pirates of the Caribbean The Curse of the Black Pearl (2003) Remux-2160p.mkv` completed source validation and the Arc QSV encode, then rejected the smaller candidate during `hdr_color` validation with `HDR10 metadata added without source data: Mastering display metadata`. The source probe exposed PQ/BT.2020 color signaling but no mastering-display side data; the candidate exposed mastering-display side data. The strict rejection was appropriate because the source scan did not establish that metadata. The original remained in place, and the flow did not request an Arr search.
+
+The MediaInfo track record did contain stream-sourced HDR10 mastering data (`Display P3`, 0.005–4000 cd/m²) and content-light values (MaxCLL 4000, MaxFALL 600), but the FFprobe side data used by the validator did not. This exposed a gap between the two source metadata readers. The local flow now fills missing HDR10 source side data from recognized, stream-sourced MediaInfo fields, checks any FFprobe values for agreement, and still requires the candidate to match the completed source record. The `Display P3` mapping uses the documented P3-D65 mastering coordinates; unsupported labels or malformed fields remain unfilled and cannot authorize new candidate metadata.
+
+The failure cleanup also attempted to rename the candidate from `/temp` to `/transcode_cache/tdarr-av1-quarantine` and failed with `EXDEV` because the paths are on different filesystems. The candidate was not retained, and error cleanup removed its temporary workspace. The current local quarantine helper reserves destination capacity, copies across filesystems, and verifies the copied candidate's SHA-256 before installing it. The metadata and quarantine changes still need an end-to-end test-container run after importing the generated flow.
+
 ## Current V15 end-to-end results
 
 These jobs ran through the V15 Tdarr flow in the existing `tdarr-flow-live-test-20261102` container on Arc QSV `/dev/dri/renderD129`. The V15 library scans only `/test/v15-source`; production media is mounted read-only. Inputs and candidates are test copies.

@@ -1,17 +1,18 @@
-const humanizeFailure = (reason,validationReport) => {
+const humanizeFailure = (reason,validationReport,quarantineEntry) => {
   const text = String(reason || '').trim().replace(/^(?:\[Safety check failed\]\s*){2,}/i, '[Safety check failed] ');
   const details = text.replace(/```/g, "'").replace(/\s+/g, ' ').trim().slice(0, 1100);
   const retained = /original (?:will not be replaced|retained)|original retained/i.test(text);
+  const quarantined = Boolean(quarantineEntry && typeof quarantineEntry.candidatePath === 'string');
   if(validationReport?.outcome==='inconclusive')return {
     category:'validation_inconclusive',severity:'warning',
     summary:'The output verification could not complete. This result does not establish that the source or candidate is damaged.',
-    fileState:'The original was kept; the unapproved candidate was discarded.',
+    fileState:quarantined?'The original was kept; the complete candidate remains in quarantine for revalidation.':'The original was kept; the unapproved candidate was discarded.',
     action:`Review the ${String(validationReport.failure?.stage || 'unknown').replace(/_/g,' ')} check and diagnostic detail. Resolve the tool or measurement problem before retrying. This result does not request an Arr replacement.`,details
   };
   if(validationReport?.outcome==='rejected'&&!validationReport.failure?.sourceCorruption)return {
     category:'candidate_rejected',severity:'warning',
     summary:'The candidate did not preserve the required stream, timing, color, or decode properties.',
-    fileState:'The candidate was discarded and the original was kept.',
+    fileState:quarantined?'The original was kept; the complete candidate remains in quarantine for revalidation.':'The candidate was discarded and the original was kept.',
     action:`Review the ${String(validationReport.failure?.stage || 'unknown').replace(/_/g,' ')} mismatch. This output rejection alone does not establish source corruption.`,details
   };
   const knownVideoDamage = /\[video guard\].*ffprobe (?:exited 0 but emitted stderr|failed \([^)]*\))/i.test(text)
@@ -27,7 +28,7 @@ const humanizeFailure = (reason,validationReport) => {
         : audioDamage
           ? 'A retained source audio track failed a full decode check, confirming source corruption before replacement.'
           : 'FFmpeg found a recognized video bitstream error in the source scan or confirmed source damage during strict decoding.',
-      fileState: 'The flow stopped and kept the original file.',
+      fileState: quarantined?'The flow stopped and kept the original file; the complete candidate remains in quarantine.':'The flow stopped and kept the original file.',
       action: 'Check playback and seeking if needed. The flow requests a targeted Sonarr episode or Radarr movie search after matching the exact media item. The original stays in place; Arr profile and upgrade rules may still reject same-quality replacements.',
       details
     };
@@ -181,7 +182,7 @@ module.exports = async (args) => {
     if (target.protocol !== 'https:') throw new Error('Invalid webhook protocol');
     const file = args.originalLibraryFile?._id || args.inputFileObj?._id;
     const name = typeof file === 'string' ? file.split(/[\\/]/).pop().replace(/\.[^/.]+$/, '').slice(0, 220) : 'Unknown file';
-  const explanation = humanizeFailure(reason,user.validation_report);
+  const explanation = humanizeFailure(reason,user.validation_report,user.quarantine_entry);
   const qualityFloor = explanation.category === 'quality_floor';
     const arrStatus = String(user.arr_refetch_status || 'unknown');
     const corruptionSearchStatus = String(user.arr_corruption_search_status || 'unknown');
@@ -199,6 +200,9 @@ module.exports = async (args) => {
       description.push(`**What happened:** ${explanation.summary}`);
       description.push(`**File state:** ${explanation.fileState}`);
       description.push(`**What to do:** ${explanation.action}`);
+      if (user.quarantine_entry && typeof user.quarantine_entry.candidatePath === 'string') {
+        description.push('📦 **Quarantined candidate:** A complete candidate is retained. After fixing the reported issue, requeue the file to run current checks against it. For a fresh encode, set the Libraries variable `arc_force_fresh_path` to the exact node-visible original path, run the file once, then clear the variable.');
+      }
       if (explanation.category === 'source_media_corruption') {
         if (corruptionSearchStatus === 'requested') description.push(`📡 **Arr:** ${corruptionSearchTarget} accepted a targeted search. The original remains in place; a replacement is not guaranteed unless an available release meets your profile and upgrade rules.`);
         else if (corruptionSearchStatus === 'failed') description.push('📡 **Arr:** The targeted search could not be submitted. Check the Arr connection/log and search manually if needed. The original remains in place.');

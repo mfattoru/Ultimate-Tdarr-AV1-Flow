@@ -10,8 +10,9 @@ def one(old,new):
  if n!=1: raise RuntimeError(f'Expected 1 match, got {n}: {old[:80]}')
  e=e.replace(old,new,1)
 source_identity=(root/'source_identity.js').read_text().rstrip()
+quarantine=(root/'quarantine.js').read_text().rstrip()
 audio_timing=(root/'audio_timing.js').read_text().rstrip()
-e=(root/'validation.js').read_text()+'\n'+(root/'policy.js').read_text()+'\n'+audio_timing+'\n'+source_identity+'\n'+e
+e=(root/'validation.js').read_text()+'\n'+(root/'policy.js').read_text()+'\n'+audio_timing+'\n'+source_identity+'\n'+quarantine+'\n'+e
 one('''module.exports = async (args) => {
   if (!args.variables) args.variables = {};''', '''module.exports = async (args) => {
   let originalGuardFd=null;
@@ -285,6 +286,34 @@ r'''    const specific = lines.filter(l => /\b(?:error|failed|unsupported|invali
     return chosen.join(" | ").substring(0, 1200);''')
 one('''    log(`[Safety check failed] ${err.message || err}. Original will not be replaced.`);''',
 r'''    const detail=String(err?.message || err);
+    const quarantineReport=args.variables?.user?.validation_report || {outcome:"inconclusive",stage:"candidate_validation",failure:{message:detail}};
+    if (quarantinedCandidate) {
+      try {
+        quarantinedCandidate=await updateQuarantineFailure(quarantinedCandidate,quarantineReport);
+        args.variables.user.quarantine_entry=quarantinedCandidate;
+        log(`[Quarantine] Candidate remains stored after failed current validation (${quarantinedCandidate.candidatePath}).`);
+      } catch (quarantineError) {
+        log(`[Quarantine] Could not update the stored candidate's validation report: ${quarantineError.message || quarantineError}; the candidate remains untouched.`);
+      }
+    } else {
+      try {
+        assertOriginalUnchanged();
+        const storedCandidate=await storeQuarantineCandidate({
+          root:quarantineRootForJob,
+          sourcePath:originalPath,
+          libraryRoots:quarantineLibraryRoots,
+          candidatePath:outputPath,
+          marker:isBloat?"ArcAV1_SeekHeal_V15":softwareHdrFallback?"ArcAV1_SVTAV1_HDRFallback_V15":"ArcAV1_QSV_V15",
+          kind:isBloat?"seek_heal_remux":softwareHdrFallback?"svt_av1_encode":"qsv_av1_encode",
+          validationReport:quarantineReport,
+          assertSourceUnchanged:assertOriginalUnchanged
+        });
+        args.variables.user.quarantine_entry=storedCandidate;
+        log(`[Quarantine] Stored complete candidate after final validation failed: ${storedCandidate.candidatePath}. Original remains unchanged.`);
+      } catch (quarantineError) {
+        log(`[Quarantine] Candidate was not retained: ${quarantineError.message || quarantineError}; normal scratch cleanup will continue.`);
+      }
+    }
     const alreadyClassified=/^\[(?:safety check failed|source media corruption)\]/i.test(detail);
     const originalGuard=/^Original library file changed during processing/i.test(detail);
     const reason=alreadyClassified?detail:originalGuard?`[Original guard] ${detail}`:`[Safety check failed] ${detail}`;
@@ -387,6 +416,38 @@ one('  // 2. Stream Probing', '''  const saveOriginalSnapshot = (stat, realPath,
     throw new Error(`Original library file changed during processing (changed fields: ${changed.join(', ')}${verificationError?`; relocation verification failed: ${verificationError}`:''})`);
   };
 
+  const quarantineRootForJob = process.env.TDARR_RESERVATION_ROOT || "/transcode_cache";
+  const quarantineLibraryRoots = [args.librarySettings?.folder,args.variables?.library?.folder,...(Array.isArray(args.librarySettings?.folders)?args.librarySettings.folders:[])].filter(folder=>typeof folder==="string"&&path.isAbsolute(folder));
+  const forceFreshSetting = args.userVariables?.library?.arc_force_fresh_path;
+  const forceFreshRequested = typeof forceFreshSetting === "string" && forceFreshSetting.trim().length > 0
+    && path.resolve(forceFreshSetting.trim()) === path.resolve(originalPath);
+  let quarantinedCandidate = null;
+  delete args.variables.user.quarantine_entry;
+  if (forceFreshRequested) {
+    try {
+      const removedCount = await removeQuarantineCandidatesForSource({root:quarantineRootForJob,sourcePath:originalPath,libraryRoots:quarantineLibraryRoots});
+      log(`[Quarantine] Force-fresh requested for this exact path; removed ${removedCount} stored candidate(s).`);
+    } catch (err) {
+      const reason=`[Quarantine] Force-fresh cleanup failed: ${err.message || err}; original retained and fresh processing was not started.`;
+      args.variables.user.failure_reason=reason;
+      log(reason);
+      return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
+    }
+  } else {
+    try {
+      quarantinedCandidate = await findQuarantineCandidate({root:quarantineRootForJob,sourcePath:originalPath,libraryRoots:quarantineLibraryRoots});
+      if (quarantinedCandidate) {
+        args.variables.user.quarantine_entry = quarantinedCandidate;
+        assertOriginalUnchanged();
+        log(`[Quarantine] Found a complete candidate for this exact source hash; the flow will re-run current source and candidate checks without encoding.`);
+      }
+    } catch (err) {
+      quarantinedCandidate = null;
+      delete args.variables.user.quarantine_entry;
+      log(`[Quarantine] Stored candidate could not be safely reused: ${err.message || err}; processing the original from scratch.`);
+    }
+  }
+
   // 2. Stream Probing''')
 one('''  const src = probe(sourcePath);
   const dst = probe(outputPath);''', '''  if(typeof expected.assertOriginalUnchanged==='function')expected.assertOriginalUnchanged();
@@ -413,7 +474,7 @@ one('  const tracks = {};\n  for (const type of ["audio", "subtitle"]) {', '''  
   const tracks = {};
   for (const type of ["audio", "subtitle"]) {''')
 one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const markerKey = Object.keys(args.inputFileObj?.ffProbeData?.format?.tags || {}).find(k => k.toLowerCase() === "encoded_by");
-  if (isCompletedEncode(String(mainVideo.codec_name || "").toLowerCase(), markerKey ? {[markerKey]:args.inputFileObj.ffProbeData.format.tags[markerKey]} : {})) {
+  if (!quarantinedCandidate && !forceFreshRequested && isCompletedEncode(String(mainVideo.codec_name || "").toLowerCase(), markerKey ? {[markerKey]:args.inputFileObj.ffProbeData.format.tags[markerKey]} : {})) {
     log("[Arc AV1] Previously processed output; no additional generation.");
     return {outputFileObj:args.inputFileObj,outputNumber:4,variables:args.variables};
   }
@@ -446,12 +507,14 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
     log(args.variables.user.failure_reason);
     return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
   }
-  try {
-    fs.accessSync(gpuDevice,fs.constants.R_OK|fs.constants.W_OK);
-  } catch(err) {
-    args.variables.user.failure_reason=`[Arc GPU] Device not accessible: ${gpuDevice}: ${err.message || err}; original retained.`;
-    log(args.variables.user.failure_reason);
-    return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
+  if (!quarantinedCandidate) {
+    try {
+      fs.accessSync(gpuDevice,fs.constants.R_OK|fs.constants.W_OK);
+    } catch(err) {
+      args.variables.user.failure_reason=`[Arc GPU] Device not accessible: ${gpuDevice}: ${err.message || err}; original retained.`;
+      log(args.variables.user.failure_reason);
+      return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
+    }
   }
   let hybridPreflight='not_hybrid';
   try {
@@ -573,9 +636,11 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
           hdrSource=preflightHdrSource;
           hdrLightOverride=preflightHdrLightOverride;
         } else {
-          hdrSource = mergeHdrMetadata(mainVideo,readHdrFrames(ffprobeBin,inputPath,mainVideo.index),{allowMissingLight:canUseDolbyLevel6,allowMissingAll:hdrClass==="hdr10"});
+          const mediaInfoHdrSeed=hdrClass==="hdr10"?seedHdrMetadataFromMediaInfo(mainVideo,infoVideos[0]):{video:mainVideo,added:[],contentLightOverride:null};
+          if(mediaInfoHdrSeed.added.length)log(`[HDR metadata] Filled missing FFprobe side data from stream-sourced MediaInfo fields: ${mediaInfoHdrSeed.added.join(", ")}. Candidate metadata must still match these values.`);
+          hdrSource = mergeHdrMetadata(mediaInfoHdrSeed.video,readHdrFrames(ffprobeBin,inputPath,mainVideo.index),{allowMissingLight:canUseDolbyLevel6,allowMissingAll:hdrClass==="hdr10"});
           const resolved = await resolveHdrLight(hdrSource,hdrClass,() => extractDolbyLevel6(ffmpegBin,inputPath,mainVideo.index,frameScan.frames));
-          hdrSource = resolved.metadata; hdrLightOverride = resolved.override;
+          hdrSource = resolved.metadata; hdrLightOverride = resolved.override || mediaInfoHdrSeed.contentLightOverride;
         }
         checkHdrFrameStatic(hdrSource,frameScan,!canUseDolbyLevel6 && hdrClass!=="hdr10",hdrClass!=="hdr10");
       }
@@ -686,6 +751,7 @@ one('encoded_by=ArcAV1_QSV','encoded_by=ArcAV1_QSV_V15')
 one('cmdArgs.push("-metadata:g", "encoded_by=ArcAV1_QSV_V15");', 'cmdArgs.push("-metadata:g", forceStreamCopy ? "encoded_by=ArcAV1_SeekHeal_V15" : useSoftwareFallback ? "encoded_by=ArcAV1_SVTAV1_HDRFallback_V15" : "encoded_by=ArcAV1_QSV_V15");')
 one('      codec: expectedVideoCodec,\n', '      codec: expectedVideoCodec,\n      requireMarker: true,\n      hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10",\n      optionalHdrStatic: hdrClass === "hdr10",\n      hlg: hdrClass === "hlg",\n      untagged: hdrClass === "untagged",\n      sourceClass: hdrClass,\n      sourceHdr: hdrSource,\n      sdrSource,\n      sourceFrameScan: frameScan,\n      outputMarker: isBloat ? \"ArcAV1_SeekHeal_V15\" : softwareHdrFallback ? \"ArcAV1_SVTAV1_HDRFallback_V15\" : \"ArcAV1_QSV_V15\",\n')
 one('      sourceFrameScan: frameScan,\n', '      sourceFrameScan: frameScan,\n      updateWorker: args.updateWorker,\n      assertOriginalUnchanged: assertOriginalUnchanged,\n      audioTimestampRepairIndices: Array.from(audioTimestampRepairs.keys()),\n')
+one('outputMarker: isBloat ? "ArcAV1_SeekHeal_V15" : softwareHdrFallback ? "ArcAV1_SVTAV1_HDRFallback_V15" : "ArcAV1_QSV_V15",', 'outputMarker: quarantinedCandidate?.marker || (isBloat ? "ArcAV1_SeekHeal_V15" : softwareHdrFallback ? "ArcAV1_SVTAV1_HDRFallback_V15" : "ArcAV1_QSV_V15"),')
 one('    const valResult = await validateOutput(ffprobeBin, inputPath, outputPath, {', '    reportWorkerProgress(args.updateWorker,{percentage:80,fps:0,status:"Validation: output streams and metadata"});\n    const valResult = await validateOutput(ffprobeBin, inputPath, outputPath, {')
 a=e.index('  log(`[Arc AV1 Single-Pass] Processing:')
 b=e.index('\n  // Cleanup temporary clamped chapters file',a)
@@ -720,10 +786,21 @@ e=e[:a]+'''  log(`[Arc AV1] Processing ${inputPath} using ${qualityLabel} ${qual
     res = {status:1, qualityFloor:attempt.reason === "quality_floor", stderr:`No smaller output at ${qualityLabel} ${attempt.quality}: ${attempt.reason}`};
   }
 '''+e[b:]
+one('  log(`[Arc AV1] Processing ${inputPath} using ${qualityLabel} ${quality}; ${pipelineMode}`);', '''  if (quarantinedCandidate) {
+    quality = quarantinedCandidate.kind === "seek_heal_remux" ? null : quarantinedCandidate.kind === "svt_av1_encode" ? 28 : selectedQuality;
+    pipelineMode = quarantinedCandidate.kind === "seek_heal_remux" ? "Quarantined seek-heal remux revalidation" : quarantinedCandidate.kind === "svt_av1_encode" ? "Quarantined SVT-AV1 candidate revalidation" : "Quarantined Arc QSV AV1 candidate revalidation";
+    args.variables.user.quarantine_entry = quarantinedCandidate;
+  }
+  log(`[Arc AV1] Processing ${inputPath} using ${qualityLabel} ${quality}; ${pipelineMode}`);''')
+one('  let isBloat = false;', '  let isBloat = quarantinedCandidate?.kind === "seek_heal_remux";')
+one('  const attempt = await runSingleQuality(quality, sourceBytes, async (q) => {', '''  const attempt = quarantinedCandidate
+    ? {ok:true,quality,result:{ok:true,size:fs.statSync(outputPath).size,ffmpeg:{status:0,stderr:""}}}
+    : await runSingleQuality(quality, sourceBytes, async (q) => {''')
 a=e.index('  // Bloat Protection (> maxRatioPct for tier)')
 b=e.index('\n  // 10. Persist Pipeline Metadata',a)
 e=e[:a]+'  cleanupChapters();\n'+e[b:]
 one('  const isBloat = !isAlreadyAV1 && (ratioPct > maxRatioPct);','  // isBloat is set only by the strictly smaller, validated seek-heal fallback.')
+one('  if (!isAlreadyAV1 && !isBloat) {', '  if (!quarantinedCandidate && !isAlreadyAV1 && !isBloat) {')
 exec((root/'build_additions.py').read_text())
 exec((root/'build_validation.py').read_text())
 one('    return spawnSync(ffmpegBin, cmdArgs, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });', '''    const progressStart=forceStreamCopy?80:10,progressEnd=forceStreamCopy?82:80;

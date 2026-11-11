@@ -496,7 +496,7 @@ const resolveHdrLight = async (metadata, route, getLevel6) => {
     if (!Number.isFinite(sourceMax) || !Number.isFinite(sourceMin) || Math.abs(sourceMax-l6.max_luminance)>0.1 || Math.abs(sourceMin-l6.min_luminance)>0.0001) throw Error('Dolby Level 6 and HDR10 mastering luminance conflict');
     max=l6.max_content;avg=l6.max_average;override=`${max},${avg}`;
   }
-  const resolved={...metadata,side_data_list:[mastering,{side_data_type:'Content light level metadata',max_content:max,max_average:avg}]};
+  const resolved={...metadata,side_data_list:[mastering,{side_data_type:'Content light level metadata',max_content:max,max_average:avg}].filter(Boolean)};
   validateHdr10(resolved,resolved);
   return {metadata:resolved,override};
 };
@@ -507,6 +507,61 @@ const sameHdrSideData = (a,b,fields) => fields.every(field => {
   const tolerance=field==='max_luminance'?0.1:field.startsWith('max_')?0:0.0001;
   return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x-y)<=tolerance;
 });
+const mediaInfoHdrNumber = value => {
+  const match=String(value ?? '').trim().match(/^(\d+(?:\.\d+)?)(?:\s*cd\/m2)?$/i);
+  return match ? Number(match[1]) : NaN;
+};
+const mediaInfoMasteringMetadata = info => {
+  if (String(info?.HDR_Format || '').trim()!=='SMPTE ST 2086'
+      || String(info?.HDR_Format_Compatibility || '').trim()!=='HDR10'
+      || String(info?.MasteringDisplay_ColorPrimaries_Source || '').trim().toLowerCase()!=='stream'
+      || String(info?.MasteringDisplay_Luminance_Source || '').trim().toLowerCase()!=='stream') return null;
+  const primaries={
+    'display p3':{red_x:'0.6800',red_y:'0.3200',green_x:'0.2650',green_y:'0.6900',blue_x:'0.1500',blue_y:'0.0600',white_point_x:'0.3127',white_point_y:'0.3290'},
+    'dci p3':{red_x:'0.6800',red_y:'0.3200',green_x:'0.2650',green_y:'0.6900',blue_x:'0.1500',blue_y:'0.0600',white_point_x:'0.3140',white_point_y:'0.3510'},
+    'bt.2020':{red_x:'0.7080',red_y:'0.2920',green_x:'0.1700',green_y:'0.7970',blue_x:'0.1310',blue_y:'0.0460',white_point_x:'0.3127',white_point_y:'0.3290'}
+  }[String(info?.MasteringDisplay_ColorPrimaries || '').trim().toLowerCase()];
+  if (!primaries) return null;
+  const luminance=String(info?.MasteringDisplay_Luminance || '').trim().match(/^min:\s*(\d+(?:\.\d+)?)\s*cd\/m2\s*,\s*max:\s*(\d+(?:\.\d+)?)\s*cd\/m2$/i);
+  if (!luminance) return null;
+  const min=Number(luminance[1]),max=Number(luminance[2]);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min<0 || max<=0 || min>max) return null;
+  return {side_data_type:'Mastering display metadata',...primaries,min_luminance:String(min),max_luminance:String(max)};
+};
+const mediaInfoContentLightMetadata = info => {
+  if (String(info?.HDR_Format || '').trim()!=='SMPTE ST 2086'
+      || String(info?.HDR_Format_Compatibility || '').trim()!=='HDR10'
+      || String(info?.MaxCLL_Source || '').trim().toLowerCase()!=='stream'
+      || String(info?.MaxFALL_Source || '').trim().toLowerCase()!=='stream') return null;
+  const max=mediaInfoHdrNumber(info?.MaxCLL),avg=mediaInfoHdrNumber(info?.MaxFALL);
+  if (!Number.isInteger(max) || !Number.isInteger(avg) || max<1 || max>65535 || avg<1 || avg>max) return null;
+  return {side_data_type:'Content light level metadata',max_content:max,max_average:avg};
+};
+const seedHdrMetadataFromMediaInfo = (video,info) => {
+  const side=[...(video?.side_data_list || [])],added=[];
+  const candidateMastering=mediaInfoMasteringMetadata(info);
+  if(candidateMastering){
+    const existing=side.find(item=>item.side_data_type==='Mastering display metadata');
+    if(existing){
+      if(!sameHdrSideData(existing,candidateMastering,hdrMasterFields))throw Error('MediaInfo and FFprobe HDR mastering metadata conflict');
+    }else{side.push(candidateMastering);added.push('mastering');}
+  }
+  const candidateLight=mediaInfoContentLightMetadata(info);
+  if(candidateLight){
+    const index=side.findIndex(item=>item.side_data_type==='Content light level metadata');
+    if(index>=0){
+      const existing=side[index];
+      const unspecified=Number(existing.max_content)===0 && Number(existing.max_average)===0;
+      if(unspecified){side[index]=candidateLight;added.push('content-light');}
+      else if(!sameHdrSideData(existing,candidateLight,['max_content','max_average']))throw Error('MediaInfo and FFprobe content-light metadata conflict');
+    }else{side.push(candidateLight);added.push('content-light');}
+  }
+  return {
+    video:{...video,side_data_list:side},
+    added,
+    contentLightOverride:added.includes('content-light')?`${candidateLight.max_content},${candidateLight.max_average}`:null
+  };
+};
 const isQsvHdrMasteringClampRisk = source => {
   const mastering=(source?.side_data_list || []).find(item=>item.side_data_type==='Mastering display metadata');
   const greenY=rationalValue(mastering?.green_y),qsvClamp=50000/65536;

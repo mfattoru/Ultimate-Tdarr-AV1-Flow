@@ -15,13 +15,19 @@ flowchart TD
     DEL -->|Delete failed or path uncertain| ENGINEFAIL
     ISO -->|No| PROBE[Fresh ffprobe]
     PROBE --> EXTRA{Additional candidate video tracks?}
-    EXTRA -->|No| MARKER{Completion marker?}
+    EXTRA -->|No| FORCEFRESH{Exact arc_force_fresh_path override?}
     EXTRA -->|Yes| EXTRADECODE[Decode each extra through its first frame; require explicit progress]
     EXTRADECODE -->|Clean EOF and zero decoded frames| IGNOREEMPTY[Ignore only proven zero-frame extras]
-    IGNOREEMPTY --> MARKER
+    IGNOREEMPTY --> FORCEFRESH
     EXTRADECODE -->|Frame, diagnostic, failure, or missing result| ENGINEFAIL[Return failure with reason]
+    FORCEFRESH -->|Yes| PURGE[Remove quarantine entries for this exact path; bypass marker]
+    FORCEFRESH -->|No| QUARLOOKUP{Candidate matches canonical path and source SHA-256?}
+    QUARLOOKUP -->|Yes| REVALIDATE[Use stored candidate; bypass marker]
+    QUARLOOKUP -->|No| MARKER{Completion marker?}
     MARKER -->|V15, V14, or supported older marker| DONE[Return already-processed outcome]
     MARKER -->|Needs processing| GUARD[Header/config checks: pixel/depth, aspect ratio, Arc access, ICQ, 12-bit policy, and HDR color mapping]
+    PURGE --> GUARD
+    REVALIDATE --> GUARD
     GUARD -->|Unsupported, ambiguous, unsafe, or unverified DV Profile 8.4| ENGINEFAIL[Return failure with reason]
     GUARD -->|Eligible| HDRPREFLIGHT[Check DV profile/base-layer flags; resolve required Dolby Level 6 metadata]
     HDRPREFLIGHT -->|Static route rejected or Level 6 conflict| ENGINEFAIL
@@ -36,7 +42,9 @@ flowchart TD
     RAM -->|No| DISK[Use configured disk cache]
     SHM --> WORKSPACE[Create job scratch; record workspace and heartbeat]
     DISK --> WORKSPACE
-    WORKSPACE --> CHAPTERS[Clamp unsafe chapter endpoints]
+    WORKSPACE --> CACHED{Revalidating a stored candidate?}
+    CACHED -->|Yes; copy to scratch and keep quarantine copy| OUTPROBE
+    CACHED -->|No| CHAPTERS[Clamp unsafe chapter endpoints]
     CHAPTERS --> QSVPATH{Verified direct QSV decode path?}
     QSVPATH -->|H.264 8-bit 4:2:0; HEVC/AV1 8 or 10-bit 4:2:0 SDR| QSVDEC[QSV decode]
     QSVPATH -->|Other supported codecs/formats; verified HDR routes| CPUDEC[CPU decode and normalize to 10-bit 4:2:0]
@@ -67,18 +75,20 @@ flowchart TD
     ENCODE -. User cancels worker .-> CANCEL[Worker stops; current candidate is not approved]
     REMUX -. User cancels worker .-> CANCEL
     FULLDECODE -. User cancels worker .-> CANCEL
-    VALIDFAIL --> ENGINEFAIL
+    VALIDFAIL --> QUARANTINE[Store new complete candidate or update stored validation report]
+    QUARANTINE --> ENGINEFAIL
     CANCEL --> REAP[Kill child process groups and remove this scratch on SIGTERM; next admission reclaims lease]
   end
 
   ENGINEOK --> RECHECK[Recheck original identity and metadata]
-  RECHECK -->|Changed or byte comparison fails| CLEANFAIL[Remove temp output and release reservation]
+  RECHECK -->|Changed or byte comparison fails| RECHECKFAIL[Remove temp output and release reservation]
   RECHECK -->|Unchanged or exact byte-identical Mover relocation| REPLACE[Replace source and sync Tdarr database]
-  REPLACE --> CLEANSUCCESS[Clean scratch and release reservation]
+  REPLACE --> CLEANSUCCESS[Clean scratch; remove quarantined entry; release reservation]
   CLEANSUCCESS --> ARR[Request Radarr/Sonarr rescan]
   ARR --> SUCCESS[Send Discord success embed]
 
-  ENGINEFAIL --> CLEANFAIL
+  ENGINEFAIL --> CLEANFAIL[Remove only job scratch and release reservation; keep quarantine]
+  RECHECKFAIL --> NOSEARCH
   CLEANFAIL --> SRCARR{Known source video/audio corruption, or strict decode confirms it in the original?}
   SRCARR -->|Yes| ARRROUTE[Select Arr from the first recognized library-root path segment]
   ARRROUTE -->|anime root; matched Sonarr series and episode IDs| EPSEARCH[Queue Anime or TV Sonarr EpisodeSearch; keep source]
@@ -97,7 +107,7 @@ flowchart TD
   DONE --> DONEINFO[Send info: already processed; no encode ran]
   DONEINFO --> HANDLED
 
-  HOOK[Unexpected Tdarr node error] --> ERRORCLEAN[Clean temp files and release reservation when available]
+  HOOK[Unexpected Tdarr node error] --> ERRORCLEAN[Clean temp files and release reservation when available; keep quarantine]
   ERRORCLEAN --> ERRORNOTICE[Send unexpected-error Discord embed]
 
   classDef failure fill:#3a2020,stroke:#ba5555,color:#f7eeee
@@ -112,7 +122,13 @@ flowchart TD
 
 V15 runs one Arc AV1 encode at global ICQ 22. If its output is equal to or larger than the source, it deletes that encode attempt and remuxes the original video stream with seek-healing flags. It applies the same audio, subtitle, chapter, and metadata handling to the remux. The remux is not capped against the input size: it can replace the original even if mux overhead makes it larger, provided it passes full validation. Its scratch growth is bounded by available cache capacity, using the shared reservation ledger and retaining configured filesystem and host-RAM floors. If capacity growth is denied, Tdarr stops and removes the partial output, keeping the original.
 
-A remux can repair container indexes and packet timestamps. It cannot reconstruct damaged compressed video or audio packets; decode and validation failures keep the original and trigger a search only when known source corruption is independently confirmed.
+A remux can repair container indexes and packet timestamps. It cannot reconstruct damaged compressed video or audio packets. A complete candidate that reaches final validation is kept in quarantine after any validation failure; earlier failures and incomplete outputs follow normal scratch cleanup. The original stays in place, and a search is requested only when known source corruption is independently confirmed.
+
+## Candidate quarantine and revalidation
+
+Complete candidates that fail final validation are stored with a manifest under `${TDARR_RESERVATION_ROOT}/tdarr-av1-quarantine` (default `/transcode_cache/tdarr-av1-quarantine`). The manifest binds the candidate to the canonical source path and source SHA-256 and records the candidate hash, encode/remux type, completion marker, and latest validation report. The quarantine copy stays separate from job scratch, is not age-pruned, and is removed only after replacement succeeds, an exact-path force-fresh run, or manual removal. If quarantine storage or a cross-filesystem capacity reservation fails, the original remains safe and ordinary job cleanup proceeds.
+
+When the same source path and content are queued again, the flow repeats current source checks, copies the quarantined candidate into job scratch, and runs the current size and final validation policy without encoding. A changed source hash does not reuse the candidate. To discard the candidate and force a fresh encode for one file, set the library variable `arc_force_fresh_path` in Tdarr's Libraries UI to the exact node-visible source path, queue that file once, then clear the variable. The override remains active until cleared. Manual cleanup can remove the contents of `/transcode_cache/tdarr-av1-quarantine` (or the equivalent directory under `TDARR_RESERVATION_ROOT`).
 
 ## Full validation and process diagnostics
 
@@ -126,6 +142,6 @@ Strict candidate video decode uses Arc QSV with `TDARR_ARC_DEVICE` (default `/de
 
 V15 uses capacity reservations rather than a single job-at-a-time lock. Concurrent jobs may proceed when the shared cache ledger confirms that each has sufficient scratch and host-RAM headroom. The ledger coordinates jobs using it; unrelated writers and filesystem quotas remain outside its control. Each reservation heartbeats and records the exact worker scratch path. Cleanup removes only that job's scratch, and abandoned leases are reclaimed on a later admission.
 
-The Discord webhook is injected through `TDARR_DISCORD_WEBHOOK`; it is not stored in the flow export. V15 sends success/failure embeds, an information notice when a file already has a completion marker, and a warning after deleting an ISO and requesting an Arr rescan. Success notices retain the `✅ filename` title and summarize the outcome, exact size delta, estimated video bitrate/ICQ, output track languages, validation, and processing time. A queued Arr search is not a guarantee that a replacement download is accepted.
+The Discord webhook is injected through `TDARR_DISCORD_WEBHOOK`; it is not stored in the flow export. V15 sends success/failure embeds, an information notice when a file already has a completion marker, and a warning after deleting an ISO and requesting an Arr rescan. A failed final validation notice says when a complete candidate remains in quarantine and explains how to requeue it for validation or set `arc_force_fresh_path` for a fresh encode. Success notices retain the `✅ filename` title and summarize the outcome, exact size delta, estimated video bitrate/ICQ, output track languages, validation, and processing time. A queued Arr search is not a guarantee that a replacement download is accepted.
 
 The worker UI is seeded before media preflight with source size as both current and estimated output, so C and T begin at 100%. That is a neutral no-encode-yet baseline; live output size replaces it when encoding starts. Progress updates set phase status labels for source scan, retained-audio decode, Arc encode, seek-heal remux, frame/HDR scan, packet timeline comparison, and strict output decode. Tdarr's `updateWorker` interface accepts a free-form object, and the flow sends the worker `status` field alongside its existing percentage and worker details. The user confirmed on 2026-11-04 that the test UI's Status column displays the changing phase labels.
