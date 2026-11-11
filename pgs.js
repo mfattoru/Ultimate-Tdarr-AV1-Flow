@@ -3,6 +3,20 @@
 const pgsCrypto = require('crypto');
 const pgsSpawn = require('child_process').spawn;
 const PGS_TICKS = 90000;
+function pgsMeasurementUnavailable(message) {
+  return Object.assign(Error(message),{validation:{outcome:'inconclusive',stage:'timelines',code:'pgs_measurement_unavailable',message}});
+}
+function pgsExtractionFailure(error,stderr,processError) {
+  // A failed extractor can end a pipe before a complete SUP header arrives.
+  // Preserve that process cause instead of presenting its partial output as a
+  // proven media mismatch. An interrupted extractor cannot establish that the
+  // candidate differs, including an interruption needed to stop a bad parser.
+  const fromProcess=processError?.processFailure;
+  const cause=error?.processFailure?error:fromProcess?processError:error;
+  const wrapped=Error(`${cause.message || cause}${stderr.trim()?`: ${stderr.trim().slice(-400)}`:''}`);
+  for(const field of ['code','processFailure','validation'])if(cause[field]!==undefined)wrapped[field]=cause[field];
+  return wrapped;
+}
 function managePgsProcess(proc,label) {
   let timeoutReason='',idleTimer=null,settled=false;
   const stop=()=>{
@@ -26,11 +40,12 @@ function managePgsProcess(proc,label) {
     if(typeof untrackReservationChild==='function')untrackReservationChild(proc);
   };
   const closed=new Promise((resolve,reject)=>{
-    proc.on('error',error=>{cleanup();reject(error);});
+    proc.on('error',error=>{cleanup();error.processFailure={status:null,signal:null,timedOut:false};reject(error);});
     proc.on('close',(code,signal)=>{
       const reason=timeoutReason||`failed (${code ?? signal})`;
       cleanup();
-      code===0?resolve():reject(Error(`${label} ${reason}`));
+      if(code===0)resolve();
+      else reject(Object.assign(Error(`${label} ${reason}`),{processFailure:{status:code,signal,timedOut:!!timeoutReason}}));
     });
   });
   return {closed,stop};
@@ -45,7 +60,7 @@ async function parsePgsSegments(stream) {
       const length=pending.readUInt16BE(11), end=13+length;
       if (pending.length<end) break;
       result.push({pts:pending.readUInt32BE(2),dts:pending.readUInt32BE(6),type:pending[10],hash:pgsCrypto.createHash('sha256').update(pending.subarray(13,end)).digest('hex')});
-      if (result.length>1000000) throw Error('PGS segment count exceeds safety limit');
+      if (result.length>1000000) throw pgsMeasurementUnavailable('PGS segment count exceeds safety limit');
       pending=pending.subarray(end);
     }
   }
@@ -53,8 +68,9 @@ async function parsePgsSegments(stream) {
   return result;
 }
 function comparePgsSegments(source,output,shift,tolerance=0.1) {
-  if (!Array.isArray(source) || !Array.isArray(output) || source.length!==output.length) throw Error('PGS subtitle segment count changed');
-  if (!Number.isFinite(shift) || !Number.isFinite(tolerance) || tolerance<0) throw Error('Invalid PGS timestamp comparison');
+  if (!Array.isArray(source) || !Array.isArray(output)) throw pgsMeasurementUnavailable('PGS subtitle segment scan unavailable');
+  if (source.length!==output.length) throw Error('PGS subtitle segment count changed');
+  if (!Number.isFinite(shift) || !Number.isFinite(tolerance) || tolerance<0) throw pgsMeasurementUnavailable('Invalid PGS timestamp comparison');
   const delta=(a,b)=>(((b-a+0x80000000)>>>0)-0x80000000)/PGS_TICKS;
   for (let i=0;i<source.length;i++) {
     const a=source[i],b=output[i];
@@ -90,7 +106,7 @@ async function extractPgsSegments(ffmpeg,file,index,durationSec,onProgress) {
   const lifecycle=managePgsProcess(proc,'PGS extraction');
   attachPgsProgress(proc,durationSec,onProgress);
   try { const [segments]=await Promise.all([parsePgsSegments(proc.stdout),lifecycle.closed]);return segments; }
-  catch(e){lifecycle.stop();try{await lifecycle.closed;}catch(_){}throw Error(`${e.message || e}${stderr.trim()?`: ${stderr.trim().slice(-400)}`:''}`);}
+  catch(e){lifecycle.stop();let processError;try{await lifecycle.closed;}catch(error){processError=error;}throw pgsExtractionFailure(e,stderr,processError);}
 }
 async function extractPgsSegmentsBatch(ffmpeg,file,indices,durationSec,onProgress) {
   if(!Array.isArray(indices)||indices.some(index=>!Number.isSafeInteger(index)||index<0))throw Error('Invalid PGS stream index list');
@@ -110,18 +126,24 @@ async function extractPgsSegmentsBatch(ffmpeg,file,indices,durationSec,onProgres
     return new Map(rows);
   } catch(error) {
     lifecycle.stop();
-    try{await lifecycle.closed;}catch(_){}
-    throw Error(`${error.message || error}${stderr.trim()?`: ${stderr.trim().slice(-400)}`:''}`);
+    let processError;
+    try{await lifecycle.closed;}catch(error){processError=error;}
+    throw pgsExtractionFailure(error,stderr,processError);
   }
 }
 async function verifyPgsSegments(ffmpeg,source,output,sourceIndex,outputIndex,shift,onSourceProgress,onOutputProgress,sourceDuration,outputDuration) {
-  const a=await extractPgsSegments(ffmpeg,source,sourceIndex,sourceDuration,onSourceProgress),b=await extractPgsSegments(ffmpeg,output,outputIndex,outputDuration,onOutputProgress);
+  let a;
+  try{a=await extractPgsSegments(ffmpeg,source,sourceIndex,sourceDuration,onSourceProgress);}
+  catch(error){if(error.processFailure || error.code)throw error;throw pgsMeasurementUnavailable(`Source PGS extraction could not be verified: ${error.message || error}`);}
+  const b=await extractPgsSegments(ffmpeg,output,outputIndex,outputDuration,onOutputProgress);
   comparePgsSegments(a,b,shift);
 }
 async function verifyPgsSegmentsBatch(ffmpeg,source,output,tracks,shift,onSourceProgress,onOutputProgress,sourceDuration,outputDuration) {
   if(!Array.isArray(tracks)||tracks.some(pair=>!Array.isArray(pair)||pair.length!==2||pair.some(index=>!Number.isSafeInteger(index)||index<0)))throw Error('Invalid PGS stream pair list');
   if(tracks.length===0)return;
-  const sourceByIndex=await extractPgsSegmentsBatch(ffmpeg,source,tracks.map(pair=>pair[0]),sourceDuration,onSourceProgress);
+  let sourceByIndex;
+  try{sourceByIndex=await extractPgsSegmentsBatch(ffmpeg,source,tracks.map(pair=>pair[0]),sourceDuration,onSourceProgress);}
+  catch(error){if(error.processFailure || error.code)throw error;throw pgsMeasurementUnavailable(`Source PGS extraction could not be verified: ${error.message || error}`);}
   const outputByIndex=await extractPgsSegmentsBatch(ffmpeg,output,tracks.map(pair=>pair[1]),outputDuration,onOutputProgress);
   for(const [sourceIndex,outputIndex] of tracks)comparePgsSegments(sourceByIndex.get(sourceIndex),outputByIndex.get(outputIndex),shift);
 }

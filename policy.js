@@ -1,9 +1,9 @@
 // QSV ICQ is global across resolution and HDR class; larger values produce lower quality.
 const DEFAULT_ICQ = 22;
-const VIDEO_BITSTREAM_CORRUPTION_RE = /invalid nal unit(?: size| type)|error splitting the input into nal units|missing picture in access unit|corrupt decoded frame|error while decoding|invalid data found when processing input|invalid bitstream|corrupt packet|packet corrupt|invalid obu|error parsing obu|invalid frame marker|invalid sync code|could not find ref with poc|concealing \d+.*(?:dc|ac|mv) errors|premature end of file|truncated (?:packet|frame)|unexpected end of file/i;
-const AUDIO_BITSTREAM_CORRUPTION_RE = /error while decoding|invalid data found when processing input|invalid bitstream|corrupt (?:input )?packet|packet corrupt|crc mismatch|frame crc mismatch|header missing|invalid frame size|invalid packet|input buffer exhausted|premature end of file|truncated (?:packet|frame)|unexpected end of file/i;
-const isKnownVideoCorruptionDiagnostic = text => VIDEO_BITSTREAM_CORRUPTION_RE.test(String(text || ''));
-const isKnownAudioCorruptionDiagnostic = text => AUDIO_BITSTREAM_CORRUPTION_RE.test(String(text || ''));
+const VIDEO_BITSTREAM_CORRUPTION_RE = /invalid nal unit(?: size| type)|error splitting the input into nal units|missing picture in access unit|corrupt decoded frame|invalid data found when processing input|invalid bitstream|corrupt packet|packet corrupt|invalid obu|error parsing obu|invalid frame marker|invalid sync code|could not find ref with poc|concealing \d+.*(?:dc|ac|mv) errors|premature end of file|truncated (?:packet|frame)|unexpected end of file/i;
+const AUDIO_BITSTREAM_CORRUPTION_RE = /invalid data found when processing input|invalid bitstream|corrupt (?:input )?packet|packet corrupt|crc mismatch|frame crc mismatch|header missing|invalid frame size|invalid packet|input buffer exhausted|premature end of file|truncated (?:packet|frame)|unexpected end of file/i;
+const isKnownVideoCorruptionDiagnostic = text => !isVerificationInfrastructureDiagnostic(text) && VIDEO_BITSTREAM_CORRUPTION_RE.test(String(text || ''));
+const isKnownAudioCorruptionDiagnostic = text => !isVerificationInfrastructureDiagnostic(text) && AUDIO_BITSTREAM_CORRUPTION_RE.test(String(text || ''));
 const selectQualityValue = () => {
   const raw = process.env.TDARR_QSV_ICQ;
   const value = raw === undefined || raw === '' ? DEFAULT_ICQ : Number(raw);
@@ -398,16 +398,19 @@ const inspectVideoFrames = async (ffprobe, file, index, options={}) => {
     if (scan.frames===1 || scan.frames%256===0 || now-lastProgressAt>=1000) { update(false); lastProgressAt=now; }
   }, null, (diagnostic,streaming=false)=>{
     scannerDiagnostics=String(diagnostic || '');
+    if(streaming && options.failFast && isVerificationInfrastructureDiagnostic(scannerDiagnostics))
+      throw validationUnavailable(`Frame scanner could not complete: ${scannerDiagnostics.trim().slice(-800)}`);
     if(streaming && options.failFast && isKnownVideoCorruptionDiagnostic(scannerDiagnostics)) {
       const prefix=options.scanRole==='source'?'[Source media corruption]':'[Candidate validation]';
       throw Error(`${prefix} ${scannerDiagnostics.trim().slice(-800)}`);
     }
   });
+  if(isVerificationInfrastructureDiagnostic(scannerDiagnostics))throw validationUnavailable(`Frame scanner could not complete: ${scannerDiagnostics.trim().slice(-800)}`);
   if (isKnownVideoCorruptionDiagnostic(scannerDiagnostics)) {
     const prefix=options.scanRole==='source'?'[Source media corruption]':'[Candidate validation]';
     throw Error(`${prefix} ${scannerDiagnostics.trim().slice(-800)}`);
   }
-  if (!scan.frames) throw Error('Decoded frame metadata unavailable');
+  if (!scan.frames) throw validationUnavailable('Decoded frame metadata unavailable');
   update(true);
   return scan;
 };
@@ -493,7 +496,7 @@ const resolveHdrLight = async (metadata, route, getLevel6) => {
     if (!Number.isFinite(sourceMax) || !Number.isFinite(sourceMin) || Math.abs(sourceMax-l6.max_luminance)>0.1 || Math.abs(sourceMin-l6.min_luminance)>0.0001) throw Error('Dolby Level 6 and HDR10 mastering luminance conflict');
     max=l6.max_content;avg=l6.max_average;override=`${max},${avg}`;
   }
-  const resolved={...metadata,side_data_list:[mastering,{side_data_type:'Content light level metadata',max_content:max,max_average:avg}]};
+  const resolved={...metadata,side_data_list:[mastering,{side_data_type:'Content light level metadata',max_content:max,max_average:avg}].filter(Boolean)};
   validateHdr10(resolved,resolved);
   return {metadata:resolved,override};
 };
@@ -504,10 +507,84 @@ const sameHdrSideData = (a,b,fields) => fields.every(field => {
   const tolerance=field==='max_luminance'?0.1:field.startsWith('max_')?0:0.0001;
   return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x-y)<=tolerance;
 });
+const mediaInfoHdrNumber = value => {
+  const match=String(value ?? '').trim().match(/^(\d+(?:\.\d+)?)(?:\s*cd\/m2)?$/i);
+  return match ? Number(match[1]) : NaN;
+};
+const mediaInfoMasteringMetadata = info => {
+  if (String(info?.HDR_Format || '').trim()!=='SMPTE ST 2086'
+      || String(info?.HDR_Format_Compatibility || '').trim()!=='HDR10'
+      || String(info?.MasteringDisplay_ColorPrimaries_Source || '').trim().toLowerCase()!=='stream'
+      || String(info?.MasteringDisplay_Luminance_Source || '').trim().toLowerCase()!=='stream') return null;
+  const primaries={
+    'display p3':{red_x:'0.6800',red_y:'0.3200',green_x:'0.2650',green_y:'0.6900',blue_x:'0.1500',blue_y:'0.0600',white_point_x:'0.3127',white_point_y:'0.3290'},
+    'dci p3':{red_x:'0.6800',red_y:'0.3200',green_x:'0.2650',green_y:'0.6900',blue_x:'0.1500',blue_y:'0.0600',white_point_x:'0.3140',white_point_y:'0.3510'},
+    'bt.2020':{red_x:'0.7080',red_y:'0.2920',green_x:'0.1700',green_y:'0.7970',blue_x:'0.1310',blue_y:'0.0460',white_point_x:'0.3127',white_point_y:'0.3290'}
+  }[String(info?.MasteringDisplay_ColorPrimaries || '').trim().toLowerCase()];
+  if (!primaries) return null;
+  const luminance=String(info?.MasteringDisplay_Luminance || '').trim().match(/^min:\s*(\d+(?:\.\d+)?)\s*cd\/m2\s*,\s*max:\s*(\d+(?:\.\d+)?)\s*cd\/m2$/i);
+  if (!luminance) return null;
+  const min=Number(luminance[1]),max=Number(luminance[2]);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min<0 || max<=0 || min>max) return null;
+  return {side_data_type:'Mastering display metadata',...primaries,min_luminance:String(min),max_luminance:String(max)};
+};
+const mediaInfoContentLightMetadata = info => {
+  if (String(info?.HDR_Format || '').trim()!=='SMPTE ST 2086'
+      || String(info?.HDR_Format_Compatibility || '').trim()!=='HDR10'
+      || String(info?.MaxCLL_Source || '').trim().toLowerCase()!=='stream'
+      || String(info?.MaxFALL_Source || '').trim().toLowerCase()!=='stream') return null;
+  const max=mediaInfoHdrNumber(info?.MaxCLL),avg=mediaInfoHdrNumber(info?.MaxFALL);
+  if (!Number.isInteger(max) || !Number.isInteger(avg) || max<1 || max>65535 || avg<1 || avg>max) return null;
+  return {side_data_type:'Content light level metadata',max_content:max,max_average:avg};
+};
+const seedHdrMetadataFromMediaInfo = (video,info) => {
+  const side=[...(video?.side_data_list || [])],added=[];
+  const candidateMastering=mediaInfoMasteringMetadata(info);
+  if(candidateMastering){
+    const existing=side.find(item=>item.side_data_type==='Mastering display metadata');
+    if(existing){
+      if(!sameHdrSideData(existing,candidateMastering,hdrMasterFields))throw Error('MediaInfo and FFprobe HDR mastering metadata conflict');
+    }else{side.push(candidateMastering);added.push('mastering');}
+  }
+  const candidateLight=mediaInfoContentLightMetadata(info);
+  if(candidateLight){
+    const index=side.findIndex(item=>item.side_data_type==='Content light level metadata');
+    if(index>=0){
+      const existing=side[index];
+      const unspecified=Number(existing.max_content)===0 && Number(existing.max_average)===0;
+      if(unspecified){side[index]=candidateLight;added.push('content-light');}
+      else if(!sameHdrSideData(existing,candidateLight,['max_content','max_average']))throw Error('MediaInfo and FFprobe content-light metadata conflict');
+    }else{side.push(candidateLight);added.push('content-light');}
+  }
+  return {
+    video:{...video,side_data_list:side},
+    added,
+    contentLightOverride:added.includes('content-light')?`${candidateLight.max_content},${candidateLight.max_average}`:null
+  };
+};
 const isQsvHdrMasteringClampRisk = source => {
   const mastering=(source?.side_data_list || []).find(item=>item.side_data_type==='Mastering display metadata');
   const greenY=rationalValue(mastering?.green_y),qsvClamp=50000/65536;
   return Number.isFinite(greenY) && greenY>qsvClamp+0.0001 && greenY<0.84;
+};
+const shouldRetrySvtForQsvHdrClamp = (source,error) => {
+  if (!isQsvHdrMasteringClampRisk(source)) return false;
+  const failure=error?.validation;
+  return failure?.outcome==='rejected'
+    && failure.stage==='hdr_color'
+    && failure.code==='validation_mismatch'
+    && /HDR mastering metadata conflicts with decoded frames \(identified Intel QSV AV1 green-y clamp\)/.test(String(failure.message || error?.message || ''));
+};
+const validateQsvWithSvtHdrClampFallback = async ({source,validateQsvCandidate,encodeSvtFallback,validateSvtCandidate}) => {
+  if (typeof validateQsvCandidate!=='function' || typeof encodeSvtFallback!=='function' || typeof validateSvtCandidate!=='function') throw Error('QSV HDR fallback callbacks are required');
+  try {
+    return {encoder:'qsv',validation:await validateQsvCandidate()};
+  } catch(error) {
+    if (!shouldRetrySvtForQsvHdrClamp(source,error)) throw error;
+    const candidate=await encodeSvtFallback();
+    const validation=await validateSvtCandidate(candidate);
+    return {encoder:'svt',candidate,validation};
+  }
 };
 const isKnownQsvHdrMasteringClamp = (source,output,error) => {
   if (String(error?.message || error || '') !== 'HDR mastering metadata conflicts with decoded frames') return false;
@@ -574,14 +651,16 @@ const compareVideoTimestamps = (source, output) => {
   const sourceFrames=frameCount(source,a),outputFrames=frameCount(output,b);
   const timestampCount=timestamps=>Array.isArray(timestamps)?timestamps.length:'unavailable';
   const summary=`source ${sourceFrames} frames/${timestampCount(a)} timestamps; output ${outputFrames} frames/${timestampCount(b)} timestamps`;
-  if (!Array.isArray(a) || !Array.isArray(b) || !a.length || !b.length) throw Error(`Video presentation timestamp scan is unavailable (${summary})`);
-  if (sourceFrames!==a.length || outputFrames!==b.length) throw Error(`Video presentation timestamp scan is incomplete (${summary})`);
+  if (!Array.isArray(a) || !Array.isArray(b) || !a.length || !b.length) throw validationUnavailable(`Video presentation timestamp scan is unavailable (${summary})`);
+  if (sourceFrames!==a.length || outputFrames!==b.length) throw validationUnavailable(`Video presentation timestamp scan is incomplete (${summary})`);
   if (sourceFrames!==outputFrames || a.length!==b.length) throw Error(`Video frame count differs (${summary})`);
   const missing=(timestamps)=>timestamps.flatMap((value,index)=>Number.isFinite(value)?[]:[index]).slice(0,5);
   const missingSource=missing(a),missingOutput=missing(b);
   if (missingSource.length || missingOutput.length) {
     const describe=(indices,total)=>indices.length?`${indices.join(', ')}${total>indices.length?', …':''}`:'none';
-    throw Error(`Video presentation timestamps missing or invalid (${summary}; first source frame indexes: ${describe(missingSource,a.filter(x=>!Number.isFinite(x)).length)}; first output frame indexes: ${describe(missingOutput,b.filter(x=>!Number.isFinite(x)).length)})`);
+    const message=`Video presentation timestamps missing or invalid (${summary}; first source frame indexes: ${describe(missingSource,a.filter(x=>!Number.isFinite(x)).length)}; first output frame indexes: ${describe(missingOutput,b.filter(x=>!Number.isFinite(x)).length)})`;
+    if(!missingSource.length)throw validationFailure('rejected','frames','video_timestamps_lost',message);
+    throw validationUnavailable(message);
   }
   for (let i=0;i<a.length;i++) {
     const delta=Math.abs((a[i]-a[0])-(b[i]-b[0]));

@@ -10,8 +10,9 @@ def one(old,new):
  if n!=1: raise RuntimeError(f'Expected 1 match, got {n}: {old[:80]}')
  e=e.replace(old,new,1)
 source_identity=(root/'source_identity.js').read_text().rstrip()
+quarantine=(root/'quarantine.js').read_text().rstrip()
 audio_timing=(root/'audio_timing.js').read_text().rstrip()
-e=(root/'policy.js').read_text()+'\n'+audio_timing+'\n'+source_identity+'\n'+e
+e=(root/'validation.js').read_text()+'\n'+(root/'policy.js').read_text()+'\n'+audio_timing+'\n'+source_identity+'\n'+quarantine+'\n'+e
 one('''module.exports = async (args) => {
   if (!args.variables) args.variables = {};''', '''module.exports = async (args) => {
   let originalGuardFd=null;
@@ -66,6 +67,7 @@ one('''function runTimelineProcess(bin, argv, onLine) {
     catch (e) { reject(e); return; }
     if (typeof trackReservationChild==='function') trackReservationChild(proc);
     let stderr = '';
+    let pendingDiagnostic='',completeDiagnostics='',firstInfrastructureDiagnostic='';
     let timeoutReason = '';
     let lineError=null;
     const terminate=()=>{ if (typeof terminateReservationChild==='function') terminateReservationChild(proc,'SIGKILL'); else proc.kill('SIGKILL'); };
@@ -82,10 +84,20 @@ one('''function runTimelineProcess(bin, argv, onLine) {
     proc.stdout.on('data',refreshIdleTimer);
     proc.stderr.on('data', chunk => {
       stderr = (stderr + chunk.toString()).slice(-8192);
+      if(!firstInfrastructureDiagnostic){
+        const match=stderr.match(VERIFICATION_INFRASTRUCTURE_RE);
+        if(match)firstInfrastructureDiagnostic=stderr.slice(Math.max(0,match.index-60),match.index+300);
+      }
       refreshIdleTimer();
       if(typeof onDiagnostic==='function'&&!lineError){
-        try { onDiagnostic(stderr,true); }
-        catch(err) { lineError=err; terminate(); }
+        pendingDiagnostic=(pendingDiagnostic+chunk.toString()).slice(-8192);
+        const newline=pendingDiagnostic.lastIndexOf('\\n');
+        if(newline>=0){
+          completeDiagnostics=(completeDiagnostics+pendingDiagnostic.slice(0,newline+1)).slice(-8192);
+          pendingDiagnostic=pendingDiagnostic.slice(newline+1);
+          try { onDiagnostic(completeDiagnostics,true); }
+          catch(err) { lineError=err; terminate(); }
+        }
       }
     });
     const lines = timelineReadline.createInterface({input:proc.stdout, crlfDelay:Infinity});
@@ -106,7 +118,7 @@ one('''function runTimelineProcess(bin, argv, onLine) {
         progressRecord={};
       }
     });
-    proc.on('error', err => { clearTimeout(timer); if(idleTimer)clearTimeout(idleTimer); if (typeof untrackReservationChild==='function') untrackReservationChild(proc); reject(err); });
+    proc.on('error', err => { clearTimeout(timer); if(idleTimer)clearTimeout(idleTimer); if (typeof untrackReservationChild==='function') untrackReservationChild(proc); err.processFailure={bin,status:null,signal:null,timedOut:false,diagnostic:stderr}; reject(err); });
     proc.on('close', (status, signal) => {
       clearTimeout(timer);
       if(idleTimer)clearTimeout(idleTimer);
@@ -114,12 +126,17 @@ one('''function runTimelineProcess(bin, argv, onLine) {
       const processReason = timeoutReason ? `timed out: ${timeoutReason}` : `failed (${status ?? signal})`;
       if (typeof onDiagnostic==='function') { try { onDiagnostic(stderr); } catch (_) {} }
       if(lineError) { reject(lineError); return; }
-      if (status !== 0) reject(new Error(`${bin} ${processReason}: ${stderr.trim().slice(-800)}`));
+      if (status !== 0 || firstInfrastructureDiagnostic) {
+        const diagnostic=stderr.trim().slice(-800)+(firstInfrastructureDiagnostic?`; tool/resource cause: ${firstInfrastructureDiagnostic}`:'');
+        const error=new Error(`${bin} ${processReason}: ${diagnostic}`);
+        error.processFailure={bin,status,signal,timedOut:!!timeoutReason,infrastructure:!!firstInfrastructureDiagnostic,diagnostic:stderr};
+        reject(error);
+      }
       else resolve(stderr);
     });
   });
 }''')
-one('async function verifyVideoTimeline(ffprobe, ffmpeg, source, output, sourceIndex, outputIndex, tracks) {', 'async function verifyVideoTimeline(ffprobe, ffmpeg, source, output, sourceIndex, outputIndex, tracks, updateWorker, durationHints, assertSourceStable, audioTimestampRepairIndices=[]) {')
+one('async function verifyVideoTimeline(ffprobe, ffmpeg, source, output, sourceIndex, outputIndex, tracks) {', 'async function verifyVideoTimeline(ffprobe, ffmpeg, source, output, sourceIndex, outputIndex, tracks, updateWorker, durationHints, assertSourceStable, audioTimestampRepairIndices=[], validationReport=newValidationReport(), canUseQsv=true) {')
 one("  const a=await measureStreamTimeline(ffprobe,source,sourceIndex,'video');\n  const b=await measureStreamTimeline(ffprobe,output,outputIndex,'video');", '''  const timelinePairCount=1+tracks.audio.length+tracks.subtitle.length;
   let completedTimelinePairs=0,lastTimelinePercent=90;
   const scanTimelinePair=async operation=>{
@@ -216,58 +233,51 @@ one('''async function measureStreamTimeline(ffprobe, file, streamIndex, type) {
   if (invalid && type!=='audio') {
     const firstMissing=(missingTimestampPackets[0] ?? missingPtsPackets[0]);
     const packetText=firstMissing===undefined?'':' (first at packet '+(firstMissing+1)+')';
-    throw new Error(`${type} ${role} stream ${streamIndex} has ${invalid} packets without a usable ${type==='audio'?'PTS or DTS':'PTS'}${packetText}`);
+    throw validationUnavailable(`${type} ${role} stream ${streamIndex} has ${invalid} packets without a usable ${type==='audio'?'PTS or DTS':'PTS'}${packetText}`);
   }
   if (count===0 && type==='subtitle') return {empty:true};
-  if (count===0 && type==='audio' && packetCount>0) throw new Error(`audio ${role} stream ${streamIndex} has no packets with usable PTS or DTS`);
-  if (count===0 || !Number.isFinite(first) || !Number.isFinite(last) || (type==='video' && (count<2 || !(last>first)))) throw new Error(`${type} ${role} stream ${streamIndex} timeline is unavailable or too short to verify`);
+  if (count===0 && type==='audio' && packetCount>0) throw validationUnavailable(`audio ${role} stream ${streamIndex} has no packets with usable PTS or DTS`);
+  if (count===0 || !Number.isFinite(first) || !Number.isFinite(last) || (type==='video' && (count<2 || !(last>first)))) throw validationUnavailable(`${type} ${role} stream ${streamIndex} timeline is unavailable or too short to verify`);
   const bitmapBytes=Math.ceil(packetCount/8);
   return {first,last,duration:last-first,packets:count,totalPackets:packetCount,outputDtsNonIncreasingCount,missingPtsCount,missingPtsPackets,missingPtsTruncated:missingPtsCount>missingPtsPackets.length,missingPtsBitmap:missingPtsBitmap.subarray(0,bitmapBytes),missingTimestampCount,missingTimestampPackets,missingTimestampsTruncated:missingTimestampCount>missingTimestampPackets.length,missingTimestampBitmap:missingTimestampBitmap.subarray(0,bitmapBytes),empty:false};
 }''')
 one("  const decode=['-v','error','-xerror','-i',output,'-map',`0:${outputIndex}`];", "  const arcDevice=process.env.TDARR_ARC_DEVICE || '/dev/dri/renderD129';\n  const decode=['-v','error','-xerror','-progress','pipe:1','-nostats','-init_hw_device',`vaapi=va:${arcDevice}`,'-init_hw_device','qsv=hw@va','-hwaccel','qsv','-hwaccel_device','hw','-hwaccel_output_format','qsv','-i',output,'-map',`0:${outputIndex}`];")
 one("  for (const [,dstIndex] of tracks.audio) decode.push('-map',`0:${dstIndex}`);", '')
 one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(updateWorker,{percentage:96,fps:0,status:"Validation: strict output video decode"});
-  try {
-    await runTimelineProcess(ffmpeg,decode,null,(timeUs,fps)=>{
-      const ratio=a.duration>0?Math.min(1,Math.max(0,timeUs/1000000/a.duration)):0;
-      const data={percentage:96+3*ratio,status:"Validation: strict output video decode"};
-      if(Number.isFinite(fps)&&fps>0)data.fps=fps;
-      reportWorkerProgress(updateWorker,data);
-    });
-    if (tracks.audio.length) {
+  await verifyCandidateDecodes({
+    report:validationReport,canUseQsv,audioTracks:tracks.audio,sourceVideoIndex:sourceIndex,
+    isCorruption:type=>type==='video'?isKnownVideoCorruptionDiagnostic:isKnownAudioCorruptionDiagnostic,
+    runVideo:async mode=>{
+      const argv=mode==='qsv'?decode:withDecoderThreads(['-v','error','-xerror','-progress','pipe:1','-nostats','-i',output,'-map',`0:${outputIndex}`,'-f','null','-'],getDecodeThreadCount());
+      const status=mode==='qsv'?"Validation: strict output video decode":"Validation: strict software video decode";
+      reportWorkerProgress(updateWorker,{percentage:96,fps:0,status});
+      return await runTimelineProcess(ffmpeg,argv,null,(timeUs,fps)=>{
+        const ratio=a.duration>0?Math.min(1,Math.max(0,timeUs/1000000/a.duration)):0;
+        const data={percentage:96+3*ratio,status};
+        if(Number.isFinite(fps)&&fps>0)data.fps=fps;
+        reportWorkerProgress(updateWorker,data);
+      });
+    },
+    runAudio:async indices=>{
       const audioDecode=withDecoderThreads(['-v','error','-xerror','-progress','pipe:1','-nostats','-i',output],getDecodeThreadCount());
-      for (const [,dstIndex] of tracks.audio) audioDecode.push('-map',`0:${dstIndex}`);
+      for (const dstIndex of indices) audioDecode.push('-map',`0:${dstIndex}`);
       audioDecode.push('-f','null','-');
-      await runTimelineProcess(ffmpeg,audioDecode,null,(timeUs,fps)=>{
+      return await runTimelineProcess(ffmpeg,audioDecode,null,(timeUs,fps)=>{
         const duration=Number(durationHints?.output)||a.duration;
         const ratio=duration>0?Math.min(1,Math.max(0,timeUs/1000000/duration)):0;
         const data={percentage:99+0.9*ratio,status:"Validation: retained audio decode"};
         if(Number.isFinite(fps)&&fps>0)data.fps=fps;
         reportWorkerProgress(updateWorker,data);
       });
-    }
-  } catch (outputError) {
-    const sourceCorruption=[],sourceDiagnostics=[];
-    const decodeSource=async (index,type) => {
+    },
+    checkSource:async(type,index)=>{
       const args=withDecoderThreads(['-v','error','-xerror','-i',source,'-map',`0:${index}`,'-f','null','-'],getDecodeThreadCount());
-      try {
-        await runTimelineProcess(ffmpeg,args);
-        sourceDiagnostics.push(`${type} source stream ${index}: decoded cleanly`);
-      } catch (sourceError) {
-        const detail=String(sourceError?.message || sourceError);
-        const recognized=type==='video'?isKnownVideoCorruptionDiagnostic(detail):isKnownAudioCorruptionDiagnostic(detail);
-        sourceDiagnostics.push(`${type} source stream ${index}: ${recognized?'recognized corruption':'decode diagnostic'}: ${detail.slice(-300)}`);
-        if(recognized)sourceCorruption.push(`${type} source stream ${index}: ${detail.slice(-500)}`);
-      }
-    };
-    await decodeSource(sourceIndex,'video');
-    for (const [srcIndex] of tracks.audio) await decodeSource(srcIndex,'audio');
-    const candidateDetail=String(outputError?.message || outputError).slice(-500);
-    const sourceDetail=sourceDiagnostics.join(' | ').slice(-700) || 'source decode details unavailable';
-    if(sourceCorruption.length)throw new Error(`[Source media corruption] ${sourceCorruption.join(' | ')}; candidate decode failed: ${candidateDetail}; source decode details: ${sourceDetail}`);
-    throw new Error(`Candidate video/audio decode failed; strict source decodes did not confirm known source corruption. Source decode details: ${sourceDetail}; candidate decode: ${candidateDetail}`);
-  }''')
-one('  return await verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks);', '  return await verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks, expected.updateWorker, {source:resolveProbeDuration(src),output:resolveProbeDuration(dst)}, expected.assertOriginalUnchanged, expected.audioTimestampRepairIndices || []);')
+      if(typeof assertSourceStable==='function')assertSourceStable();
+      try {return await runTimelineProcess(ffmpeg,args);}
+      finally {if(typeof assertSourceStable==='function')assertSourceStable();}
+    }
+  });''')
+one('  return await verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks);', '  return await validationStage(validationReport,"timelines",()=>verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks, expected.updateWorker, {source:resolveProbeDuration(src),output:resolveProbeDuration(dst)}, expected.assertOriginalUnchanged, expected.audioTimestampRepairIndices || [],validationReport,useQsvDecode(video[0])),"rejected");')
 one('    const specific = lines.filter(l => /error|failed|unsupported|invalid|cannot|only one of them|ratecontrol|qsv|vaapi/i.test(l));\n    const chosen = specific.length > 0 ? specific.slice(-3) : lines.slice(-3);\n    return chosen.join(" | ").substring(0, 240);',
 r'''    const specific = lines.filter(l => /\b(?:error|failed|unsupported|invalid|cannot|could not|only one of them|ratecontrol)\b/i.test(l)
       && !/discarding stream metadata .* because the stream is being re-encoded/i.test(l));
@@ -276,6 +286,34 @@ r'''    const specific = lines.filter(l => /\b(?:error|failed|unsupported|invali
     return chosen.join(" | ").substring(0, 1200);''')
 one('''    log(`[Safety check failed] ${err.message || err}. Original will not be replaced.`);''',
 r'''    const detail=String(err?.message || err);
+    const quarantineReport=args.variables?.user?.validation_report || {outcome:"inconclusive",stage:"candidate_validation",failure:{message:detail}};
+    if (quarantinedCandidate) {
+      try {
+        quarantinedCandidate=await updateQuarantineFailure(quarantinedCandidate,quarantineReport);
+        args.variables.user.quarantine_entry=quarantinedCandidate;
+        log(`[Quarantine] Candidate remains stored after failed current validation (${quarantinedCandidate.candidatePath}).`);
+      } catch (quarantineError) {
+        log(`[Quarantine] Could not update the stored candidate's validation report: ${quarantineError.message || quarantineError}; the candidate remains untouched.`);
+      }
+    } else {
+      try {
+        assertOriginalUnchanged();
+        const storedCandidate=await storeQuarantineCandidate({
+          root:quarantineRootForJob,
+          sourcePath:originalPath,
+          libraryRoots:quarantineLibraryRoots,
+          candidatePath:outputPath,
+          marker:isBloat?"ArcAV1_SeekHeal_V15":softwareHdrFallback?"ArcAV1_SVTAV1_HDRFallback_V15":"ArcAV1_QSV_V15",
+          kind:isBloat?"seek_heal_remux":softwareHdrFallback?"svt_av1_encode":"qsv_av1_encode",
+          validationReport:quarantineReport,
+          assertSourceUnchanged:assertOriginalUnchanged
+        });
+        args.variables.user.quarantine_entry=storedCandidate;
+        log(`[Quarantine] Stored complete candidate after final validation failed: ${storedCandidate.candidatePath}. Original remains unchanged.`);
+      } catch (quarantineError) {
+        log(`[Quarantine] Candidate was not retained: ${quarantineError.message || quarantineError}; normal scratch cleanup will continue.`);
+      }
+    }
     const alreadyClassified=/^\[(?:safety check failed|source media corruption)\]/i.test(detail);
     const originalGuard=/^Original library file changed during processing/i.test(detail);
     const reason=alreadyClassified?detail:originalGuard?`[Original guard] ${detail}`:`[Safety check failed] ${detail}`;
@@ -378,6 +416,38 @@ one('  // 2. Stream Probing', '''  const saveOriginalSnapshot = (stat, realPath,
     throw new Error(`Original library file changed during processing (changed fields: ${changed.join(', ')}${verificationError?`; relocation verification failed: ${verificationError}`:''})`);
   };
 
+  const quarantineRootForJob = process.env.TDARR_RESERVATION_ROOT || "/transcode_cache";
+  const quarantineLibraryRoots = [args.librarySettings?.folder,args.variables?.library?.folder,...(Array.isArray(args.librarySettings?.folders)?args.librarySettings.folders:[])].filter(folder=>typeof folder==="string"&&path.isAbsolute(folder));
+  const forceFreshSetting = args.userVariables?.library?.arc_force_fresh_path;
+  const forceFreshRequested = typeof forceFreshSetting === "string" && forceFreshSetting.trim().length > 0
+    && path.resolve(forceFreshSetting.trim()) === path.resolve(originalPath);
+  let quarantinedCandidate = null;
+  delete args.variables.user.quarantine_entry;
+  if (forceFreshRequested) {
+    try {
+      const removedCount = await removeQuarantineCandidatesForSource({root:quarantineRootForJob,sourcePath:originalPath,libraryRoots:quarantineLibraryRoots});
+      log(`[Quarantine] Force-fresh requested for this exact path; removed ${removedCount} stored candidate(s).`);
+    } catch (err) {
+      const reason=`[Quarantine] Force-fresh cleanup failed: ${err.message || err}; original retained and fresh processing was not started.`;
+      args.variables.user.failure_reason=reason;
+      log(reason);
+      return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
+    }
+  } else {
+    try {
+      quarantinedCandidate = await findQuarantineCandidate({root:quarantineRootForJob,sourcePath:originalPath,libraryRoots:quarantineLibraryRoots});
+      if (quarantinedCandidate) {
+        args.variables.user.quarantine_entry = quarantinedCandidate;
+        assertOriginalUnchanged();
+        log(`[Quarantine] Found a complete candidate for this exact source hash; the flow will re-run current source and candidate checks without encoding.`);
+      }
+    } catch (err) {
+      quarantinedCandidate = null;
+      delete args.variables.user.quarantine_entry;
+      log(`[Quarantine] Stored candidate could not be safely reused: ${err.message || err}; processing the original from scratch.`);
+    }
+  }
+
   // 2. Stream Probing''')
 one('''  const src = probe(sourcePath);
   const dst = probe(outputPath);''', '''  if(typeof expected.assertOriginalUnchanged==='function')expected.assertOriginalUnchanged();
@@ -404,7 +474,7 @@ one('  const tracks = {};\n  for (const type of ["audio", "subtitle"]) {', '''  
   const tracks = {};
   for (const type of ["audio", "subtitle"]) {''')
 one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const markerKey = Object.keys(args.inputFileObj?.ffProbeData?.format?.tags || {}).find(k => k.toLowerCase() === "encoded_by");
-  if (isCompletedEncode(String(mainVideo.codec_name || "").toLowerCase(), markerKey ? {[markerKey]:args.inputFileObj.ffProbeData.format.tags[markerKey]} : {})) {
+  if (!quarantinedCandidate && !forceFreshRequested && isCompletedEncode(String(mainVideo.codec_name || "").toLowerCase(), markerKey ? {[markerKey]:args.inputFileObj.ffProbeData.format.tags[markerKey]} : {})) {
     log("[Arc AV1] Previously processed output; no additional generation.");
     return {outputFileObj:args.inputFileObj,outputNumber:4,variables:args.variables};
   }
@@ -437,12 +507,14 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
     log(args.variables.user.failure_reason);
     return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
   }
-  try {
-    fs.accessSync(gpuDevice,fs.constants.R_OK|fs.constants.W_OK);
-  } catch(err) {
-    args.variables.user.failure_reason=`[Arc GPU] Device not accessible: ${gpuDevice}: ${err.message || err}; original retained.`;
-    log(args.variables.user.failure_reason);
-    return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
+  if (!quarantinedCandidate) {
+    try {
+      fs.accessSync(gpuDevice,fs.constants.R_OK|fs.constants.W_OK);
+    } catch(err) {
+      args.variables.user.failure_reason=`[Arc GPU] Device not accessible: ${gpuDevice}: ${err.message || err}; original retained.`;
+      log(args.variables.user.failure_reason);
+      return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
+    }
   }
   let hybridPreflight='not_hybrid';
   try {
@@ -564,9 +636,11 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
           hdrSource=preflightHdrSource;
           hdrLightOverride=preflightHdrLightOverride;
         } else {
-          hdrSource = mergeHdrMetadata(mainVideo,readHdrFrames(ffprobeBin,inputPath,mainVideo.index),{allowMissingLight:canUseDolbyLevel6,allowMissingAll:hdrClass==="hdr10"});
+          const mediaInfoHdrSeed=hdrClass==="hdr10"?seedHdrMetadataFromMediaInfo(mainVideo,infoVideos[0]):{video:mainVideo,added:[],contentLightOverride:null};
+          if(mediaInfoHdrSeed.added.length)log(`[HDR metadata] Filled missing FFprobe side data from stream-sourced MediaInfo fields: ${mediaInfoHdrSeed.added.join(", ")}. Candidate metadata must still match these values.`);
+          hdrSource = mergeHdrMetadata(mediaInfoHdrSeed.video,readHdrFrames(ffprobeBin,inputPath,mainVideo.index),{allowMissingLight:canUseDolbyLevel6,allowMissingAll:hdrClass==="hdr10"});
           const resolved = await resolveHdrLight(hdrSource,hdrClass,() => extractDolbyLevel6(ffmpegBin,inputPath,mainVideo.index,frameScan.frames));
-          hdrSource = resolved.metadata; hdrLightOverride = resolved.override;
+          hdrSource = resolved.metadata; hdrLightOverride = resolved.override || mediaInfoHdrSeed.contentLightOverride;
         }
         checkHdrFrameStatic(hdrSource,frameScan,!canUseDolbyLevel6 && hdrClass!=="hdr10",hdrClass!=="hdr10");
       }
@@ -607,15 +681,15 @@ one('  const rawSizeMB = (args.originalLibraryFile?.file_size || args.inputFileO
 one('  const isTargetRam = typeof targetDir === "string" && targetDir.startsWith("/dev/shm");', '  const isTargetRam = BigInt.asUintN(32,fs.statfsSync(targetDir,{bigint:true}).type) === 16914836n;')
 one('Math.abs((d.first-s.first)-shift)>tolerance || Math.abs((d.last-s.last)-shift)>tolerance', 'Math.abs((d.first-s.first)-shift)>0.1 || Math.abs((d.last-s.last)-shift)>0.1')
 one('        "-look_ahead", "1",\n        "-look_ahead_depth", "40",\n','')
-one('  const needsProactiveHybrid = isH26410bit || isVC1 || isNon420Chroma;', '  const needsProactiveHybrid = !useQsvDecode(mainVideo);\n  const softwareHdrFallback = isHdr && isQsvHdrMasteringClampRisk(hdrSource);\n  quality = softwareHdrFallback ? 28 : selectedQuality;\n  const qualityLabel = softwareHdrFallback ? "SVT-AV1 CRF" : "ICQ";')
+one('  const needsProactiveHybrid = isH26410bit || isVC1 || isNon420Chroma;', '  const needsProactiveHybrid = !useQsvDecode(mainVideo);\n  const qsvHdrClampRetryEligible = isHdr && isQsvHdrMasteringClampRisk(hdrSource);\n  let softwareHdrFallback = quarantinedCandidate?.kind === "svt_av1_encode";\n  quality = softwareHdrFallback ? 28 : selectedQuality;\n  let qualityLabel = softwareHdrFallback ? "SVT-AV1 CRF" : "ICQ";')
 one('''  if (!isAlreadyAV1 && isHdr) {
     pipelineMode += isHlg ? " [HLG]" : " [HDR10]";
   }''', '''  if (!isAlreadyAV1 && isHdr) {
     pipelineMode += isHlg ? " [HLG]" : " [HDR10]";
   }
   if (softwareHdrFallback) {
-    pipelineMode = "Software SVT-AV1 HDR encode (QSV mastering clamp avoidance)";
-    log(`[Arc AV1] Source HDR mastering metadata falls in the known Intel QSV green-y clamp range; using SVT-AV1 CRF 28 so static metadata remains verifiable.`);
+    pipelineMode = "Software SVT-AV1 HDR candidate revalidation";
+    log(`[Arc AV1] Revalidating a quarantined SVT-AV1 HDR candidate against the current checks.`);
   }''')
 one('    cmdArgs.push("-i", inputPath);', '    if (hdrLightOverride) cmdArgs.push("-content_light", hdrLightOverride);\n    if (useHybrid && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));\n    cmdArgs.push("-i", inputPath);\n    if (is12Bit && !forceStreamCopy) cmdArgs.push("-sws_dither", "ed");')
 one('    if (useHybrid && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));', '    if ((useHybrid || useSoftwareFallback) && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));')
@@ -677,7 +751,7 @@ one('encoded_by=ArcAV1_QSV','encoded_by=ArcAV1_QSV_V15')
 one('cmdArgs.push("-metadata:g", "encoded_by=ArcAV1_QSV_V15");', 'cmdArgs.push("-metadata:g", forceStreamCopy ? "encoded_by=ArcAV1_SeekHeal_V15" : useSoftwareFallback ? "encoded_by=ArcAV1_SVTAV1_HDRFallback_V15" : "encoded_by=ArcAV1_QSV_V15");')
 one('      codec: expectedVideoCodec,\n', '      codec: expectedVideoCodec,\n      requireMarker: true,\n      hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10",\n      optionalHdrStatic: hdrClass === "hdr10",\n      hlg: hdrClass === "hlg",\n      untagged: hdrClass === "untagged",\n      sourceClass: hdrClass,\n      sourceHdr: hdrSource,\n      sdrSource,\n      sourceFrameScan: frameScan,\n      outputMarker: isBloat ? \"ArcAV1_SeekHeal_V15\" : softwareHdrFallback ? \"ArcAV1_SVTAV1_HDRFallback_V15\" : \"ArcAV1_QSV_V15\",\n')
 one('      sourceFrameScan: frameScan,\n', '      sourceFrameScan: frameScan,\n      updateWorker: args.updateWorker,\n      assertOriginalUnchanged: assertOriginalUnchanged,\n      audioTimestampRepairIndices: Array.from(audioTimestampRepairs.keys()),\n')
-one('    const valResult = await validateOutput(ffprobeBin, inputPath, outputPath, {', '    reportWorkerProgress(args.updateWorker,{percentage:80,fps:0,status:"Validation: output streams and metadata"});\n    const valResult = await validateOutput(ffprobeBin, inputPath, outputPath, {')
+one('outputMarker: isBloat ? "ArcAV1_SeekHeal_V15" : softwareHdrFallback ? "ArcAV1_SVTAV1_HDRFallback_V15" : "ArcAV1_QSV_V15",', 'outputMarker: quarantinedCandidate?.marker || (isBloat ? "ArcAV1_SeekHeal_V15" : softwareHdrFallback ? "ArcAV1_SVTAV1_HDRFallback_V15" : "ArcAV1_QSV_V15"),')
 a=e.index('  log(`[Arc AV1 Single-Pass] Processing:')
 b=e.index('\n  // Cleanup temporary clamped chapters file',a)
 e=e[:a]+'''  log(`[Arc AV1] Processing ${inputPath} using ${qualityLabel} ${quality}; ${pipelineMode}`);
@@ -711,11 +785,24 @@ e=e[:a]+'''  log(`[Arc AV1] Processing ${inputPath} using ${qualityLabel} ${qual
     res = {status:1, qualityFloor:attempt.reason === "quality_floor", stderr:`No smaller output at ${qualityLabel} ${attempt.quality}: ${attempt.reason}`};
   }
 '''+e[b:]
+one('  log(`[Arc AV1] Processing ${inputPath} using ${qualityLabel} ${quality}; ${pipelineMode}`);', '''  if (quarantinedCandidate) {
+    quality = quarantinedCandidate.kind === "seek_heal_remux" ? null : quarantinedCandidate.kind === "svt_av1_encode" ? 28 : selectedQuality;
+    pipelineMode = quarantinedCandidate.kind === "seek_heal_remux" ? "Quarantined seek-heal remux revalidation" : quarantinedCandidate.kind === "svt_av1_encode" ? "Quarantined SVT-AV1 candidate revalidation" : "Quarantined Arc QSV AV1 candidate revalidation";
+    args.variables.user.quarantine_entry = quarantinedCandidate;
+  }
+  log(`[Arc AV1] Processing ${inputPath} using ${qualityLabel} ${quality}; ${pipelineMode}`);''')
+one('  let isBloat = false;', '  let isBloat = quarantinedCandidate?.kind === "seek_heal_remux";')
+one('  const attempt = await runSingleQuality(quality, sourceBytes, async (q) => {', '''  const attempt = quarantinedCandidate
+    ? {ok:true,quality,result:{ok:true,size:fs.statSync(outputPath).size,ffmpeg:{status:0,stderr:""}}}
+    : await runSingleQuality(quality, sourceBytes, async (q) => {''')
 a=e.index('  // Bloat Protection (> maxRatioPct for tier)')
 b=e.index('\n  // 10. Persist Pipeline Metadata',a)
 e=e[:a]+'  cleanupChapters();\n'+e[b:]
 one('  const isBloat = !isAlreadyAV1 && (ratioPct > maxRatioPct);','  // isBloat is set only by the strictly smaller, validated seek-heal fallback.')
+one('  if (!isAlreadyAV1 && !isBloat) {', '  if (!quarantinedCandidate && !isAlreadyAV1 && !isBloat) {')
 exec((root/'build_additions.py').read_text())
+exec((root/'build_validation.py').read_text())
+one('      validationReport=args.variables.user.validation_report=newValidationReport();', '      validationReport=args.variables.user.validation_report=newValidationReport();\n      reportWorkerProgress(args.updateWorker,{percentage:80,fps:0,status:"Validation: output streams and metadata"});')
 one('    return spawnSync(ffmpegBin, cmdArgs, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });', '''    const progressStart=forceStreamCopy?80:10,progressEnd=forceStreamCopy?82:80;
     // Encodes stop at source size. Remux file-size limits grow only after the shared cache ledger grants capacity.
     const processSizeLimit=forceStreamCopy?reservedOutputBytes:sourceBytes;

@@ -1,6 +1,20 @@
 # Executed by build.py with the flow and V5 engine in scope.
 import re
 
+one('  if (isUndersized) {', '''  if (isUndersized) {
+    if (quarantinedCandidate) {
+      const sizeFailureReport={version:1,outcome:"rejected",stage:"size_policy",checks:[{stage:"size_policy",outcome:"rejected",code:"candidate_size_policy"}],failure:{outcome:"rejected",stage:"size_policy",code:"candidate_size_policy",message:`Quarantined candidate failed the current size floor (${newSizeMB.toFixed(2)} MB, ${ratioPct.toFixed(1)}% of source).`}};
+      args.variables.user.validation_report=sizeFailureReport;
+      try {
+        quarantinedCandidate=await updateQuarantineFailure(quarantinedCandidate,sizeFailureReport);
+        args.variables.user.quarantine_entry=quarantinedCandidate;
+        log(`[Quarantine] Candidate remains stored after failing the current size policy (${quarantinedCandidate.candidatePath}).`);
+      } catch (quarantineError) {
+        log(`[Quarantine] Could not update the stored candidate's size-policy report: ${quarantineError.message || quarantineError}; the candidate remains untouched.`);
+      }
+    }
+''')
+
 # Replace the inherited job-lifetime mutex with short-lived admission locks.
 old_lock=(root/'base/capacity_lock.js').read_text()
 if e.count(old_lock)!=1: raise RuntimeError('V3 lock module not found exactly once')
@@ -57,6 +71,22 @@ e=e[:a]+'''  try {
 ''' +e[b:]
 # Tie the reservation to the exact temporary directory created for this job.
 one('  args.variables.user.safety_temp_dir = targetDir;', '  args.variables.user.safety_temp_dir = targetDir;\n  await registerReservationWorkspace(args.variables.user.cache_reservation, targetDir);')
+one('  args.variables.user.safety_temp_output = outputPath;', '''  args.variables.user.safety_temp_output = outputPath;
+  if (quarantinedCandidate) {
+    const cachedCandidateSize = BigInt(fs.statSync(quarantinedCandidate.candidatePath).size);
+    if (cachedCandidateSize > reservedOutputBytes) {
+      await growCapacityReservation(args.variables.user.cache_reservation,cachedCandidateSize,0n,{marginBytes:64n*1024n*1024n});
+      log(`[Cache reservation] Expanded scratch capacity for ${cachedCandidateSize}-byte quarantined candidate.`);
+    }
+    fs.copyFileSync(quarantinedCandidate.candidatePath,outputPath,fs.constants.COPYFILE_EXCL);
+    if (hashFilePath(outputPath) !== quarantinedCandidate.candidateHash) {
+      try { fs.unlinkSync(outputPath); } catch (_) {}
+      throw Error('Quarantined candidate changed while copying into the current job cache');
+    }
+    args.variables.user.quarantine_entry=quarantinedCandidate;
+    log(`[Quarantine] Copied the stored candidate into this job cache for current validation; the quarantine original remains untouched until replacement succeeds.`);
+  }
+''')
 # Encodes remain capped below the initial estimate. Seek-heal remuxes use the
 # dynamically expanded RLIMIT reservation instead of a static FFmpeg -fs cap.
 one('      "-max_muxing_queue_size", "2048",\n      outputPath', '      "-max_muxing_queue_size", "2048",\n      ...(!forceStreamCopy ? ["-fs", String(maxOutputBytes)] : []),\n      outputPath')
@@ -93,11 +123,11 @@ module.exports = async (args) => {
   const previous = args.jobLog;
   args.jobLog = message => {
     const text=String(message || '');
-    const relevant=/safety check failed|source media corruption|iso guard|\\[hdr guard\\]|\\[video guard\\]|\\[original guard\\]|\\[arc gpu\\]|\\[probe\\]|\\[cache reservation\\]|transcode execution failed|\\[size guard\\]|job failed|file not found|no valid video|incompatible pixel/i.test(text);
+    const relevant=/safety check failed|source media corruption|iso guard|\\[hdr guard\\]|\\[video guard\\]|\\[original guard\\]|\\[arc gpu\\]|\\[probe\\]|\\[cache reservation\\]|\\[quarantine\\]|transcode execution failed|\\[size guard\\]|job failed|file not found|no valid video|incompatible pixel/i.test(text);
     if (relevant && !/ICQ \\d+ reached the source size/i.test(text)) {
       if (!fallbackReason) fallbackReason=text;
       if (/seek-healing remux/i.test(text)) remuxDetail=text;
-      else if (/safety check failed|source media corruption|iso guard|\\[hdr guard\\]|\\[video guard\\]|\\[original guard\\]|\\[arc gpu\\]|\\[probe\\]|\\[cache reservation\\]|transcode execution failed|\\[size guard\\] no smaller output at icq|job failed|file not found|no valid video|incompatible pixel/i.test(text)) reason=text;
+      else if (/safety check failed|source media corruption|iso guard|\\[hdr guard\\]|\\[video guard\\]|\\[original guard\\]|\\[arc gpu\\]|\\[probe\\]|\\[cache reservation\\]|\\[quarantine\\]|transcode execution failed|\\[size guard\\] no smaller output at icq|job failed|file not found|no valid video|incompatible pixel/i.test(text)) reason=text;
     }
     if (typeof previous === 'function') { try { previous(message); } catch (_) {} }
   };
@@ -155,6 +185,9 @@ one("    args.variables.user.ass_subtitle_preserved_count=isMatroskaContainer?fi
 success=next((p for p in flow['flowPlugins'] if p['id']=='discord_success'),None)
 if not success: raise RuntimeError('Success notifier plugin not found')
 success_code=success['inputsDB']['code']
+old_transcode_end='  const transcodeEndTs = args.variables?.user?.transcode_end_ts;'
+if success_code.count(old_transcode_end)!=1: raise RuntimeError('Unexpected success notifier transcode timing block')
+success_code=success_code.replace(old_transcode_end,old_transcode_end+'\n  const wasQuarantined = /^Quarantined /.test(String(args.variables?.user?.qsv_mode || ""));',1)
 old_hdr='  const payload = JSON.stringify({'
 new_hdr='''  const styledSubtitleCount=Number(args.variables?.user?.ass_subtitle_preserved_count||0);
   if (Number.isSafeInteger(styledSubtitleCount)&&styledSubtitleCount>0) descLines.push(`💬 **Styled subtitles:** ${styledSubtitleCount} ASS/SSA track${styledSubtitleCount===1?'':'s'} preserved`);
@@ -205,6 +238,9 @@ new_bitrate_block='''  const qualVal = args.variables?.user?.quality_value;
   if (transcodeStartTs && transcodeEndTs && origVidKbps > 0 && newVidKbps > 0) {
     const qualDesc = qualVal ? `ICQ ${qualVal}` : "ICQ mode";
     bitrateStr = `\\`${formatBitrate(origVidKbps)}\\` ➔ \\`${formatBitrate(newVidKbps)}\\` **(${qualDesc})**`;
+  } else if (wasQuarantined) {
+    const kind=/seek-heal/i.test(String(args.variables?.user?.qsv_mode||''))?'stored seek-heal candidate':'stored AV1 candidate';
+    bitrateStr = `\\`${formatBitrate(newVidKbps || origVidKbps)}\\` **(${kind})**`;
   } else if (isFallback) {
     bitrateStr = `\\`${formatBitrate(origVidKbps || newVidKbps)}\\` **(source video copied)**`;
   } else if (origVidKbps > 0 || newVidKbps > 0) {
@@ -216,8 +252,10 @@ desc_end=success_code.index('\n  const payload = JSON.stringify({',desc_start)
 new_desc_block='''  const wasEncoded=Boolean(transcodeStartTs&&transcodeEndTs);
   const cpuDecode=/CPU Decode|Downsample/i.test(String(pipelineMode||''));
   const softwareEncode=/Software SVT-AV1/i.test(String(pipelineMode||''));
-  const methodLine=isFallback
-    ? `🛠️ **Result:** AV1 was not smaller; validated seek-heal remux kept the original video stream.`
+  const methodLine=wasQuarantined
+    ? `🔁 **Method:** Quarantined candidate revalidated • no encode ran`
+    : isFallback
+      ? `🛠️ **Result:** AV1 was not smaller; validated seek-heal remux kept the original video stream.`
     : wasEncoded
       ? softwareEncode
         ? `⚙️ **Method:** Software SVT-AV1 encode at CRF 28`
@@ -237,10 +275,11 @@ new_desc_block='''  const wasEncoded=Boolean(transcodeStartTs&&transcodeEndTs);
     `💬 **Subtitles:** ${subtitleCount} track${subtitleCount===1?'':'s'} • ${subtitleLanguages}${subtitleStyle}`,
     `✅ **Validation:** Full stream, timing, subtitle, and A/V decode checks passed`,
     `⏱️ **Processing time:** ${totalDurationStr} • ${mediumTag} scratch`
-  ];'''
+  ];
+  if(args.variables?.user?.validation_report?.outcome==='recovered')descLines.push('🛠️ **Verification recovery:** Arc verification failed; full software video verification passed.');'''
 success_code=success_code[:desc_start]+new_desc_block+success_code[desc_end:]
 old_footer='text: isFallback ? "Tdarr AV1 Flow • Size Bloat Fallback Success" : (statusStr.includes("Compliant") ? "Tdarr AV1 Flow • Verified Compliant" : "Tdarr AV1 Flow • Transcode Success")'
-new_footer='text: isFallback ? "Tdarr AV1 Flow • Seek-heal remux validated • Source video preserved" : (statusStr.includes("Compliant") ? "Tdarr AV1 Flow • Validated remux" : "Tdarr AV1 Flow • AV1 encode validated")'
+new_footer='text: wasQuarantined ? "Tdarr AV1 Flow • Quarantined candidate revalidated" : isFallback ? "Tdarr AV1 Flow • Seek-heal remux validated • Source video preserved" : (statusStr.includes("Compliant") ? "Tdarr AV1 Flow • Validated remux" : "Tdarr AV1 Flow • AV1 encode validated")'
 if success_code.count(old_footer)!=1: raise RuntimeError('Unexpected success footer text')
 success_code=success_code.replace(old_footer,new_footer,1)
 success['inputsDB']['code']=success_code
@@ -253,7 +292,22 @@ for p in flow['flowPlugins']:
   code=code.replace('  const output = args.variables?.user?.safety_temp_output;', '  const output = args.variables?.user?.safety_temp_output;\n  let cleanupComplete = false;')
   code=code.replace('      log(`[Cache cleanup] Safely removed job cache: ${tempDir}`);', '      cleanupComplete = true;\n      log(`[Cache cleanup] Safely removed job cache: ${tempDir}`);')
   code=code.replace('  if (args.variables?.user) {\n    delete args.variables.user.safety_temp_dir;', '  if (args.variables?.user && cleanupComplete) {\n    delete args.variables.user.safety_temp_dir;')
- p['inputsDB']['code']=(root/'reservations.js').read_text()+'\n'+code
+  quarantine_cleanup='''  if (args.variables?.user?.quarantine_entry) {
+    try {
+      const entry=args.variables.user.quarantine_entry;
+      await removeQuarantineCandidate(entry);
+      delete args.variables.user.quarantine_entry;
+      log(`[Quarantine] Removed validated candidate after successful replacement: ${entry.candidatePath}`);
+    } catch (err) {
+      log(`[Quarantine] Replacement succeeded, but the stored candidate could not be removed: ${err.message || err}`);
+    }
+  }
+'''
+  if code.count('  if (args.variables?.user?.cache_reservation) {')!=1: raise RuntimeError('Unexpected success cleanup reservation block')
+  code=code.replace('  if (args.variables?.user?.cache_reservation) {',quarantine_cleanup+'  if (args.variables?.user?.cache_reservation) {',1)
+ helper_code=(root/'reservations.js').read_text()+'\n'
+ if p['id']=='cleanup_success': helper_code+=(root/'quarantine.js').read_text()+'\n'
+ p['inputsDB']['code']=helper_code+code
 
 # V14 preserves the established language selection but stream-copies retained audio,
 # checking source audio before video encoding and validating the candidate afterward.
@@ -278,6 +332,7 @@ one('  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.
         const ratio=durationSec>0 && Number.isFinite(decodedSec)?Math.min(1,Math.max(0,decodedSec/durationSec)):0;
         reportWorkerProgress(args.updateWorker,{percentage:startPercent+(endPercent-startPercent)*ratio,fps:0,status:"Precheck: retained audio decode"},initialWorkerProgressDetails);
       });
+      if(isVerificationInfrastructureDiagnostic(stderr))throw Error(String(stderr).trim());
       return String(stderr || "").trim();
     };
     const logTrackPassed=(stream,diagnostic)=>{

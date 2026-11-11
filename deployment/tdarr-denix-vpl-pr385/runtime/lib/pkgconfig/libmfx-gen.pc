@@ -1,0 +1,9 @@
+Name: mfxgen1
+Description: Intel(R) Media SDK
+Version: 2.17
+
+prefix=/test/green-y-pr385/install
+libdir=/test/green-y-pr385/install/lib
+includedir=/test/green-y-pr385/install/include
+Libs: -L${libdir} -lmfx-gen
+Cflags: -I${includedir} -I${includedir}/mfx

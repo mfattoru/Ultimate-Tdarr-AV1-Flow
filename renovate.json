@@ -1,0 +1,23 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "enabledManagers": ["dockerfile"],
+  "timezone": "America/Chicago",
+  "schedule": ["before 5am on monday"],
+  "prConcurrentLimit": 1,
+  "packageRules": [
+    {
+      "matchManagers": ["dockerfile"],
+      "enabled": false
+    },
+    {
+      "description": "Track only the DeNiX base image used by the PR #385 image",
+      "matchManagers": ["dockerfile"],
+      "matchPackageNames": ["denix811/tdarr-denix"],
+      "matchFileNames": ["deployment/tdarr-denix-vpl-pr385/Dockerfile"],
+      "enabled": true,
+      "pinDigests": true,
+      "automerge": false,
+      "labels": ["dependencies", "docker"]
+    }
+  ]
+}
