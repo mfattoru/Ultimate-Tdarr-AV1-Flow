@@ -46,12 +46,17 @@ const validationDecodeInfrastructure=error=>{
   const failure=error?.processFailure;
   return !!(failure?.timedOut || failure?.signal || failure?.infrastructure || error?.code || error instanceof SyntaxError || isVerificationInfrastructureDiagnostic(failure?.diagnostic || validationDetail(error)));
 };
+const isKnownNonFatalTrueHdDiagnostic=text=>{
+  const lines=String(text || '').split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+  return lines.length>0 && lines.every(line=>/^\[truehd @ 0x[0-9a-f]+\] quant_step_size larger than huff_lsbs$/i.test(line));
+};
 const verifyCandidateDecodes=async({report,canUseQsv=true,audioTracks=[],sourceVideoIndex=0,runVideo,runAudio,checkSource,isCorruption})=>{
-  const clean=async operation=>{
+  const clean=async(operation,allowDiagnostic)=>{
     const diagnostic=String(await operation() || '').trim();
     // All decoder commands use -v error. Exit zero with error-level output is
-    // not sufficient evidence of a clean decode, even if FFmpeg recovered.
-    if(diagnostic)throw Error(diagnostic);
+    // not sufficient evidence of a clean decode, except the TrueHD warning
+    // already tolerated by the full source precheck when the process exits 0.
+    if(diagnostic && !(typeof allowDiagnostic==='function' && allowDiagnostic(diagnostic)))throw Error(diagnostic);
   };
   const failDecode=async(type,errors)=>{
     const isDamage=isCorruption(type);
@@ -88,12 +93,12 @@ const verifyCandidateDecodes=async({report,canUseQsv=true,audioTracks=[],sourceV
   if(!audioTracks.length)return;
   await validationStage(report,'audio_decode',async()=>{
     const outputIndices=audioTracks.map(([,index])=>index);
-    try {await clean(()=>runAudio(outputIndices));return;}
+    try {await clean(()=>runAudio(outputIndices),isKnownNonFatalTrueHdDiagnostic);return;}
     catch(batchError){
       if(audioTracks.length===1)await failDecode('audio',[{sourceIndex:audioTracks[0][0],error:batchError}]);
       const errors=[];
       for(const [sourceIndex,outputIndex] of audioTracks){
-        try {await clean(()=>runAudio([outputIndex]));}
+        try {await clean(()=>runAudio([outputIndex]),isKnownNonFatalTrueHdDiagnostic);}
         catch(error){errors.push({sourceIndex,error});}
       }
       if(errors.length)await failDecode('audio',errors);

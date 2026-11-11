@@ -2,7 +2,7 @@
 
 ## Candidate validation outcomes
 
-The final checks now maintain a structured `variables.user.validation_report` with `outcome`, the current/failing `stage`, completed checks, recovery diagnostics, and the failure code. The report and job log remain available after failed-candidate cache cleanup; the temporary media file is still removed by the existing cleanup nodes.
+The final checks maintain a structured `variables.user.validation_report` with `outcome`, the current/failing `stage`, completed checks, recovery diagnostics, and the failure code. Complete candidates that reach final validation are kept in quarantine on rejected or inconclusive results. Earlier failures and incomplete outputs are removed by the existing scratch cleanup nodes.
 
 - `passed`: every required check completed successfully.
 - `recovered`: QSV verification failed, a full strict software video decode passed, and all remaining checks passed. The encode itself is not repeated.
@@ -15,7 +15,7 @@ Rejected and inconclusive results keep the original, follow the failed-flow rout
 
 The final video decode uses QSV only for the codec/pixel-format combinations already admitted by the flow's QSV capability policy. If that verification fails, including a zero exit with error-level diagnostics, the flow makes exactly one full software decode attempt using `-xerror`. A clean CPU result records a recovery and proceeds to retained-audio verification. If CPU verification also fails, recognized bitstream diagnostics reject the candidate; tool failures and unrecognized diagnostics are inconclusive. A timeout or killed process takes precedence over incidental corruption text in its stderr.
 
-Successful retained-audio verification still uses one combined decode. A combined failure is isolated by candidate audio track. A recognized candidate decode failure prompts a strict recheck only of the corresponding source video/audio track, with the original identity checked around that source decode. Only an independently confirmed source failure authorizes the existing targeted Arr corruption search. An inconclusive or candidate-only report explicitly disables that action, even if its diagnostic text resembles a source-corruption reason.
+Successful retained-audio verification still uses one combined decode. The specific TrueHD `quant_step_size larger than huff_lsbs` diagnostic is tolerated only when the decode process exits successfully, matching the source precheck; other diagnostics remain subject to the normal checks. A combined failure is isolated by candidate audio track. A recognized candidate decode failure prompts a strict recheck only of the corresponding source video/audio track, with the original identity checked around that source decode. Only an independently confirmed source failure authorizes the existing targeted Arr corruption search. An inconclusive or candidate-only report explicitly disables that action, even if its diagnostic text resembles a source-corruption reason.
 
 Resource, device, permission, and I/O diagnostics take precedence over generic “error while decoding” wording, including during the original source precheck. PGS extraction preserves process failure details. Missing source ASS/SSA timestamps or unavailable packet hashes make the comparison inconclusive; a candidate that newly loses usable timestamps or changes a measured payload is still rejected.
 

@@ -264,15 +264,23 @@ async function storeQuarantineCandidate({root, sourcePath, sourceHash, candidate
   try {
     const sourceDevice = quarantineFs.statSync(canonicalCandidate, {bigint: true}).dev;
     const destinationDevice = quarantineFs.statSync(directory, {bigint: true}).dev;
-    if (sourceDevice === destinationDevice) {
-      quarantineFs.renameSync(canonicalCandidate, installedCandidate);
-      moved = true;
-    } else {
+    const copyCandidate = async () => {
       if (typeof reserveCapacity !== 'function' || typeof releaseCapacity !== 'function') throw Error('Cross-filesystem quarantine copy requires the reservation ledger');
       temporaryReservation = await reserveCapacity({root, candidate: directory, bytes: BigInt(sourceEntry.size), floorBytes: 0n});
       quarantineFs.copyFileSync(canonicalCandidate, temporaryCopy, quarantineFs.constants.COPYFILE_EXCL);
       if (quarantineHashFile(temporaryCopy) !== candidateHash) throw Error('Cross-filesystem quarantine copy failed SHA-256 verification');
       quarantineFs.renameSync(temporaryCopy, installedCandidate);
+    };
+    if (sourceDevice === destinationDevice) {
+      try {
+        quarantineFs.renameSync(canonicalCandidate, installedCandidate);
+        moved = true;
+      } catch (error) {
+        if (error.code !== 'EXDEV') throw error;
+        await copyCandidate();
+      }
+    } else {
+      await copyCandidate();
     }
     installed = true;
     if (quarantineHashFile(installedCandidate) !== candidateHash) throw Error('Installed quarantine candidate SHA-256 does not match its source');

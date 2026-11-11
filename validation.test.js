@@ -61,6 +61,20 @@ test('error-level diagnostics on a zero exit code still require a clean CPU resu
   await assert.rejects(verifyCandidateDecodes(o),e=>e.validation?.outcome==='rejected');
 });
 
+test('the known non-fatal TrueHD diagnostic does not block completed candidate audio verification',async()=>{
+  const diagnostic='[truehd @ 0x55f8a6427a40] quant_step_size larger than huff_lsbs';
+  const o=options({audioTracks:[[1,1]],runAudio:async()=>diagnostic});
+  await verifyCandidateDecodes(o);completeValidation(o.report);
+  assert.equal(o.report.outcome,'passed');
+  assert.deepEqual(o.report.checks,[{stage:'video_decode',outcome:'passed'},{stage:'audio_decode',outcome:'passed'}]);
+});
+
+test('unrecognized candidate audio diagnostics remain inconclusive',async()=>{
+  const o=options({audioTracks:[[1,1]],runAudio:async()=> '[aac] Unrecognized decoder diagnostic'});
+  await assert.rejects(verifyCandidateDecodes(o),e=>e.validation?.outcome==='inconclusive');
+  assert.equal(o.report.failure.code,'decode_unverified');
+});
+
 test('a batch audio tool failure stays inconclusive when each individual track passes',async()=>{
   let sourceChecks=0;
   const o=options({audioTracks:[[1,1],[2,2]],runAudio:async indices=>{if(indices.length>1)throw failure('Cannot allocate memory');return '';},checkSource:async()=>{sourceChecks++;}});
