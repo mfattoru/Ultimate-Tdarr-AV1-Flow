@@ -6,11 +6,16 @@ The Dockerfile tracks the upstream `latest` tag while pinning the exact base dig
 
 ## Upstream base update PRs
 
-`renovate.json` at the repository root asks Renovate to check the Denix base digest weekly and open a PR for an update. It is scoped to this Dockerfile, does not auto-merge, and does not need Docker Hub credentials because the upstream image is public. The `Build Tdarr DeNiX image candidate` GitHub Actions workflow builds the proposed image on pull requests without publishing it; it uses a hosted runner and has no registry secrets.
+`renovate.json` at the repository root allows the Denix base digest check daily during the 4 a.m. Central window and opens a PR when the upstream digest changes. It is scoped to this Dockerfile and does not auto-merge. The `Build Tdarr DeNiX image candidate` workflow builds PRs without registry credentials. After a change is merged to `main`, that workflow publishes `candidate-<full-commit-sha>` to Docker Hub.
 
-The hosted build verifies that the custom image can be assembled, but it cannot access the Unraid Arc GPU. Before publishing an updated image, review the PR, run the included smoke check on Unraid, and then push a fresh immutable tag. The build workflow never changes the production Tdarr container.
+The hosted build verifies that the custom image can be assembled, but it cannot access the Unraid Arc GPU. Pull the candidate on Unraid and run the included smoke check. If it passes, run **Actions → Promote tested Tdarr DeNiX image → Run workflow** on `main`, entering the full `candidate-<commit-sha>` tag. The promotion workflow copies the same candidate image to `sha-<full-commit-sha>` and `latest`; the SHA tag provides rollback, and `latest` is the update-notification target. A new `latest` tag does not restart Tdarr by itself.
 
-To activate this automation, install/enable the Renovate GitHub App for this repository and ensure GitHub Actions are enabled. The configuration expects `Ultimate-Tdarr-AV1-Flow/` to be the repository root. If the project is hosted inside a larger repository instead, move `renovate.json` and `.github/workflows/` to that repository root and adjust the Dockerfile paths in the configuration.
+For Docker Hub publishing, add these repository secrets under **Settings → Secrets and variables → Actions**:
+
+- `DOCKERHUB_USERNAME`: `mfattoru`
+- `DOCKERHUB_TOKEN`: a Docker Hub access token with write access to `mfattoru/tdarr-denix-vpl-pr385`
+
+Install/enable the Renovate GitHub App and GitHub Actions for this repository. The configuration expects `Ultimate-Tdarr-AV1-Flow/` to be the repository root. If the project is hosted inside a larger repository instead, move `renovate.json` and `.github/workflows/` to that repository root and adjust the Dockerfile paths in the configuration.
 
 ## Build context
 
@@ -54,24 +59,21 @@ PASS: QSV AV1 encoded 24 frames on /dev/dri/renderD129 and loaded the patched VP
 
 This short hardware check confirms the patched runtime is active and can encode AV1. It is not a full-length movie transcode test.
 
-This is a versioned test image. The production Tdarr template and container have not been changed. When ready to deploy, set the Unraid Tdarr template's Repository to the verified versioned tag (or pin its digest), then recreate the container while preserving its current ports, GPU device access, environment, and volume mappings. Keep the exported Tdarr flow separate from the container image.
+This is the versioned image currently deployed in production on Unraid and has already passed the Arc smoke check. After the workflows are merged and Docker Hub secrets are configured, bootstrap `latest` by running the promotion workflow with source tag `pr385-20261111-smokecheck`. Then change the Tdarr template's Repository once to `mfattoru/tdarr-denix-vpl-pr385:latest`, preserving the existing ports, GPU device access, environment, and volume mappings. Unraid can then notify you when a promoted image is available; apply the update while Tdarr is idle. Keep the exported Tdarr flow separate from the container image. Leave the auto-update plugin in notification/manual mode for this container if you want to choose when it restarts.
 
-## Rebuild and publish a later version
+## Check and promote an updated image
 
-Build from this directory on Unraid or another x86_64 Docker host:
+After GitHub publishes a candidate, pull it on Unraid and run the Arc smoke check:
 
 ```sh
-docker build --pull -t tdarr-denix-vpl-pr385:candidate .
+docker pull mfattoru/tdarr-denix-vpl-pr385:candidate-<full-commit-sha>
 docker run --rm --device=/dev/dri:/dev/dri \
   -e TDARR_ARC_DEVICE=/dev/dri/renderD129 \
   --entrypoint /usr/local/bin/tdarr-vpl-smokecheck \
-  tdarr-denix-vpl-pr385:candidate
-docker tag tdarr-denix-vpl-pr385:candidate mfattoru/tdarr-denix-vpl-pr385:<new-version-tag>
-docker push mfattoru/tdarr-denix-vpl-pr385:<new-version-tag>
-docker buildx imagetools inspect mfattoru/tdarr-denix-vpl-pr385:<new-version-tag>
+  mfattoru/tdarr-denix-vpl-pr385:candidate-<full-commit-sha>
 ```
 
-Use a fresh version tag for each rebuild and record the registry digest returned by the push or manifest inspection. Do not overwrite the verified tag. The upstream `latest` tag is used only as Renovate's update signal; the Dockerfile remains pinned to a digest.
+After it passes, promote it with the GitHub Actions workflow described above. The candidate remains available for diagnosis, while `sha-<full-commit-sha>` and `latest` point to the approved release. In Unraid, set **Settings → User Preferences → Notification Settings → Docker update notification** to check daily. The alert tells you when `latest` changed; Unraid does not pull or restart the container until you apply the update.
 
 ## Green-y regression result
 
