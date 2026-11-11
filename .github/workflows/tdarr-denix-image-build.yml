@@ -1,0 +1,26 @@
+name: Build Tdarr DeNiX image candidate
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/tdarr-denix-image-build.yml"
+      - "deployment/tdarr-denix-vpl-pr385/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-image:
+    name: Build custom image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Build without publishing
+        run: >-
+          docker build --pull --progress=plain
+          --tag tdarr-denix-vpl-pr385:ci
+          ./deployment/tdarr-denix-vpl-pr385

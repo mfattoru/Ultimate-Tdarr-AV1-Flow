@@ -48,8 +48,12 @@ test('V15 engine performs full source and output scans without sampling branches
  assert.match(engine,/compareVideoTimestamps\(expected\.sourceFrameScan,\s*outputFrameScan\)/);
 });
 
-test('known Intel QSV HDR mastering clamp selects a single-pass SVT-AV1 fallback',()=>{
- assert.ok(engine.includes('const softwareHdrFallback = isHdr && isQsvHdrMasteringClampRisk(hdrSource)'), 'the known source mastering range should be detected before encoding');
+test('known Intel QSV HDR mastering clamp retries SVT only after strict QSV validation',()=>{
+ assert.ok(engine.includes('const qsvHdrClampRetryEligible = isHdr && isQsvHdrMasteringClampRisk(hdrSource)'), 'the known source mastering range should gate only the narrow retry');
+ assert.ok(engine.includes('let softwareHdrFallback = quarantinedCandidate?.kind === "svt_av1_encode"'), 'ordinary eligible files should start on the Arc QSV path');
+ assert.ok(engine.includes('validateQsvWithSvtHdrClampFallback({'), 'the candidate must pass strict validation before fallback is considered');
+ assert.ok(engine.includes('source:qsvHdrClampRetryEligible && !softwareHdrFallback ? hdrSource : null'), 'only the known source mastering range may qualify for the retry');
+ assert.ok(engine.includes('identified Intel QSV AV1 green-y clamp'), 'the retry must require the exact validator diagnosis');
  assert.ok(engine.includes('"libsvtav1"'), 'the fallback must use the verified software AV1 encoder');
  assert.ok(engine.includes('"-preset", "8", "-crf", "28"'), 'the fallback quality settings must match the test-container sample');
  assert.ok(engine.includes('ArcAV1_SVTAV1_HDRFallback_V15'), 'software output needs a distinct idempotence marker');

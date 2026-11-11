@@ -567,6 +567,25 @@ const isQsvHdrMasteringClampRisk = source => {
   const greenY=rationalValue(mastering?.green_y),qsvClamp=50000/65536;
   return Number.isFinite(greenY) && greenY>qsvClamp+0.0001 && greenY<0.84;
 };
+const shouldRetrySvtForQsvHdrClamp = (source,error) => {
+  if (!isQsvHdrMasteringClampRisk(source)) return false;
+  const failure=error?.validation;
+  return failure?.outcome==='rejected'
+    && failure.stage==='hdr_color'
+    && failure.code==='validation_mismatch'
+    && /HDR mastering metadata conflicts with decoded frames \(identified Intel QSV AV1 green-y clamp\)/.test(String(failure.message || error?.message || ''));
+};
+const validateQsvWithSvtHdrClampFallback = async ({source,validateQsvCandidate,encodeSvtFallback,validateSvtCandidate}) => {
+  if (typeof validateQsvCandidate!=='function' || typeof encodeSvtFallback!=='function' || typeof validateSvtCandidate!=='function') throw Error('QSV HDR fallback callbacks are required');
+  try {
+    return {encoder:'qsv',validation:await validateQsvCandidate()};
+  } catch(error) {
+    if (!shouldRetrySvtForQsvHdrClamp(source,error)) throw error;
+    const candidate=await encodeSvtFallback();
+    const validation=await validateSvtCandidate(candidate);
+    return {encoder:'svt',candidate,validation};
+  }
+};
 const isKnownQsvHdrMasteringClamp = (source,output,error) => {
   if (String(error?.message || error || '') !== 'HDR mastering metadata conflicts with decoded frames') return false;
   const sourceMastering=(source?.side_data_list || []).find(item=>item.side_data_type==='Mastering display metadata');

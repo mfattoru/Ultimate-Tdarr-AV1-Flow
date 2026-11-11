@@ -9,6 +9,8 @@ new Function('require','module','exports',engine + '\nmodule.exports.testPolicy 
 const p=mod.exports;
 const knownQsvHdrClamp = new Function('require','module','exports',engine+'\nreturn typeof isKnownQsvHdrMasteringClamp === "function" ? isKnownQsvHdrMasteringClamp : null;')(require,{exports:{}},{});
 const knownQsvHdrClampRisk = new Function('require','module','exports',engine+'\nreturn typeof isQsvHdrMasteringClampRisk === "function" ? isQsvHdrMasteringClampRisk : null;')(require,{exports:{}},{});
+const knownQsvHdrClampRetry = new Function('require','module','exports',engine+'\nreturn typeof shouldRetrySvtForQsvHdrClamp === "function" ? shouldRetrySvtForQsvHdrClamp : null;')(require,{exports:{}},{});
+const qsvHdrFallbackRunner = new Function('require','module','exports',engine+'\nreturn typeof validateQsvWithSvtHdrClampFallback === "function" ? validateQsvWithSvtHdrClampFallback : null;')(require,{exports:{}},{});
 
 test('missing candidate video timestamps reject a proven timing regression while missing source timing is inconclusive',()=>{
   const clean={frames:3,timestamps:[0,0.04,0.08]},missing={frames:3,timestamps:[0,NaN,0.08]};
@@ -797,13 +799,52 @@ test('recognizes only the documented QSV AV1 HDR green-coordinate clamp for soft
  assert.throws(()=>p.testHdrStatic(source,{staticInfo:{conflict:false,mastering:{...mastering,green_y:'50000/65536'},light:{side_data_type:'Content light level metadata',max_content:992,max_average:518}}}),/identified Intel QSV AV1 green-y clamp/);
 });
 
-test('preselects software AV1 for source mastering coordinates in the known QSV clamp range',()=>{
+test('identifies source mastering coordinates in the known QSV clamp range for targeted retry',()=>{
  const mastering={side_data_type:'Mastering display metadata',green_y:'39850/50000'};
  assert.equal(typeof knownQsvHdrClampRisk,'function');
  assert.equal(knownQsvHdrClampRisk({side_data_list:[mastering]}),true);
  assert.equal(knownQsvHdrClampRisk({side_data_list:[{...mastering,green_y:'34500/50000'}]}),false);
  assert.equal(knownQsvHdrClampRisk({side_data_list:[{...mastering,green_y:'85000/100000'}]}),false);
  assert.equal(knownQsvHdrClampRisk({side_data_list:[]}),false);
+});
+
+test('software retry is allowed only for the exact QSV green-y clamp rejection',()=>{
+ const mastering={side_data_type:'Mastering display metadata',green_y:'39850/50000'};
+ const source={side_data_list:[mastering]};
+ const clamp={validation:{outcome:'rejected',stage:'hdr_color',code:'validation_mismatch',message:'HDR mastering metadata conflicts with decoded frames (identified Intel QSV AV1 green-y clamp)'}};
+ assert.equal(typeof knownQsvHdrClampRetry,'function');
+ assert.equal(knownQsvHdrClampRetry(source,clamp),true);
+ assert.equal(knownQsvHdrClampRetry({side_data_list:[{...mastering,green_y:'34500/50000'}]},clamp),false);
+ assert.equal(knownQsvHdrClampRetry(source,{validation:{...clamp.validation,stage:'streams'}}),false);
+ assert.equal(knownQsvHdrClampRetry(source,{validation:{...clamp.validation,outcome:'inconclusive'}}),false);
+ assert.equal(knownQsvHdrClampRetry(source,{validation:{...clamp.validation,message:'HDR light metadata conflicts with decoded frames'}}),false);
+});
+
+test('validates QSV first and encodes and validates SVT only after the exact clamp rejection',async()=>{
+ const source={side_data_list:[{side_data_type:'Mastering display metadata',green_y:'39850/50000'}]};
+ const clamp=Object.assign(Error('HDR mastering metadata conflicts with decoded frames (identified Intel QSV AV1 green-y clamp)'),{validation:{outcome:'rejected',stage:'hdr_color',code:'validation_mismatch',message:'HDR mastering metadata conflicts with decoded frames (identified Intel QSV AV1 green-y clamp)'}});
+ const calls=[];
+ assert.equal(typeof qsvHdrFallbackRunner,'function');
+ const result=await qsvHdrFallbackRunner({
+  source,
+  validateQsvCandidate:async()=>{calls.push('validate-qsv');throw clamp;},
+  encodeSvtFallback:async()=>{calls.push('encode-svt');return 'candidate';},
+  validateSvtCandidate:async candidate=>{calls.push(`validate-svt:${candidate}`);return 'passed';}
+ });
+ assert.deepEqual(calls,['validate-qsv','encode-svt','validate-svt:candidate']);
+ assert.deepEqual(result,{encoder:'svt',candidate:'candidate',validation:'passed'});
+});
+
+test('generated flow runs the QSV candidate before wiring the exact HDR clamp retry',()=>{
+ const qsvAttempt=engine.indexOf('await runFfmpeg(needsProactiveHybrid, false, softwareHdrFallback)');
+ const retry=engine.indexOf('validateQsvWithSvtHdrClampFallback({');
+ const sourceGate=engine.indexOf('source:qsvHdrClampRetryEligible && !softwareHdrFallback ? hdrSource : null');
+ const svtEncode=engine.indexOf('await runFfmpeg(needsProactiveHybrid,false,true)',retry);
+ assert.ok(qsvAttempt>=0,'QSV encode attempt is missing');
+ assert.ok(retry>qsvAttempt,'fallback validation must run after the first QSV attempt');
+ assert.ok(sourceGate>retry,'only green-y HDR sources should be eligible for the fallback');
+ assert.ok(svtEncode>sourceGate,'SVT fallback encode must be inside the guarded retry');
+ assert.ok(engine.includes('validateSvtCandidate:async()=>await validateCandidate()'),'SVT fallback must pass through the complete candidate validation path');
 });
 
 test('Profile 7 may recover missing HDR content-light values from verified Level 6',async()=>{

@@ -681,15 +681,15 @@ one('  const rawSizeMB = (args.originalLibraryFile?.file_size || args.inputFileO
 one('  const isTargetRam = typeof targetDir === "string" && targetDir.startsWith("/dev/shm");', '  const isTargetRam = BigInt.asUintN(32,fs.statfsSync(targetDir,{bigint:true}).type) === 16914836n;')
 one('Math.abs((d.first-s.first)-shift)>tolerance || Math.abs((d.last-s.last)-shift)>tolerance', 'Math.abs((d.first-s.first)-shift)>0.1 || Math.abs((d.last-s.last)-shift)>0.1')
 one('        "-look_ahead", "1",\n        "-look_ahead_depth", "40",\n','')
-one('  const needsProactiveHybrid = isH26410bit || isVC1 || isNon420Chroma;', '  const needsProactiveHybrid = !useQsvDecode(mainVideo);\n  const softwareHdrFallback = isHdr && isQsvHdrMasteringClampRisk(hdrSource);\n  quality = softwareHdrFallback ? 28 : selectedQuality;\n  const qualityLabel = softwareHdrFallback ? "SVT-AV1 CRF" : "ICQ";')
+one('  const needsProactiveHybrid = isH26410bit || isVC1 || isNon420Chroma;', '  const needsProactiveHybrid = !useQsvDecode(mainVideo);\n  const qsvHdrClampRetryEligible = isHdr && isQsvHdrMasteringClampRisk(hdrSource);\n  let softwareHdrFallback = quarantinedCandidate?.kind === "svt_av1_encode";\n  quality = softwareHdrFallback ? 28 : selectedQuality;\n  let qualityLabel = softwareHdrFallback ? "SVT-AV1 CRF" : "ICQ";')
 one('''  if (!isAlreadyAV1 && isHdr) {
     pipelineMode += isHlg ? " [HLG]" : " [HDR10]";
   }''', '''  if (!isAlreadyAV1 && isHdr) {
     pipelineMode += isHlg ? " [HLG]" : " [HDR10]";
   }
   if (softwareHdrFallback) {
-    pipelineMode = "Software SVT-AV1 HDR encode (QSV mastering clamp avoidance)";
-    log(`[Arc AV1] Source HDR mastering metadata falls in the known Intel QSV green-y clamp range; using SVT-AV1 CRF 28 so static metadata remains verifiable.`);
+    pipelineMode = "Software SVT-AV1 HDR candidate revalidation";
+    log(`[Arc AV1] Revalidating a quarantined SVT-AV1 HDR candidate against the current checks.`);
   }''')
 one('    cmdArgs.push("-i", inputPath);', '    if (hdrLightOverride) cmdArgs.push("-content_light", hdrLightOverride);\n    if (useHybrid && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));\n    cmdArgs.push("-i", inputPath);\n    if (is12Bit && !forceStreamCopy) cmdArgs.push("-sws_dither", "ed");')
 one('    if (useHybrid && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));', '    if ((useHybrid || useSoftwareFallback) && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));')
@@ -752,7 +752,6 @@ one('cmdArgs.push("-metadata:g", "encoded_by=ArcAV1_QSV_V15");', 'cmdArgs.push("
 one('      codec: expectedVideoCodec,\n', '      codec: expectedVideoCodec,\n      requireMarker: true,\n      hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10",\n      optionalHdrStatic: hdrClass === "hdr10",\n      hlg: hdrClass === "hlg",\n      untagged: hdrClass === "untagged",\n      sourceClass: hdrClass,\n      sourceHdr: hdrSource,\n      sdrSource,\n      sourceFrameScan: frameScan,\n      outputMarker: isBloat ? \"ArcAV1_SeekHeal_V15\" : softwareHdrFallback ? \"ArcAV1_SVTAV1_HDRFallback_V15\" : \"ArcAV1_QSV_V15\",\n')
 one('      sourceFrameScan: frameScan,\n', '      sourceFrameScan: frameScan,\n      updateWorker: args.updateWorker,\n      assertOriginalUnchanged: assertOriginalUnchanged,\n      audioTimestampRepairIndices: Array.from(audioTimestampRepairs.keys()),\n')
 one('outputMarker: isBloat ? "ArcAV1_SeekHeal_V15" : softwareHdrFallback ? "ArcAV1_SVTAV1_HDRFallback_V15" : "ArcAV1_QSV_V15",', 'outputMarker: quarantinedCandidate?.marker || (isBloat ? "ArcAV1_SeekHeal_V15" : softwareHdrFallback ? "ArcAV1_SVTAV1_HDRFallback_V15" : "ArcAV1_QSV_V15"),')
-one('    const valResult = await validateOutput(ffprobeBin, inputPath, outputPath, {', '    reportWorkerProgress(args.updateWorker,{percentage:80,fps:0,status:"Validation: output streams and metadata"});\n    const valResult = await validateOutput(ffprobeBin, inputPath, outputPath, {')
 a=e.index('  log(`[Arc AV1 Single-Pass] Processing:')
 b=e.index('\n  // Cleanup temporary clamped chapters file',a)
 e=e[:a]+'''  log(`[Arc AV1] Processing ${inputPath} using ${qualityLabel} ${quality}; ${pipelineMode}`);
@@ -803,6 +802,7 @@ one('  const isBloat = !isAlreadyAV1 && (ratioPct > maxRatioPct);','  // isBloat
 one('  if (!isAlreadyAV1 && !isBloat) {', '  if (!quarantinedCandidate && !isAlreadyAV1 && !isBloat) {')
 exec((root/'build_additions.py').read_text())
 exec((root/'build_validation.py').read_text())
+one('      validationReport=args.variables.user.validation_report=newValidationReport();', '      validationReport=args.variables.user.validation_report=newValidationReport();\n      reportWorkerProgress(args.updateWorker,{percentage:80,fps:0,status:"Validation: output streams and metadata"});')
 one('    return spawnSync(ffmpegBin, cmdArgs, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });', '''    const progressStart=forceStreamCopy?80:10,progressEnd=forceStreamCopy?82:80;
     // Encodes stop at source size. Remux file-size limits grow only after the shared cache ledger grants capacity.
     const processSizeLimit=forceStreamCopy?reservedOutputBytes:sourceBytes;
