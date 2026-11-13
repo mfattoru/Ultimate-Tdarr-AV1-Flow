@@ -19,4 +19,4 @@ Other extraction, offset, and SSIM logs are included for the same anonymized sam
 shasum -c SHA256SUMS
 ```
 
-These are controlled sample and excerpt measurements. They do not establish quality for every source or replace playback checks on target devices. See the repository's [quality decision](../../QUALITY_DECISION.md) for interpretation and limits.
+These are controlled sample and excerpt measurements. They do not establish quality for every source or replace playback checks on target devices. See the repository's [quality decision](../../docs/architecture/QUALITY_DECISION.md) for interpretation and limits.

@@ -41,7 +41,7 @@ flowchart TD
     W --> AC[Send success notice]
 ```
 
-For the full node-by-node view, see [the flow diagram](flow-diagram.md).
+For the full node-by-node view, see [the flow diagram](docs/architecture/flow-diagram.md).
 
 ## Processing policy
 
@@ -72,7 +72,7 @@ HDR handling is deliberately signal-aware:
 - Unverified Profile 5 variants, conflicting hybrids, and unvalidated Profile 8.4 inputs are held.
 - Missing color data is not invented except for the documented limited-range default on supported untagged SDR YUV.
 
-See [codec coverage](CODEC_COVERAGE.md) and [HDR validation](HDR_LIVE_VALIDATION.md) for tested cases and remaining limits.
+See [codec coverage](docs/architecture/CODEC_COVERAGE.md) and [HDR validation](docs/reports/HDR_LIVE_VALIDATION.md) for tested cases and remaining limits.
 
 ## Runtime configuration
 
@@ -94,7 +94,7 @@ Unset Arr settings disable that target. The local `.env` is ignored by Git and d
 
 The worker reports progress during the source scan, audio checks, Arc encode, seek-heal remux, output scan, and decode validation. The Status field changes to show the current phase. Metadata-only work has no meaningful FPS value.
 
-Candidate validation records its stage, outcome, and bounded diagnostics in `variables.user.validation_report`. A QSV verification failure can recover after a clean, complete software decode and all remaining checks pass. When the null output sink reports non-monotonic DTS, a timestamp-isolated software retry is allowed only after independent frame and packet checks establish the required timing properties; it does not change the candidate. A confirmed mismatch is **rejected**; an unavailable measurement or tool failure is **inconclusive**. Both keep the original and quarantine complete candidates that reach final validation. Successful retained-audio decoding accepts the known TrueHD `quant_step_size larger than huff_lsbs` diagnostic and its immediately following FFmpeg repeat summary; nonzero exits and unrelated diagnostics still fail verification. See [failure diagnostics](FAILURE_DIAGNOSTICS.md) for the conditions and limitations.
+Candidate validation records its stage, outcome, and bounded diagnostics in `variables.user.validation_report`. A QSV verification failure can recover after a clean, complete software decode and all remaining checks pass. When the null output sink reports non-monotonic DTS, a timestamp-isolated software retry is allowed only after independent frame and packet checks establish the required timing properties; it does not change the candidate. A confirmed mismatch is **rejected**; an unavailable measurement or tool failure is **inconclusive**. Both keep the original and quarantine complete candidates that reach final validation. Successful retained-audio decoding accepts the known TrueHD `quant_step_size larger than huff_lsbs` diagnostic and its immediately following FFmpeg repeat summary; nonzero exits and unrelated diagnostics still fail verification. See [failure diagnostics](docs/architecture/FAILURE_DIAGNOSTICS.md) for the conditions and limitations.
 
 Stream, frame-count, color/HDR, payload, and timing requirements retain their existing tolerances. Missing source timestamps can make comparison inconclusive; timestamps newly lost from an otherwise complete candidate are a rejection. Candidate-only failures and inconclusive checks cannot trigger an Arr corruption search. A source search after a decode rejection requires an independent strict decode failure on the corresponding source track.
 
@@ -114,7 +114,7 @@ Quarantine has no age-based cleanup. To purge all retained candidates manually, 
 
 ICQ 22 is the current provisional value. It was selected from representative SDR and HDR tests and should not be read as a guarantee for every codec, source, or display. VMAF results and captured test evidence are in [`evidence/vmaf/`](evidence/vmaf/README.md); source titles and media paths have been anonymized.
 
-The evidence uses short matched excerpts, not full-length viewing tests. VMAF is model-based, HDR scores can exceed 100, and HDR scores are not directly comparable to SDR scores. Review [the quality decision](QUALITY_DECISION.md) for methodology and limitations.
+The evidence uses short matched excerpts, not full-length viewing tests. VMAF is model-based, HDR scores can exceed 100, and HDR scores are not directly comparable to SDR scores. Review [the quality decision](docs/architecture/QUALITY_DECISION.md) for methodology and limitations.
 
 ## Build and references
 
@@ -123,20 +123,20 @@ The custom Tdarr DeNiX image has a pinned upstream base and a daily Renovate upd
 From the repository root:
 
 ```sh
-python3 build.py
+python3 scripts/build.py
 npm test
 npm run test:coverage
 ```
 
-The coverage command explicitly includes the nine standalone runtime helper modules (`audio_timing.js`, `pgs.js`, `precheck_cache.js`, `progress.js`, `quarantine.js`, `reservations.js`, `source_identity.js`, `subtitle_timing.js`, and `validation.js`) and fails unless aggregate line and function coverage each reach 90%. It also reports branch coverage for review; the current suite is below 90% branch coverage. The generated Tdarr flow's embedded plugin source and template-based plugin nodes are exercised by behavior and contract tests, but Node's built-in coverage report does not count code evaluated from those strings.
+The coverage command explicitly includes the nine standalone runtime helper modules (`src/audio_timing.js`, `src/pgs.js`, `src/precheck_cache.js`, `src/progress.js`, `src/quarantine.js`, `src/reservations.js`, `src/source_identity.js`, `src/subtitle_timing.js`, and `src/validation.js`) and fails unless aggregate line and function coverage each reach 90%. It also reports branch coverage for review; the current suite is below 90% branch coverage. The generated Tdarr flow's embedded plugin source and template-based plugin nodes are exercised by behavior and contract tests, but Node's built-in coverage report does not count code evaluated from those strings.
 
-The builder regenerates `flow.json`. V12 and V14 snapshots and older archives are under [`work/`](work/). Useful references:
+The builder regenerates `flow.json`. V12 and V14 snapshots and older archives are under [`archive/`](archive/). Useful references:
 
-- [Failure diagnostics](FAILURE_DIAGNOSTICS.md)
-- [Subtitle mux validation](SUBTITLE_MUX_TEST_REPORT.md)
-- [Audio and HDR repair results](HDR_AUDIO_REPAIR_TEST_REPORT.md)
-- [Live test scope](LIVE_TEST_REPORT.md)
-- [Performance benchmark](PERFORMANCE_BENCHMARK_2026-11-04.md)
-- [Precheck thread benchmark](PRECHECK_THREAD_BENCHMARK_2026-11-05.md)
+- [Failure diagnostics](docs/architecture/FAILURE_DIAGNOSTICS.md)
+- [Subtitle mux validation](docs/reports/SUBTITLE_MUX_TEST_REPORT.md)
+- [Audio and HDR repair results](docs/reports/HDR_AUDIO_REPAIR_TEST_REPORT.md)
+- [Live test scope](docs/reports/LIVE_TEST_REPORT.md)
+- [Performance benchmark](docs/reports/PERFORMANCE_BENCHMARK_2026-11-04.md)
+- [Precheck thread benchmark](docs/reports/PRECHECK_THREAD_BENCHMARK_2026-11-05.md)
 
 The test reports cover specific samples and routes. They do not claim an exhaustive codec matrix or a full end-to-end production validation of every input combination.

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node.js custom functions embedded by the Python flow builder; Tdarr Flow JSON; existing capacity reservation and source-identity helpers.
 
-**Spec:** The user-approved amendment to [`V15_DESIGN.md`](../../../V15_DESIGN.md) in the conversation on 2026-11-09. This plan updates that document to replace its current no-quarantine policy.
+**Spec:** The user-approved amendment to [`V15_DESIGN.md`](../../architecture/V15_DESIGN.md) in the conversation on 2026-11-09. This plan updates that document to replace its current no-quarantine policy.
 
 ## Global Constraints
 

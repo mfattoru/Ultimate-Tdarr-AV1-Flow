@@ -5,7 +5,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test *.test.js",
-    "test:coverage": "node run-coverage.js"
+    "test": "node --test tests/*.test.js",
+    "test:coverage": "node scripts/run-coverage.js"
   }
 }
