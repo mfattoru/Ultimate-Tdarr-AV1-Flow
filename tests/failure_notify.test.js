@@ -8,6 +8,7 @@ const path = require('node:path');
 function harness({status = 204, failure, override, webhook = 'https://discord.invalid/api/example'} = {}) {
   const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'failure_notify.js'), 'utf8')
     .replace('__TDARR_DISCORD_WEBHOOK__', JSON.stringify(webhook));
+  const helperCode = fs.readFileSync(path.join(__dirname, '..', 'src', 'discord_webhook.js'), 'utf8');
   const requests = [], logs = [];
   const https = {request(url, options, callback) {
     const req = new EventEmitter();
@@ -19,14 +20,30 @@ function harness({status = 204, failure, override, webhook = 'https://discord.in
       else if (failure === 'network') req.emit('error', new Error('network failed'));
       else {
         const res = new EventEmitter(); res.statusCode = status; res.resume = () => {};
-        callback(res); res.emit('end');
+        callback(res);
+        if (failure === 'res_error') res.emit('error', new Error('stream reset'));
+        else res.emit('end');
       }
     };
     return req;
   }};
+  const loadHelper = () => {
+    const helperCtx = {
+      module: {exports: {}},
+      exports: {},
+      require: name => { assert.equal(name, 'https'); return https; },
+      URL,
+      Buffer,
+      setTimeout,
+      clearTimeout
+    };
+    vm.runInNewContext(helperCode, helperCtx);
+    return helperCtx.module.exports;
+  };
   const context = {module:{exports:{}}, require: name => {
+    if (name === './discord_webhook') return loadHelper();
     assert.equal(name, 'https'); return https;
-  }, process:{env:{TDARR_DISCORD_WEBHOOK: override ?? webhook}}, URL, setTimeout, clearTimeout};
+  }, process:{env:{TDARR_DISCORD_WEBHOOK: override ?? webhook}}, URL, Buffer, setTimeout, clearTimeout};
   vm.runInNewContext(code, context);
   return {run: context.module.exports, requests, logs, args: {inputFileObj:{_id:'sample'}, variables:{user:{}}, jobLog: x => logs.push(x)}};
 }
@@ -79,7 +96,7 @@ test('quarantine notice does not substitute a cache path when the original path 
 });
 
 test('failed HTTP response, network errors and timeouts leave the notification retryable', async () => {
-  for (const settings of [{status:429}, {failure:'network'}, {failure:'timeout'}]) {
+  for (const settings of [{status:429}, {failure:'network'}, {failure:'res_error'}, {failure:'timeout'}]) {
     const h = harness(settings);
     const result = await h.run(h.args);
     assert.equal(result.outputNumber, 1);

@@ -6,6 +6,7 @@ const vm = require('node:vm');
 const {EventEmitter} = require('node:events');
 
 const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'already_notify.js'), 'utf8');
+const helperCode = fs.readFileSync(path.join(__dirname, '..', 'src', 'discord_webhook.js'), 'utf8');
 
 function harness({status = 204, webhook = 'https://discord.invalid/api/test', failure} = {}) {
   const requests = [], logs = [];
@@ -22,16 +23,35 @@ function harness({status = 204, webhook = 'https://discord.invalid/api/test', fa
         response.statusCode = status;
         response.resume = () => {};
         callback(response);
-        response.emit('end');
+        if (failure === 'res_error') response.emit('error', new Error('stream reset'));
+        else response.emit('end');
       }
     };
     return request;
   }};
+  const loadHelper = () => {
+    const helperCtx = {
+      module: {exports: {}},
+      exports: {},
+      require: name => { assert.equal(name, 'https'); return https; },
+      URL,
+      Buffer,
+      setTimeout,
+      clearTimeout
+    };
+    vm.runInNewContext(helperCode, helperCtx);
+    return helperCtx.module.exports;
+  };
   const context = {
     module: {exports: {}},
-    require: name => { assert.equal(name, 'https'); return https; },
+    require: name => {
+      if (name === './discord_webhook') return loadHelper();
+      assert.equal(name, 'https');
+      return https;
+    },
     process: {env: {TDARR_DISCORD_WEBHOOK: webhook}},
     URL,
+    Buffer,
     Date,
     setTimeout,
     clearTimeout,
@@ -67,7 +87,7 @@ test('already-processed file sends an informational notice with its marker and d
 });
 
 test('already-processed notice is best-effort when the webhook is missing or delivery fails', async () => {
-  for (const settings of [{webhook: ''}, {status: 500}, {failure: 'network'}, {failure: 'timeout'}]) {
+  for (const settings of [{webhook: ''}, {status: 500}, {failure: 'network'}, {failure: 'res_error'}, {failure: 'timeout'}]) {
     const h = harness(settings);
     const result = await h.run(h.args);
     assert.equal(result.outputFileObj, h.args.inputFileObj);

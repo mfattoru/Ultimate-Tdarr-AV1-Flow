@@ -1195,7 +1195,95 @@ arr_iso['inputsDB']['code']=arr_action.replace('__ARR_CONFIG_DECLARATION__',arr_
 success_arr=next(p for p in flow['flowPlugins'] if p['id']=='notify_arr')
 success_code=success_arr['inputsDB']['code']
 if success_code.count('__ARR_CONFIG_DECLARATION__')!=1: raise RuntimeError('Success Arr node must contain one configuration placeholder')
-success_arr['inputsDB']['code']=success_code.replace('__ARR_CONFIG_DECLARATION__',arr_config)
+success_code=success_code.replace('__ARR_CONFIG_DECLARATION__',arr_config)
+old_arr_req='''      const req = lib.request({
+        hostname: url.hostname,
+        port: url.port || (url.protocol === "https:" ? 443 : 80),
+        path: url.pathname + url.search,
+        method: method,
+        headers: headers
+      }, (res) => {
+        let raw = "";
+        res.on("data", chunk => { raw += chunk; });
+        res.on("end", () => {
+          let parsed = null;
+          try { if (raw) parsed = JSON.parse(raw); } catch (_) {}
+          resolve({
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            statusCode: res.statusCode,
+            data: parsed
+          });
+        });
+      });
+
+      req.on("error", (err) => {
+        resolve({ ok: false, statusCode: 0, error: err });
+      });
+
+      req.setTimeout(10000, () => {
+        req.destroy();
+        resolve({ ok: false, statusCode: 0, timeout: true });
+      });
+
+      if (postData) req.write(postData);
+      req.end();'''
+new_arr_req='''      let settled = false;
+      let timer;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        if (typeof clearTimeout === "function" && timer !== undefined) clearTimeout(timer);
+        resolve(result);
+      };
+      try {
+        const req = lib.request({
+          hostname: url.hostname,
+          port: url.port || (url.protocol === "https:" ? 443 : 80),
+          path: url.pathname + url.search,
+          method: method,
+          headers: headers
+        }, (res) => {
+          let raw = "";
+          res.on("data", chunk => { raw += chunk; });
+          res.on("error", (err) => {
+            finish({ ok: false, statusCode: 0, error: err });
+          });
+          res.on("end", () => {
+            let parsed = null;
+            try { if (raw) parsed = JSON.parse(raw); } catch (_) {}
+            finish({
+              ok: res.statusCode >= 200 && res.statusCode < 300,
+              statusCode: res.statusCode,
+              data: parsed
+            });
+          });
+        });
+
+        req.on("error", (err) => {
+          finish({ ok: false, statusCode: 0, error: err });
+        });
+
+        if (typeof setTimeout === "function") {
+          timer = setTimeout(() => {
+            try { req.destroy(); } catch (_) {}
+            finish({ ok: false, statusCode: 0, timeout: true });
+          }, 10000);
+        }
+
+        if (typeof req.setTimeout === "function") {
+          req.setTimeout(10000, () => {
+            try { req.destroy(); } catch (_) {}
+            finish({ ok: false, statusCode: 0, timeout: true });
+          });
+        }
+
+        if (postData) req.write(postData);
+        req.end();
+      } catch (err) {
+        finish({ ok: false, statusCode: 0, error: err });
+      }'''
+if success_code.count(old_arr_req)!=1: raise RuntimeError('Unexpected success Arr request block')
+success_arr['inputsDB']['code']=success_code.replace(old_arr_req,new_arr_req,1)
 
 notify=next(p for p in flow['flowPlugins'] if p['id']=='discord_success')
 notify_code=notify['inputsDB']['code']
@@ -1211,15 +1299,37 @@ if notify_code.count(old_payload)!=1: raise RuntimeError('Unexpected success not
 notify_code=notify_code.replace(old_payload,'  const payload = JSON.stringify({\n    allowed_mentions: {parse: []},\n    embeds: [{',1)
 notify_anchor='  const payload = JSON.stringify({'
 assert notify_code.count(notify_anchor)==1
-notify['inputsDB']['code']=notify_code.replace(notify_anchor, '  if (args.variables?.user?.hdr_conversion) descLines.push(`🌈 **HDR:** ${args.variables.user.hdr_conversion}`);\n\n'+notify_anchor)
+notify_code=notify_code.replace(notify_anchor, '  if (args.variables?.user?.hdr_conversion) descLines.push(`🌈 **HDR:** ${args.variables.user.hdr_conversion}`);\n\n'+notify_anchor)
+old_notify_https='module.exports = async (args) => {\n  const https = require("https");\n  const webhookUrl = process.env.TDARR_DISCORD_WEBHOOK;'
+new_notify_https='module.exports = async (args) => {\n  const webhookUrl = process.env.TDARR_DISCORD_WEBHOOK;\n  const log = (message) => {\n    try { console.log(message); } catch (_) {}\n    try { if (typeof args.jobLog === "function") args.jobLog(message); } catch (_) {}\n  };'
+if notify_code.count(old_notify_https)!=1: raise RuntimeError('Unexpected success notifier header')
+notify_code=notify_code.replace(old_notify_https,new_notify_https,1)
+retry_start=notify_code.index('  const sendWebhookWithRetry = async')
+retry_end=notify_code.index('\n  return {',retry_start)
+new_retry_block='''  try {
+    await sendDiscordWebhook(webhookUrl, payload, {
+      tag: "Discord Success Notifier",
+      maxRetries: 3,
+      timeoutMs: 15000,
+      maxRetryDelayMs: 10000,
+      maxTotalWaitMs: 30000,
+      log
+    });
+  } catch (e) {
+    log("[Discord Success Notifier] Delivery failed (unexpected error); check TDARR_DISCORD_WEBHOOK and node connectivity.");
+  }
+'''
+notify_code=notify_code[:retry_start]+new_retry_block+notify_code[retry_end:]
+discord_helper=(src/'discord_webhook.js').read_text().rstrip()+'\n\n'
+notify['inputsDB']['code']=discord_helper+notify_code
 # Keep Discord credentials out of Tdarr plugin code and its input logs.
 already=next(p for p in flow['flowPlugins'] if p['id']=='already_completed')
 already_template=(src/'already_notify.js').read_text()
 if '__TDARR_DISCORD_WEBHOOK__' in already_template: raise RuntimeError('Already-processed notifier must not embed a webhook')
-already['inputsDB']['code']=already_template
+already['inputsDB']['code']=discord_helper+already_template
 template=(src/'failure_notify.js').read_text()
 if '__TDARR_DISCORD_WEBHOOK__' in template: raise RuntimeError('Failure notifier must not embed a webhook')
-notifier=template
+notifier=discord_helper+template
 for plugin_id,name,y in [('notify_failure','Notify Failure or ISO Warning',600),('notify_failure_on_error','Notify unexpected error',780)]:
  flow['flowPlugins'].append({'name':name,'sourceRepo':'Community','pluginName':'customFunction','version':'1.0.0','inputsDB':{'code':notifier},'fpEnabled':True,'id':plugin_id,'position':{'x':1800,'y':y}})
 for edge in flow['flowEdges']:

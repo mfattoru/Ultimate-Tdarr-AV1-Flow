@@ -61,15 +61,33 @@ module.exports = async args => {
     const data = body ? JSON.stringify(body) : null;
     const headers = {'X-Api-Key':apiKey,'Accept':'application/json','User-Agent':'Tdarr-ArrNotifier/1.0'};
     if (data) { headers['Content-Type']='application/json'; headers['Content-Length']=Buffer.byteLength(data); }
-    const req = lib.request({hostname:url.hostname,port:url.port || (url.protocol==='https:'?443:80),path:url.pathname+url.search,method,headers},res=>{
-      let raw='';
-      res.on('data',chunk=>{raw+=chunk;});
-      res.on('end',()=>{let parsed=null;try{if(raw)parsed=JSON.parse(raw);}catch(_){}resolve({ok:res.statusCode>=200&&res.statusCode<300,statusCode:res.statusCode,data:parsed});});
-    });
-    req.on('error',error=>resolve({ok:false,statusCode:0,error}));
-    req.setTimeout(10000,()=>{req.destroy();resolve({ok:false,statusCode:0,timeout:true});});
-    if(data)req.write(data);
-    req.end();
+    let settled = false;
+    let timer;
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      if (typeof clearTimeout === 'function' && timer !== undefined) clearTimeout(timer);
+      resolve(result);
+    };
+    try {
+      const req = lib.request({hostname:url.hostname,port:url.port || (url.protocol==='https:'?443:80),path:url.pathname+url.search,method,headers},res=>{
+        let raw='';
+        res.on('data',chunk=>{raw+=chunk;});
+        res.on('error',error=>finish({ok:false,statusCode:0,error}));
+        res.on('end',()=>{let parsed=null;try{if(raw)parsed=JSON.parse(raw);}catch(_){}finish({ok:res.statusCode>=200&&res.statusCode<300,statusCode:res.statusCode,data:parsed});});
+      });
+      req.on('error',error=>finish({ok:false,statusCode:0,error}));
+      if (typeof setTimeout === 'function') {
+        timer = setTimeout(()=>{try{req.destroy();}catch(_){}finish({ok:false,statusCode:0,timeout:true});},10000);
+      }
+      if (typeof req.setTimeout === 'function') {
+        req.setTimeout(10000,()=>{try{req.destroy();}catch(_){}finish({ok:false,statusCode:0,timeout:true});});
+      }
+      if(data)req.write(data);
+      req.end();
+    } catch (error) {
+      finish({ok:false,statusCode:0,error});
+    }
   });
 
   try {

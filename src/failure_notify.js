@@ -181,22 +181,18 @@ module.exports = async (args) => {
   if (user.failure_notified === true) return result;
   const log = message => { try { if (typeof args.jobLog === 'function') args.jobLog(message); } catch (_) {} };
   try {
-    const https = require('https');
+    const {sendDiscordWebhook: sendWebhook} = typeof sendDiscordWebhook === 'function'
+      ? {sendDiscordWebhook}
+      : require('./discord_webhook');
     const webhookUrl = process.env.TDARR_DISCORD_WEBHOOK;
-    if (!webhookUrl) {
-      log('[Failure notification] Delivery failed: TDARR_DISCORD_WEBHOOK is not configured.');
-      return result;
-    }
-    const target = new URL(webhookUrl);
-    if (target.protocol !== 'https:') throw new Error('Invalid webhook protocol');
     const file = args.originalLibraryFile?._id || args.inputFileObj?._id;
     const name = typeof file === 'string' ? file.split(/[\\/]/).pop().replace(/\.[^/.]+$/, '').slice(0, 220) : 'Unknown file';
-  const explanation = humanizeFailure(reason,user.validation_report,user.quarantine_entry);
-  const qualityFloor = explanation.category === 'quality_floor';
+    const explanation = humanizeFailure(reason,user.validation_report,user.quarantine_entry);
+    const qualityFloor = explanation.category === 'quality_floor';
     const arrStatus = String(user.arr_refetch_status || 'unknown');
     const corruptionSearchStatus = String(user.arr_corruption_search_status || 'unknown');
     const corruptionSearchTarget = String(user.arr_corruption_search_target || 'Arr');
-  const icon = isoRemoved || explanation.severity === 'warning' ? '⚠️' : '❌';
+    const icon = isoRemoved || explanation.severity === 'warning' ? '⚠️' : '❌';
     const description = [];
     if (isoRemoved) {
       description.push('⚠️ **Action:** The ISO disc image was deleted from the library.');
@@ -244,40 +240,16 @@ module.exports = async (args) => {
       footer:{text:isoRemoved ? (arrStatus === 'requested' ? 'Tdarr AV1 Flow • ISO deleted • Arr rescan requested' : 'Tdarr AV1 Flow • ISO deleted • Arr rescan needs attention') : qualityFloor ? 'Tdarr AV1 Flow • Quality floor reached' : `Tdarr AV1 Flow • ${explanation.category.replace(/_/g,' ')}`},
       timestamp:new Date().toISOString()
     }], allowed_mentions:{parse:[]}});
-    const status = await new Promise((resolve, reject) => {
-      let timer;
-      const finish = (err, statusCode) => {
-        clearTimeout(timer);
-        if (err) reject(err); else resolve(statusCode);
-      };
-      try {
-        const request = https.request(target, {method: 'POST', headers: {'Content-Type': 'application/json'}}, response => {
-          response.on('error', err => finish(err));
-          response.on('end', () => finish(null, response.statusCode));
-          response.resume();
-        });
-        request.on('error', err => finish(err));
-        timer = setTimeout(() => {
-          request.destroy();
-          finish(new Error('Notification timed out'));
-        }, 10000);
-        request.setTimeout(10000, () => request.destroy(new Error('Notification timed out')));
-        request.end(body);
-      } catch (err) { finish(err); }
+    const delivery = await sendWebhook(webhookUrl, body, {
+      tag: 'Failure notification',
+      maxRetries: 1,
+      timeoutMs: 10000,
+      log
     });
-    if (!(status >= 200 && status < 300)) {
-      const error = new Error('Notification rejected');
-      error.statusCode = status;
-      throw error;
-    }
-    user.failure_notified = true;
-    log('[Failure notification] Sent.');
-  } catch (err) {
+    if (delivery.ok) user.failure_notified = true;
+  } catch (_) {
     // Avoid logging the webhook or network exception, which can contain credentials.
-    const status=Number(err?.statusCode);
-    const code=typeof err?.code === 'string' && /^[A-Z0-9_]+$/.test(err.code) ? err.code : '';
-    const detail=Number.isInteger(status) ? `HTTP ${status}` : code || (err?.message === 'Notification timed out' ? 'request timed out' : 'request or URL error');
-    log(`[Failure notification] Delivery failed (${detail}); check TDARR_DISCORD_WEBHOOK and node connectivity.`);
+    log('[Failure notification] Delivery failed (request or URL error); check TDARR_DISCORD_WEBHOOK and node connectivity.');
   }
   return result;
 };

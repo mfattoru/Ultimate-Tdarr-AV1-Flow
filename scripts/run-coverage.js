@@ -11,6 +11,7 @@ const argumentsForNode = [
   '--test',
   '--experimental-test-coverage',
   '--test-coverage-include=src/audio_timing.js',
+  '--test-coverage-include=src/discord_webhook.js',
   '--test-coverage-include=src/pgs.js',
   '--test-coverage-include=src/precheck_cache.js',
   '--test-coverage-include=src/progress.js',

@@ -248,3 +248,15 @@ test('Dolby Vision Profile 5 converts via libplacebo with Intel Vulkan override 
  assert.ok(engine.includes('expected.sourceClass === "dovi5_hdr10"'),'stream-copy seek-heal fallback must validate Profile 5 source preservation separately from HDR10 encodes');
  assert.ok(engine.includes('stopOnLimit: true'),'dovi5_hdr10 Vulkan encodes must enforce a fixed output cap cleanly without finite RLIMIT_FSIZE tripping Intel ANV');
 });
+
+test('all exported Discord and Arr nodes share hardened response-error and timeout guards',()=>{
+ for(const id of ['discord_success','already_completed','notify_failure','notify_failure_on_error']) {
+  const code=flow.flowPlugins.find(p=>p.id===id).inputsDB.code;
+  assert.ok(code.includes('function sendDiscordWebhook('),`${id} must bundle sendDiscordWebhook`);
+  assert.ok(code.includes("response.on('error'"),`${id} must guard response stream errors`);
+ }
+ for(const id of ['notify_arr','notify_arr_iso']) {
+  const code=flow.flowPlugins.find(p=>p.id===id).inputsDB.code;
+  assert.match(code,/res\.on\(['"]error['"]/,`${id} must guard Arr response stream errors`);
+ }
+});

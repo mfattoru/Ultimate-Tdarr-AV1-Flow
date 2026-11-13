@@ -89,6 +89,8 @@ async function invoke(filePath, reason, env, mocks, validationReport) {
     process: { env },
     URL,
     Buffer,
+    setTimeout,
+    clearTimeout,
     console: { log() {} }
   };
   vm.runInNewContext(actionCode, context, { timeout: 1000 });
@@ -178,4 +180,47 @@ test('candidate-only validation failures do not contact any Arr target', { skip:
   assert.equal(user.arr_corruption_search_status, 'not_applicable');
   assert.equal(user.arr_refetch_status, 'not_attempted');
   for (const mock of Object.values(mocks)) assert.equal(mock.calls.length, 0);
+});
+
+test('ISO rescan degrades cleanly when Arr response stream emits an error mid-body', async () => {
+  const module = { exports: {} };
+  const fakeHttp = {
+    request(_options, onResponse) {
+      const req = new EventEmitter();
+      req.write = () => {};
+      req.setTimeout = () => {};
+      req.destroy = () => {};
+      req.end = () => {
+        setImmediate(() => {
+          const res = new EventEmitter();
+          res.statusCode = 200;
+          res.resume = () => {};
+          onResponse(res);
+          res.emit('error', new Error('connection reset mid-response'));
+        });
+      };
+      return req;
+    }
+  };
+  const context = {
+    module,
+    exports: module.exports,
+    require: name => name === 'http' || name === 'https' ? fakeHttp : require(name),
+    process: { env: { TDARR_ARR_RADARR_URL: 'http://movie.test', TDARR_ARR_RADARR_API_KEY: 'key' } },
+    URL,
+    Buffer,
+    setTimeout,
+    clearTimeout,
+    console: { log() {} }
+  };
+  vm.runInNewContext(actionCode, context, { timeout: 1000 });
+  const args = {
+    inputFileObj: { _id: '/media/movies/Test Film/Test Film.iso' },
+    originalLibraryFile: { _id: '/media/movies/Test Film/Test Film.iso' },
+    variables: { user: { failure_reason: 'Disc image removed; check the Arr rescan log.' } },
+    jobLog() {}
+  };
+  const res = await module.exports(args);
+  assert.equal(res.outputNumber, 1);
+  assert.equal(args.variables.user.arr_refetch_status, 'not_found');
 });

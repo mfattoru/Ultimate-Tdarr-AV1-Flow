@@ -4,11 +4,9 @@ module.exports = async (args) => {
   if (!args.variables.user) args.variables.user = {};
   const log = message => { try { if (typeof args.jobLog === 'function') args.jobLog(message); } catch (_) {} };
   try {
-    const https = require('https');
-    const webhookUrl = process.env.TDARR_DISCORD_WEBHOOK;
-    if (!webhookUrl) throw new Error('TDARR_DISCORD_WEBHOOK is not configured');
-    const target = new URL(webhookUrl);
-    if (target.protocol !== 'https:') throw new Error('Invalid webhook protocol');
+    const {sendDiscordWebhook: sendWebhook} = typeof sendDiscordWebhook === 'function'
+      ? {sendDiscordWebhook}
+      : require('./discord_webhook');
     const file = args.originalLibraryFile?._id || args.inputFileObj?._id;
     const name = typeof file === 'string' ? file.split(/[\\/]/).pop().replace(/\.[^/.]+$/, '').slice(0, 220) : 'Unknown file';
     const tags = args.inputFileObj?.ffProbeData?.format?.tags || {};
@@ -24,20 +22,15 @@ module.exports = async (args) => {
       }],
       allowed_mentions: {parse: []}
     });
-    await new Promise((resolve, reject) => {
-      let timer;
-      const finish = (err, code) => { clearTimeout(timer); if (err) reject(err); else resolve(code); };
-      const request = https.request(target, {method:'POST',headers:{'Content-Type':'application/json'}}, response => {
-        response.on('error', err => finish(err));
-        response.on('end', () => response.statusCode >= 200 && response.statusCode < 300 ? finish(null, response.statusCode) : finish(new Error('Notification rejected')));
-        response.resume();
-      });
-      request.on('error', err => finish(err));
-      timer = setTimeout(() => { request.destroy(); finish(new Error('Notification timed out')); }, 10000);
-      request.setTimeout(10000, () => request.destroy(new Error('Notification timed out')));
-      request.end(body);
+    const delivery = await sendWebhook(process.env.TDARR_DISCORD_WEBHOOK, body, {
+      tag: 'Already processed notification',
+      maxRetries: 1,
+      timeoutMs: 10000,
+      log
     });
-    log('[Already processed notification] Sent.');
+    if (!delivery.ok) {
+      log('[Already processed notification] Delivery failed; see notification configuration and connectivity.');
+    }
   } catch (_) {
     log('[Already processed notification] Delivery failed; see notification configuration and connectivity.');
   }

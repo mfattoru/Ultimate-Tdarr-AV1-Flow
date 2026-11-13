@@ -86,3 +86,51 @@ Work in a separate export; never change the live Tdarr workflow or library. Pres
 2. **Green Phase**: Implement logic in `policy.js`, `progress.js`, `build.py`, and `flow_test_runtime.js`, update docs, and run `python3 build.py`.
 3. **Verify**: Run `node --test *.test.js` to confirm all tests pass, smoke-verify `dovi5_hdr10` in the Unraid test container if appropriate, and author `walkthrough.md`.
 
+---
+
+# V15 Notification & Arr Offline Resilience Hardening Plan
+
+## Change Categorization
+- **Feature Addition / Non-Breaking Resilience Hardening** (with minor in-place behavioral refinements to `discord_success` and Arr HTTP stream handling):
+  - No changes to flow topology, edge handles, output numbers (`outputNumber`), embed payloads, or environment variable names (`TDARR_DISCORD_WEBHOOK`, `TDARR_ARR_*`).
+  - Refines `discord_success` delivery to match the defensive transport guarantees already enforced in `already_notify.js` and `failure_notify.js` (response stream error handling, wall-clock timeout, explicit webhook URL/protocol checks, and `args.jobLog` reporting), and closes the same response-stream error gap in `notify_arr` / `arr_action.js`.
+
+## Files Affected
+- [`src/discord_webhook.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/discord_webhook.js) *(new shared helper)*:
+  - Provide a single hardened `sendDiscordWebhook(webhookUrl, payload, options)` helper used across all Discord notification nodes:
+    - Validate `TDARR_DISCORD_WEBHOOK` presence and `https:` protocol before opening sockets, returning structured non-throwing failure status without logging webhook credentials/tokens.
+    - Pass full `URL` (`protocol`, `hostname`, `port`, `pathname`, `search`) to `https.request`.
+    - Attach both `request.on('error')` and `response.on('error')` so mid-stream socket resets when Unraid/internet drops cannot raise an unhandled `EventEmitter` `'error'`.
+    - Enforce both an explicit wall-clock `setTimeout` (guarded with `typeof clearTimeout === 'function'` fallback safety) and `request.setTimeout` so stalled DNS lookups or sockets always settle within the configured budget.
+    - Support bounded retries (`maxRetries`, `429` `retry_after` capped to a safe ceiling, `5xx`/network/timeout backoff) with an optional `maxTotalWaitMs` cap so offline retries never stall a Tdarr worker indefinitely.
+    - Log sanitized diagnostics via `args.jobLog` (with `console` fallback).
+- [`src/already_notify.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/already_notify.js) & [`src/failure_notify.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/failure_notify.js):
+  - Delegate HTTPS POST delivery to `sendDiscordWebhook` (`retries: 1`, `timeoutMs: 10000`), removing duplicated `https.request` boilerplate while preserving existing log messages, `user.failure_notified` retry semantics, and `outputNumber` (`1` / `2`) contracts.
+- [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py) & [`scripts/build_additions.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build_additions.py):
+  - Bundle `src/discord_webhook.js` into `discord_success`, `already_completed`, `notify_failure`, and `notify_failure_on_error`.
+  - Update `discord_success` to call `sendDiscordWebhook` (3 bounded attempts, `15000` ms per-attempt timeout, `args.jobLog` + `console` logging, never throwing or failing the flow).
+  - Harden `notify_arr` (in `build.py`) with `res.on("error", ...)` and a wall-clock `setTimeout` guard alongside `req.setTimeout(10000)`.
+- [`src/arr_action.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/arr_action.js):
+  - Add `res.on('error', ...)` and a wall-clock `setTimeout` guard to `request(...)` so mid-response Arr/Unraid disconnects settle cleanly as non-fatal failures.
+- [`scripts/run-coverage.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/run-coverage.js):
+  - Add `src/discord_webhook.js` to `--test-coverage-include` so the shared transport helper meets the >=90% line/function coverage gate.
+- **Test Files**:
+  - [`tests/discord_webhook.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/discord_webhook.test.js) *(new)*: Unit tests covering missing/non-HTTPS webhook, DNS/network errors (`ENOTFOUND`, `EHOSTUNREACH`, `ECONNREFUSED`), pre-connect wall-clock timeout, mid-response `res` `'error'` event, HTTP `429` retry + cap, `5xx` retry exhaustion, and secret redaction in logs.
+  - [`tests/success_notify.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/success_notify.test.js): Add offline tests on the built `discord_success` plugin verifying network errors, response-stream `error`, timeouts, missing/invalid `TDARR_DISCORD_WEBHOOK`, and HTTP 5xx never throw and always return `outputNumber: 1`.
+  - [`tests/already_notify.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/already_notify.test.js), [`tests/failure_notify.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/failure_notify.test.js), [`tests/arr_action.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/arr_action.test.js): Update VM test harnesses if needed for the shared helper and add mid-response `res` `'error'` regression tests.
+- [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json):
+  - Regenerate via `python3 scripts/build.py`.
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase**:
+   - Add failing unit tests in `tests/discord_webhook.test.js` for `sendDiscordWebhook` error/timeout/retry/stream-reset/redaction cases.
+   - Add failing offline/error-stream tests in `tests/success_notify.test.js` (missing webhook, `http://` webhook, network failure, response stream `'error'`, timeout) and mid-response `'error'` test in `tests/arr_action.test.js`.
+   - Run `npm test` to confirm the new tests fail as expected.
+2. **Green Phase**:
+   - Implement `src/discord_webhook.js`.
+   - Refactor `src/already_notify.js` and `src/failure_notify.js` to use `sendDiscordWebhook`.
+   - Update `src/arr_action.js`, `scripts/build.py`, `scripts/build_additions.py`, and `scripts/run-coverage.js`.
+   - Rebuild `flow.json` with `python3 scripts/build.py`.
+3. **Refactor & Verify**:
+   - Run `make check` (`python3 scripts/build.py`, `npm run test:coverage`, and `git diff --check`) and confirm all tests and >=90% coverage thresholds pass.
+
