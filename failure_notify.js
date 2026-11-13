@@ -67,6 +67,15 @@ const humanizeFailure = (reason,validationReport,quarantineEntry) => {
       details
     };
   }
+  if (/\[subtitle guard\]/i.test(text)) {
+    return {
+      category:'subtitle_source_timing',severity:'warning',
+      summary:'The source ASS/SSA subtitle timing could not be safely preserved by the current remux path.',
+      fileState:'The original file was kept; a fresh encode did not start.',
+      action:'Review the subtitle track and its packet ordering. This check does not establish source corruption or request an Arr search.',
+      details
+    };
+  }
   const subtitle = text.match(/output subtitle packet count\s+(\d+)\s+is less than source\s+(\d+)\s+for stream\s+(\d+)/i);
   if (subtitle) {
     const outputCount = Number(subtitle[1]), sourceCount = Number(subtitle[2]), stream = Number(subtitle[3]);
@@ -201,7 +210,11 @@ module.exports = async (args) => {
       description.push(`**File state:** ${explanation.fileState}`);
       description.push(`**What to do:** ${explanation.action}`);
       if (user.quarantine_entry && typeof user.quarantine_entry.candidatePath === 'string') {
-        description.push('📦 **Quarantined candidate:** A complete candidate is retained. After fixing the reported issue, requeue the file to run current checks against it. For a fresh encode, set the Libraries variable `arc_force_fresh_path` to the exact node-visible original path, run the file once, then clear the variable.');
+        const originalPath = args.originalLibraryFile?._id;
+        const displayable = typeof originalPath === 'string' && originalPath.startsWith('/') && originalPath.length <= 1200 && !/[\r\n`]/.test(originalPath);
+        description.push('📦 **Quarantined candidate:** A complete candidate is retained. After fixing the reported issue, requeue the file to run current checks against it. For a fresh encode, set the Libraries variable `arc_force_fresh_path` to the original node-visible path, run the file once, then clear the variable.');
+        if (displayable) description.push(`**Value for arc_force_fresh_path:**\n\`\`\`\n${originalPath}\n\`\`\``);
+        else description.push('The original path could not be safely displayed; copy the full node-visible library path from the Tdarr job.');
       }
       if (explanation.category === 'source_media_corruption') {
         if (corruptionSearchStatus === 'requested') description.push(`📡 **Arr:** ${corruptionSearchTarget} accepted a targeted search. The original remains in place; a replacement is not guaranteed unless an available release meets your profile and upgrade rules.`);

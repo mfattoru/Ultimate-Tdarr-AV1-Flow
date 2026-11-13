@@ -22,6 +22,7 @@ const isCompletedEncode = (codec, tags) => {
 // the tested static-metadata path. Other HDR and ambiguous inputs fail closed.
 const isNonDolbyDynamic = value => /2094|hdr10\+|hdr10[ _-]*plus|hdr.?vivid|cuva|dynamic hdr|hdr dynamic|sl.?hdr/i.test(String(value || ''));
 const isDynamicHdrSignal = value => /dolby|dovi/i.test(String(value || '')) || isNonDolbyDynamic(value);
+const mustRetainOriginalAtQualityFloor = _hdrClass => false;
 const normalizeSdrMatrix = value => {
   const normalized=String(value || '').toLowerCase().replace(/[\s._-]/g,'');
   const aliases={bt709:'bt709',bt601:'smpte170m',smpte170m:'smpte170m',bt470bg:'bt470bg'};
@@ -58,8 +59,8 @@ const classifyVideo = (video, info) => {
       && video.color_space === 'bt2020nc') return 'hdr10';
   return 'unsupported';
 };
-const validateHdr10 = (source, output) => {
-  if ((output.side_data_list || []).some(s => isDynamicHdrSignal(s.side_data_type))) throw Error('HDR10 output retains Dolby Vision or dynamic HDR signaling');
+const validateHdr10 = (source, output, options={}) => {
+  if (!options.allowDynamicHdr && (output.side_data_list || []).some(s => isDynamicHdrSignal(s.side_data_type))) throw Error('HDR10 output retains Dolby Vision or dynamic HDR signaling');
   for (const type of ['Mastering display metadata','Content light level metadata']) if ((output.side_data_list || []).filter(s=>s.side_data_type===type).length>1) throw Error(`Duplicate HDR output metadata: ${type}`);
   for (const field of ['color_transfer','color_primaries','color_space','color_range']) {
     if (!source[field] || source[field] !== output[field]) throw Error(`HDR10 color ${field} changed`);
@@ -187,6 +188,21 @@ const preflightHybridHdr = (video, info, frameHdr10Plus=false) => {
   }
   return 'dovi81_hdr10plus_candidate';
 };
+const isVerifiedDolbyProfile5Config = (video, info, config) => {
+  if (!config || Number(config.dv_profile)!==5 || Number(config.bl_present_flag)!==1
+      || Number(config.el_present_flag)!==0 || Number(config.rpu_present_flag)!==1
+      || Number(config.dv_bl_signal_compatibility_id)!==0) return false;
+  if (video?.codec_name!=='hevc') return false;
+  const pixFmt=String(video?.pix_fmt || '').toLowerCase().split('(')[0].trim();
+  if (!['yuv420p10le','p010','p010le'].includes(pixFmt)) return false;
+  if (normalizeColorRange(video?.color_range)!=='pc') return false;
+  const infoRange=info?.colour_range ?? info?.color_range;
+  if (!isUnknownColorValue(infoRange) && normalizeColorRange(infoRange)!=='pc') return false;
+  for (const field of ['color_transfer','color_primaries','color_space']) {
+    if (!isUnknownColorValue(video?.[field])) return false;
+  }
+  return true;
+};
 const preflightDolbyHdrRoute = (video, info, hybrid='not_hybrid') => {
   const side=video?.side_data_list || [];
   const configs=side.filter(item=>/dovi configuration/i.test(String(item.side_data_type || '')));
@@ -194,10 +210,15 @@ const preflightDolbyHdrRoute = (video, info, hybrid='not_hybrid') => {
   const doviSignaled=/dolby vision|\bdovi\b/i.test(infoText) || configs.length>0;
   if (!doviSignaled) return null;
   if (configs.length!==1) throw Error('Dolby Vision configuration is missing or ambiguous');
+  const d=configs[0];
+  if (Number(d.dv_profile)===5) {
+    if (hybrid!=='not_hybrid') throw Error('Hybrid Dolby Vision Profile 5 and HDR10+ signaling is not verified');
+    if (!isVerifiedDolbyProfile5Config(video,info,d)) throw Error('Dolby Vision Profile 5 configuration or color signaling is not verified');
+    return 'dovi5_hdr10';
+  }
   if (video.codec_name!=='hevc' || video.color_range!=='tv'
       || video.color_transfer!=='smpte2084' || video.color_primaries!=='bt2020'
       || video.color_space!=='bt2020nc') throw Error('Dolby Vision HDR10 base-layer codec or color metadata is not verified');
-  const d=configs[0];
   if (hybrid==='dovi7_hdr10plus_candidate' && Number(d.dv_profile)===7
       && Number(d.bl_present_flag)===1 && Number(d.el_present_flag)===1
       && Number(d.rpu_present_flag)===1 && Number(d.dv_bl_signal_compatibility_id)===6) return 'dovi7_hdr10plus_hdr10';
@@ -228,11 +249,11 @@ const determineHdrRoute = (video, info, scan) => {
   const strippedInfo=infoText.replace(/hdr10(?:\+|[ _-]*plus)|(?:smpte(?:\s*st)?\s*)?2094(?:[- ]?40|.{0,12}app.?4)/gi,'');
   const nonDolbyDynamic=side.filter(s=>isNonDolbyDynamic(s.side_data_type));
   if (scan.otherDynamic || isNonDolbyDynamic(strippedInfo) || nonDolbyDynamic.some(s=>!isHdr10PlusSignal(s.side_data_type))) throw Error('Unsupported dynamic HDR metadata');
-  if (video.color_range !== 'tv') throw Error('HDR color range is not verified as limited');
   const config=side.filter(s => /dovi configuration/i.test(String(s.side_data_type || '')));
   const saysDovi = /dolby vision|\bdovi\b/i.test(infoText) || scan.dovi > 0 || config.length > 0;
   const plusSignaled = isHdr10PlusSignal(infoText) || nonDolbyDynamic.some(s=>isHdr10PlusSignal(s.side_data_type));
   if (scan.hdr10plus || plusSignaled) {
+    if (video.color_range !== 'tv') throw Error('HDR color range is not verified as limited');
     if (saysDovi) {
       const hybrid=preflightHybridHdr(video,info,scan.hdr10plus>0);
       if (!scan.hdr10plus) throw Error('HDR10+ signaling is not verified in decoded frames');
@@ -247,6 +268,11 @@ const determineHdrRoute = (video, info, scan) => {
   if (saysDovi) {
     if (config.length !== 1 || !scan.dovi) throw Error('Dolby Vision metadata is incomplete or conflicts with stream signaling');
     const d=config[0];
+    if (Number(d.dv_profile)===5) {
+      if (!isVerifiedDolbyProfile5Config(video,info,d)) throw Error('Dolby Vision Profile 5 configuration or color signaling is not verified');
+      return 'dovi5_hdr10';
+    }
+    if (video.color_range !== 'tv') throw Error('HDR color range is not verified as limited');
     if (Number(d.dv_profile)===7) {
       if (video.codec_name!=='hevc' || Number(d.bl_present_flag)!==1 || Number(d.el_present_flag)!==1 || Number(d.rpu_present_flag)!==1 || Number(d.dv_bl_signal_compatibility_id)!==6 || !/\bhdr10\b/i.test(String(info?.HDR_Format_Compatibility || ''))) throw Error('Dolby Vision Profile 7 HDR10 base is not verified');
       if (video.color_transfer!=='smpte2084' || video.color_primaries!=='bt2020' || video.color_space!=='bt2020nc') throw Error('Dolby Vision Profile 7 HDR10 base-layer color metadata conflicts');
@@ -261,6 +287,7 @@ const determineHdrRoute = (video, info, scan) => {
     if (video.color_transfer!=='smpte2084' || video.color_primaries!=='bt2020' || video.color_space!=='bt2020nc') throw Error('Dolby Vision HDR10 base-layer color metadata conflicts');
     return 'dovi81_hdr10';
   }
+  if (video.color_range !== 'tv') throw Error('HDR color range is not verified as limited');
   if (video.color_transfer==='arib-std-b67' && video.color_primaries==='bt2020' && video.color_space==='bt2020nc' && /hlg/i.test(infoText)) return 'hlg';
   if (video.color_transfer==='smpte2084' && video.color_primaries==='bt2020' && video.color_space==='bt2020nc' && /hdr10|2086/i.test(infoText)) return 'hdr10';
   throw Error('HDR color signaling is unsupported or ambiguous');
@@ -446,10 +473,77 @@ const summarizeLevel6Rows = (rows, expectedFrames, includeCount=false) => {
   if (!first || count<1 || (expectedFrames!==null && count!==expectedFrames)) throw Error(`Dolby Level 6 frame count mismatch (${count} / ${expectedFrames})`);
   return includeCount ? {value:first,frames:count} : first;
 };
-const extractDolbyLevel6 = async (ffmpeg, file, index, expectedFrames, includeCount=false) => {
+// Verified Dolby Vision Level 9 source_primary_index chromaticity coordinates (1/50000 units).
+const DOLBY_LEVEL9_PRIMARIES = {
+  0: {r:[34000,16000],g:[13250,34500],b:[7500,3000],wp:[15635,16450]}, // DCI-P3 D65 (Display P3)
+  2: {r:[35400,14600],g:[8500,39850],b:[6550,2300],wp:[15635,16450]},  // BT.2020
+  5: {r:[34000,16000],g:[13250,34500],b:[7500,3000],wp:[15700,17550]}   // DCI-P3
+};
+const parseDolbyLevel9 = (row) => {
+  const fields=typeof row==='string' ? row.trim().split(',') : Array.isArray(row) ? row : null;
+  if (!fields || fields.length<3 || !fields.slice(0,3).every(x=>/^\d+$/.test(String(x).trim()))) throw Error('Dolby Level 9 export is invalid');
+  const length=Number(fields[1]), index=Number(fields[2]);
+  if (![1,17].includes(length) || !Number.isInteger(index) || index<0 || index>255) throw Error('Dolby Level 9 metadata is invalid');
+  return {length,source_primary_index:index};
+};
+const summarizeLevel9Rows = (rows, expectedFrames=null) => {
+  const header='frame,length,source_primary_index';
+  const head=Array.isArray(rows) ? String(rows[0] || '').trim() : '';
+  if (!head || (head!==header && !head.startsWith(`${header},`))) throw Error('Dolby Level 9 export is invalid');
+  if (expectedFrames!==null && (!Number.isSafeInteger(expectedFrames) || expectedFrames<1)) throw Error('Dolby Level 9 export is invalid');
+  let first=null,count=0;
+  for (const line of rows.slice(1)) {
+    if (!line.trim()) continue;
+    const fields=line.trim().split(',');
+    if (fields.length<3 || !/^\d+$/.test(fields[0]) || Number(fields[0])!==count) throw Error('Dolby Level 9 export is incomplete');
+    const value=parseDolbyLevel9(fields);
+    if (first && first.source_primary_index!==value.source_primary_index) throw Error('Dolby Level 9 changes during the source');
+    if (!first) first={source_primary_index:value.source_primary_index};
+    count++;
+  }
+  if (!first) return null;
+  if (expectedFrames!==null && count!==expectedFrames) throw Error(`Dolby Level 9 frame count mismatch (${count} / ${expectedFrames})`);
+  return {...first,frames:count};
+};
+const formatMasteringDisplayArg = (primaries, minLuminance, maxLuminance) => {
+  const maxRaw=Math.round(Number(maxLuminance)*10000), minRaw=Math.round(Number(minLuminance)*10000);
+  if (!primaries || !Number.isFinite(maxRaw) || !Number.isFinite(minRaw) || maxRaw<1 || minRaw<0) throw Error('Mastering display parameters are invalid');
+  return `G(${primaries.g[0]},${primaries.g[1]})B(${primaries.b[0]},${primaries.b[1]})R(${primaries.r[0]},${primaries.r[1]})WP(${primaries.wp[0]},${primaries.wp[1]})L(${maxRaw},${minRaw})`;
+};
+const buildDovi5HdrTarget = (level6, level9=null) => {
+  if (!level6 || !Number.isFinite(level6.max_luminance) || !Number.isFinite(level6.min_luminance)) throw Error('Dolby Level 6 mastering metadata unavailable');
+  const side=[];
+  let masteringDisplayArg=null,contentLightArg=null;
+  if (level9) {
+    const idx=Number(level9.source_primary_index);
+    const primaries=DOLBY_LEVEL9_PRIMARIES[idx];
+    if (!primaries) throw Error(`Unsupported Dolby Level 9 source_primary_index: ${idx}`);
+    const maxRaw=Math.round(Number(level6.max_luminance)*10000), minRaw=Math.round(Number(level6.min_luminance)*10000);
+    masteringDisplayArg=formatMasteringDisplayArg(primaries,level6.min_luminance,level6.max_luminance);
+    side.push({
+      side_data_type:'Mastering display metadata',
+      red_x:`${primaries.r[0]}/50000`,red_y:`${primaries.r[1]}/50000`,
+      green_x:`${primaries.g[0]}/50000`,green_y:`${primaries.g[1]}/50000`,
+      blue_x:`${primaries.b[0]}/50000`,blue_y:`${primaries.b[1]}/50000`,
+      white_point_x:`${primaries.wp[0]}/50000`,white_point_y:`${primaries.wp[1]}/50000`,
+      min_luminance:`${minRaw}/10000`,max_luminance:`${maxRaw}/10000`
+    });
+  }
+  const max=Number(level6.max_content), avg=Number(level6.max_average);
+  if (Number.isInteger(max) && max>0 && max<=65535 && Number.isInteger(avg) && avg>0 && avg<=max) {
+    contentLightArg=`${max},${avg}`;
+    side.push({side_data_type:'Content light level metadata',max_content:max,max_average:avg});
+  }
+  return {
+    targetVideo:{codec_name:'av1',color_transfer:'smpte2084',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv',side_data_list:side},
+    masteringDisplayArg,
+    contentLightArg
+  };
+};
+const extractDolbyLevel6 = async (ffmpeg, file, index, expectedFrames, includeCount=false, includeLevel9=false) => {
   const dir=fs.mkdtempSync(path.join(require('os').tmpdir(),'tdarr-dovi-'));
   try {
-    const rpu=path.join(dir,'rpu.bin'), csv=path.join(dir,'level6.csv');
+    const rpu=path.join(dir,'rpu.bin'), csv=path.join(dir,'level6.csv'), csv9=path.join(dir,'level9.csv');
     const source=timelineSpawn(ffmpeg,['-v','error','-xerror','-fflags','+genpts+igndts','-i',file,'-map',`0:${index}`,'-c:v','copy','-bsf:v','hevc_mp4toannexb','-f','hevc','-'],{stdio:['ignore','pipe','pipe']});
     const extract=timelineSpawn('dovi_tool',['extract-rpu','-','-o',rpu],{stdio:['pipe','ignore','pipe']});
     let sourceErr='',extractErr='';
@@ -465,11 +559,22 @@ const extractDolbyLevel6 = async (ffmpeg, file, index, expectedFrames, includeCo
       await Promise.all([closed(source,()=>sourceErr),closed(extract,()=>extractErr),require('stream/promises').pipeline(source.stdout,extract.stdin)]);
     } catch (e) {source.kill('SIGKILL');extract.kill('SIGKILL');throw e;}
     finally {clearTimeout(timer);}
-    execFileSync('dovi_tool',['export','-i',rpu,'--levels',`level6=${csv}`,'--levels-format','csv'],{encoding:'utf8',timeout:12*60*60*1000,maxBuffer:1024*1024});
+    const levelsSpec=includeLevel9 ? `level6=${csv},level9=${csv9}` : `level6=${csv}`;
+    execFileSync('dovi_tool',['export','-i',rpu,'--levels',levelsSpec,'--levels-format','csv'],{encoding:'utf8',timeout:12*60*60*1000,maxBuffer:1024*1024});
     if (fs.statSync(csv).size>128*1024*1024) throw Error('Dolby Level 6 export exceeds safety limit');
-    return summarizeLevel6Rows(fs.readFileSync(csv,'utf8').split(/\r?\n/),expectedFrames,includeCount);
+    const l6=summarizeLevel6Rows(fs.readFileSync(csv,'utf8').split(/\r?\n/),expectedFrames,includeCount || includeLevel9);
+    if (!includeLevel9) return l6;
+    let level9=null;
+    if (fs.existsSync(csv9)) {
+      if (fs.statSync(csv9).size>128*1024*1024) throw Error('Dolby Level 9 export exceeds safety limit');
+      const l9Raw=fs.readFileSync(csv9,'utf8').trim();
+      if (l9Raw) level9=summarizeLevel9Rows(l9Raw.split(/\r?\n/),expectedFrames ?? l6.frames);
+    }
+    return {...l6,level6:l6.value,level9};
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 };
+const extractDolbyProfile5HdrMetadata = (ffmpeg, file, index, expectedFrames=null) =>
+  extractDolbyLevel6(ffmpeg,file,index,expectedFrames,true,true);
 
 const rationalValue = (x) => {
   const parts=String(x).split('/'), n=Number(parts[0]), d=parts.length===2?Number(parts[1]):1;
@@ -480,20 +585,23 @@ const resolveHdrLight = async (metadata, route, getLevel6) => {
   const light=metadata.side_data_list.find(x=>x.side_data_type==='Content light level metadata');
   let max=Number(light?.max_content), avg=Number(light?.max_average), override=null;
   if (!(Number.isInteger(max) && max>0 && max<=65535 && Number.isInteger(avg) && avg>0 && avg<=max)) {
+    const unknownPair=light && Number(light.max_content)===0 && Number(light.max_average)===0;
+    if (light && !unknownPair) throw Error('HDR10 content-light metadata is invalid');
     if (route==='hdr10') {
-      const unknownPair=light && Number(light.max_content)===0 && Number(light.max_average)===0;
-      if (light && !unknownPair) throw Error('HDR10 content-light metadata is invalid');
       return {metadata:{...metadata,side_data_list:(metadata.side_data_list || []).filter(x=>x.side_data_type!=='Content light level metadata')},override:null};
     }
     if (!['dovi81_hdr10','dovi7_hdr10','dovi81_hdr10plus_hdr10','dovi7_hdr10plus_hdr10'].includes(route)) throw Error('HDR10 light metadata is absent or unspecified');
-    const l6=await getLevel6();
     const sourceMax=rationalValue(mastering?.max_luminance), sourceMin=rationalValue(mastering?.min_luminance);
+    if (!Number.isFinite(sourceMax) || !Number.isFinite(sourceMin)) throw Error('HDR10 mastering metadata is missing or invalid');
+    const l6=await getLevel6();
     if (l6.max_content===0 && l6.max_average===0) {
-      if (light && (Number(light.max_content)!==0 || Number(light.max_average)!==0)) throw Error('Dolby Level 6 light metadata is unavailable and source content-light metadata is invalid');
-      if (!Number.isFinite(sourceMax) || !Number.isFinite(sourceMin)) throw Error('HDR10 mastering metadata is missing or invalid');
       return {metadata:{...metadata,side_data_list:(metadata.side_data_list || []).filter(x=>x.side_data_type!=='Content light level metadata')},override:null};
     }
-    if (!Number.isFinite(sourceMax) || !Number.isFinite(sourceMin) || Math.abs(sourceMax-l6.max_luminance)>0.1 || Math.abs(sourceMin-l6.min_luminance)>0.0001) throw Error('Dolby Level 6 and HDR10 mastering luminance conflict');
+    if (Math.abs(sourceMax-l6.max_luminance)>0.1 || Math.abs(sourceMin-l6.min_luminance)>0.0001) {
+      const omittedCll=` (ignored Dolby Level 6 CLL ${l6.max_content},${l6.max_average})`;
+      const warning=`Dolby Level 6 mastering luminance (${l6.min_luminance}-${l6.max_luminance} cd/m^2) conflicts with verified HDR10 base (${sourceMin}-${sourceMax} cd/m^2)${omittedCll}; encoding HDR10 base without content-light metadata.`;
+      return {metadata:{...metadata,side_data_list:[mastering].filter(Boolean)},override:null,warning};
+    }
     max=l6.max_content;avg=l6.max_average;override=`${max},${avg}`;
   }
   const resolved={...metadata,side_data_list:[mastering,{side_data_type:'Content light level metadata',max_content:max,max_average:avg}].filter(Boolean)};
@@ -662,7 +770,21 @@ const compareVideoTimestamps = (source, output) => {
     if(!missingSource.length)throw validationFailure('rejected','frames','video_timestamps_lost',message);
     throw validationUnavailable(message);
   }
+  let isolatedOrderGlitches=0;
+  const allowIsolatedOrderGlitch=a.length>=1000?1:0;
   for (let i=0;i<a.length;i++) {
+    if (i>0 && ((a[i]>a[i-1] && b[i]<=b[i-1]) || (a[i]>=a[i-1] && b[i]<b[i-1]))) {
+      const sourceStep=a[i]-a[i-1], outputStep=b[i]-b[i-1];
+      const isSubFrameQuantizationTie=b[i]>=b[i-1] && sourceStep>=0 && sourceStep<=0.002+1e-6;
+      const isIsolatedRecoveredGlitch=i+1<b.length && b[i+1]>b[i-1] && Math.abs(outputStep)<=0.05;
+      if (!isSubFrameQuantizationTie) {
+        if (isIsolatedRecoveredGlitch && isolatedOrderGlitches<allowIsolatedOrderGlitch) {
+          isolatedOrderGlitches++;
+        } else {
+          throw validationFailure('rejected','frames','video_timestamp_order_changed',`Output video presentation timestamp is repeated or moves backwards newly at frame ${i} (source ${a[i-1].toFixed(6)}s -> ${a[i].toFixed(6)}s; output ${b[i-1].toFixed(6)}s -> ${b[i].toFixed(6)}s)`);
+        }
+      }
+    }
     const delta=Math.abs((a[i]-a[0])-(b[i]-b[0]));
     if (delta>0.05) throw Error(`Video presentation timestamp differs at frame ${i} by ${delta.toFixed(3)}s (tolerance 0.050s)`);
   }

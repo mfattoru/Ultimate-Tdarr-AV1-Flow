@@ -55,6 +55,29 @@ test('uses the environment webhook override and limits long failure content', as
   assert.ok(h.requests[0].body.embeds[0].description.length <= 4096);
 });
 
+test('quarantine notice provides the exact original path for the force-fresh variable', async () => {
+ const h=harness();
+ const original="/mnt/media/movies/The King's Man (2021)/The King's Man (2021).mkv";
+ h.args.originalLibraryFile={_id:original};
+ h.args.inputFileObj._id='/temp/tdarr-av1-job/candidate.mkv';
+ h.args.variables.user.quarantine_entry={candidatePath:'/cache/candidate.mkv'};
+ h.args.variables.user.validation_report={outcome:'inconclusive',failure:{stage:'video_decode'}};
+ await h.run(h.args);
+ const description=h.requests[0].body.embeds[0].description;
+ assert.match(description,/arc_force_fresh_path/);
+ assert.ok(description.includes(original),'notice must contain the complete node-visible original path');
+ assert.ok(!description.includes('/temp/tdarr-av1-job/candidate.mkv'));
+});
+test('quarantine notice does not substitute a cache path when the original path is unavailable', async () => {
+ const h=harness();
+ h.args.inputFileObj._id='/temp/tdarr-av1-job/candidate.mkv';
+ h.args.variables.user.quarantine_entry={candidatePath:'/cache/candidate.mkv'};
+ await h.run(h.args);
+ const description=h.requests[0].body.embeds[0].description;
+ assert.match(description,/original path could not be safely displayed/i);
+ assert.ok(!description.includes('/temp/tdarr-av1-job/candidate.mkv'));
+});
+
 test('failed HTTP response, network errors and timeouts leave the notification retryable', async () => {
   for (const settings of [{status:429}, {failure:'network'}, {failure:'timeout'}]) {
     const h = harness(settings);
@@ -99,6 +122,16 @@ test('oversized source audio DTS repair is explained as a timestamp issue, not c
  assert.match(embed.description,/AV1 encoding did not start/i);
  assert.match(embed.description,/does not confirm audio corruption/i);
  assert.match(embed.description,/1,476,450\.0 ms/);
+ assert.equal(embed.color,15105570);
+});
+test('unsafe source ASS timing reports a controlled subtitle hold',async()=>{
+ const h=harness();
+ h.args.variables.user.failure_reason='[Subtitle guard] ASS/SSA source stream 0:4 would require 3.140s of timestamp repair at packet 4, above the 0.5s limit; original retained.';
+ await h.run(h.args);
+ const embed=h.requests[0].body.embeds[0];
+ assert.match(embed.description,/subtitle/i);
+ assert.match(embed.description,/original/i);
+ assert.match(embed.description,/3\.140/);
  assert.equal(embed.color,15105570);
 });
 

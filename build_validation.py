@@ -73,7 +73,7 @@ one('''    assertOriginalUnchanged();
     });
     completeValidation(validationReport);
     log(`[Validation result] ${validationReport.outcome}; all required checks passed.`);
-    for(const recovery of validationReport.recoveries)log(`[Validation recovery] QSV decode failed; full software verification passed. QSV diagnostic: ${recovery.diagnostic}`);''')
+    for(const recovery of validationReport.recoveries)log(`[Validation recovery] ${recovery.code}: ${recovery.outcome}. Diagnostic: ${recovery.diagnostic}`);''')
 one('''    const reason=alreadyClassified?detail:originalGuard?`[Original guard] ${detail}`:`[Safety check failed] ${detail}`;''', '''    const validation=err?.validation;
     const reason=alreadyClassified?detail:originalGuard?`[Original guard] ${detail}`:validation?`[Validation ${validation.outcome}] ${detail}`:`[Safety check failed] ${detail}`;''')
 one('  delete args.variables.user.failure_reason;', '  delete args.variables.user.failure_reason;\n  delete args.variables.user.validation_report;')

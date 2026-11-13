@@ -1,0 +1,11 @@
+{
+  "name": "ultimate-tdarr-av1-flow",
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test *.test.js",
+    "test:coverage": "node run-coverage.js"
+  }
+}

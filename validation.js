@@ -1,5 +1,8 @@
 // Validation records are JSON-safe and bounded so diagnostics survive cache cleanup.
-const validationDetail=error=>String(error?.message || error || '').trim().slice(-800);
+const validationDetail=error=>{
+  const text=String(error?.message || error || '').trim();
+  return text.length>800?`${text.slice(0,350)} ... ${text.slice(-430)}`:text;
+};
 // FFmpeg often prefixes resource/device failures with "Error while decoding".
 // Those diagnostics must take precedence over generic bitstream signatures.
 const VERIFICATION_INFRASTRUCTURE_RE=/cannot allocate memory|out of memory|\benomem\b|no space left on device|permission denied|operation not permitted|resource temporarily unavailable|too many open files|input\/output error|\b(?:enospc|eacces|eperm|eagain|enodev|eio)\b|device (?:creation|setup|initiali[sz]ation) failed|failed to (?:create|initiali[sz]e) (?:a |the )?(?:hardware |qsv |vaapi )?(?:device|session)|(?:unknown|no|unsupported) decoder|decoder [^\n]*not found|(?:function|operation) not implemented/i;
@@ -13,9 +16,13 @@ const validationFailure=(outcome,stage,code,message,details={})=>{
 const validationUnavailable=(message)=>validationFailure('inconclusive','', 'measurement_unavailable',message);
 const validationStage=async(report,stage,operation,mismatchOutcome='inconclusive')=>{
   report.stage=stage;
+  const startedAt=Date.now();
+  let stageOutcome='inconclusive';
+  try { if(typeof report.stageLogger==='function')report.stageLogger({stage,outcome:'started',elapsedMs:0}); } catch (_) {}
   try {
     const value=await operation();
     report.checks.push({stage,outcome:'passed'});
+    stageOutcome='passed';
     return value;
   } catch(error) {
     const infrastructure=error?.processFailure || error?.code || !(error instanceof Error) || error.constructor!==Error;
@@ -26,6 +33,7 @@ const validationStage=async(report,stage,operation,mismatchOutcome='inconclusive
       message:validationDetail(error)
     };
     if(!data.stage)data.stage=stage;
+    stageOutcome=data.outcome;
     report.outcome=data.outcome;
     report.failure={...data};
     report.stage=report.failure.stage;
@@ -34,6 +42,8 @@ const validationStage=async(report,stage,operation,mismatchOutcome='inconclusive
       report.checks.push({stage:data.stage,outcome:data.outcome,code:data.code});
     if(error?.validation)throw error;
     throw validationFailure(data.outcome,stage,data.code,data.message,data);
+  } finally {
+    try { if(typeof report.stageLogger==='function')report.stageLogger({stage,outcome:stageOutcome,elapsedMs:Date.now()-startedAt}); } catch (_) {}
   }
 };
 const completeValidation=report=>{
@@ -48,9 +58,63 @@ const validationDecodeInfrastructure=error=>{
 };
 const isKnownNonFatalTrueHdDiagnostic=text=>{
   const lines=String(text || '').split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
-  return lines.length>0 && lines.every(line=>/^\[truehd @ 0x[0-9a-f]+\] quant_step_size larger than huff_lsbs$/i.test(line));
+  let sawWarning=false,previousWasWarning=false;
+  for(const line of lines){
+    if(/^\[truehd @ 0x[0-9a-f]+\] quant_step_size larger than huff_lsbs$/i.test(line)){
+      sawWarning=true;previousWasWarning=true;
+    } else if(previousWasWarning && /^Last message repeated [1-9]\d* times?$/i.test(line)){
+      previousWasWarning=false;
+    } else return false;
+  }
+  return sawWarning;
 };
-const verifyCandidateDecodes=async({report,canUseQsv=true,audioTracks=[],sourceVideoIndex=0,runVideo,runAudio,checkSource,isCorruption})=>{
+const isBenignQsvInitializationDiagnostic=text=>{
+  const lines=String(text || '').split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+  return lines.length>0 && lines.every(line=>
+    /^libva info:/i.test(line) || /^(?:d?river)\(\) returns 0$/i.test(line)
+  );
+};
+const validateVideoPacketDts=(source,candidate)=>{
+  const before=source?.outputDtsNonIncreasingCount,after=candidate?.outputDtsNonIncreasingCount;
+  if(!Number.isSafeInteger(before)||before<0||!Number.isSafeInteger(after)||after<0)
+    throw validationUnavailable('Video packet DTS ordering could not be measured');
+  if(after>before)throw validationFailure('inconclusive','timelines','video_packet_dts_unverified',`Candidate video has ${after} non-increasing DTS transitions; source has ${before}. Review packet timing before replacement.`);
+};
+const validateRetainedAttachments=(sourceStreams,candidateStreams,sourceIndices)=>{
+  if(!Array.isArray(sourceStreams)||!Array.isArray(candidateStreams)||!Array.isArray(sourceIndices))
+    throw validationUnavailable('Attachment stream comparison is unavailable');
+  const source=sourceIndices.map(index=>sourceStreams.find(stream=>stream.codec_type==='attachment'&&stream.index===index));
+  if(source.some(stream=>!stream))throw validationUnavailable('Retained source attachment is unavailable for verification');
+  const output=candidateStreams.filter(stream=>stream.codec_type==='attachment');
+  if(output.length!==source.length)throw validationFailure('rejected','streams','attachment_count_mismatch',`Output attachment count ${output.length} does not match expected ${source.length}`);
+  for(let index=0;index<source.length;index++){
+    const from=source[index],to=output[index];
+    if(!/^SHA256:[a-f0-9]{64}$/i.test(String(from.extradata_hash||''))||!/^SHA256:[a-f0-9]{64}$/i.test(String(to.extradata_hash||'')))
+      throw validationUnavailable(`Attachment payload hash unavailable at index ${index}`);
+    if(from.extradata_hash.toLowerCase()!==to.extradata_hash.toLowerCase())
+      throw validationFailure('rejected','streams','attachment_payload_changed',`Attachment payload changed at index ${index}`);
+    const tagValue=(stream,name)=>String(Object.entries(stream.tags || {}).find(([key])=>key.toLowerCase()===name)?.[1] || '');
+    for(const tag of ['filename','mimetype'])if(tagValue(from,tag)!==tagValue(to,tag))
+      throw validationFailure('rejected','streams','attachment_metadata_changed',`Attachment ${tag} changed at index ${index}`);
+  }
+};
+// Synthetic PTS are confined to the null sink; the saved candidate is never changed.
+const verifyTimestampIsolatedVideo=async({ffmpeg,input,index,threads,expectedFrames,runProcess})=>{
+  if (!Number.isSafeInteger(expectedFrames) || expectedFrames<1) throw Error('Expected decoded frame count is unavailable');
+  const argv=['-v','error','-xerror','-progress','pipe:1','-nostats','-threads',String(threads),'-i',input,
+    '-map',`0:${index}`,'-vf','settb=expr=1/1000000,setpts=N','-fps_mode:v','passthrough',
+    '-enc_time_base:v','1:1000000','-f','null','-'];
+  let frames=null,complete=false;
+  const stderr=await runProcess(ffmpeg,argv,line=>{
+    const match=String(line).trim().match(/^frame=\s*(\d+)$/);
+    if(match)frames=Number(match[1]);
+    if(String(line).trim()==='progress=end')complete=true;
+  });
+  if(!complete)throw Error('Timestamp-isolated decode did not report complete progress');
+  if(frames!==expectedFrames)throw Error(`Timestamp-isolated decode frame count differs: expected ${expectedFrames}, decoded ${frames}`);
+  return stderr;
+};
+const verifyCandidateDecodes=async({report,canUseQsv=true,candidatePacketTimestampsVerified=false,audioTracks=[],sourceVideoIndex=0,runVideo,runAudio,checkSource,isCorruption})=>{
   const clean=async(operation,allowDiagnostic)=>{
     const diagnostic=String(await operation() || '').trim();
     // All decoder commands use -v error. Exit zero with error-level output is
@@ -78,13 +142,25 @@ const verifyCandidateDecodes=async({report,canUseQsv=true,audioTracks=[],sourceV
       {sourceCorruption,diagnostics:errors.map(({sourceIndex,error})=>({sourceIndex,diagnostic:validationDetail(error)})).slice(0,8),sourceDamage:sourceDamage.slice(0,8)});
   };
   await validationStage(report,'video_decode',async()=>{
+    const handleNullMuxTimestamp=async error=>{
+      const detail=String(error?.processFailure?.diagnostic || error?.message || error);
+      if(!/\[null @ 0x[0-9a-f]+\] Application provided invalid, non monotonically increasing dts to muxer/i.test(detail)
+          || validationDecodeInfrastructure(error) || isCorruption('video')(detail)) return false;
+      if(!candidatePacketTimestampsVerified) await failDecode('video',[{sourceIndex:sourceVideoIndex,error}]);
+      try { await clean(()=>runVideo('timestamp-isolated')); }
+      catch(retryError) { await failDecode('video',[{sourceIndex:sourceVideoIndex,error:retryError}]); }
+      report.recoveries.push({code:'timestamp_isolated_decode',outcome:'passed',diagnostic:validationDetail(error)});
+      return true;
+    };
     let qsvError;
     if(canUseQsv){
-      try {await clean(()=>runVideo('qsv'));return;}
+      try {await clean(()=>runVideo('qsv'),isBenignQsvInitializationDiagnostic);return;}
       catch(error){qsvError=error;}
+      if(await handleNullMuxTimestamp(qsvError))return;
     }
     try {await clean(()=>runVideo('software'));}
     catch(error){
+      if(await handleNullMuxTimestamp(error))return;
       if(qsvError)report.recoveries.push({code:'qsv_decode_fallback',outcome:'failed',diagnostic:validationDetail(qsvError)});
       await failDecode('video',[{sourceIndex:sourceVideoIndex,error}]);
     }
@@ -106,4 +182,4 @@ const verifyCandidateDecodes=async({report,canUseQsv=true,audioTracks=[],sourceV
     }
   });
 };
-if(typeof module!=='undefined')module.exports={newValidationReport,validationFailure,validationUnavailable,validationStage,completeValidation,verifyCandidateDecodes,isVerificationInfrastructureDiagnostic};
+if(typeof module!=='undefined')module.exports={newValidationReport,validationFailure,validationUnavailable,validationStage,completeValidation,validateVideoPacketDts,validateRetainedAttachments,verifyCandidateDecodes,verifyTimestampIsolatedVideo,isVerificationInfrastructureDiagnostic};

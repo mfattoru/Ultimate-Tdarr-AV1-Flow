@@ -1,7 +1,7 @@
 # Tdarr Arc AV1 V15 design
 
-**Updated:** 2026-11-10
-**Design state:** local 17-plugin candidate; the quarantine/revalidation path is implemented in the export but has not been imported or exercised end to end.
+**Updated:** 2026-11-12
+**Design state:** local 17-plugin candidate; includes Option 1A DV/HDR10 Level 6 conflict handling and `dovi5_hdr10` Profile 5 → HDR10 conversion via Vulkan `libplacebo` + `dovi_tool` Level 6/9 metadata synthesis, passing `314/314` automated tests and a 150-frame live container smoke check.
 **Deployment state:** the latest sanitized local export has not been imported into Tdarr. The test instance still contains an older V15 import with legacy static Arr settings. Production state is not assessed or changed by this document update.
 
 ## Intent
@@ -22,7 +22,7 @@ The [flow diagram](flow-diagram.md) shows the branches. Detailed media, notifica
 ## Media and HDR policy
 
 - Keep the current audio language selection and pruning behavior, stream-copy retained audio, and validate it by full decode. Keep ASS/SSA rather than converting styled tracks to SRT; preserve the existing subtitle selection rules.
-- Preserve HDR/Dolby Vision metadata guards. HDR10 and HLG routes, HDR10+ static-base handling, and Dolby Vision Profile 7/8.1 HDR10-compatible fallback routes have representative tests. A short Sample Feature Film hybrid sample now supports only single-layer DV 8.1 plus HDR10+ with a verified HDR10 base; it still needs a full V15 job. Profile 8.4, Profile 5, conflicting hybrid signals, and other unverified variants remain held.
+- Preserve HDR/Dolby Vision metadata guards. HDR10 and HLG routes, HDR10+ static-base handling, Dolby Vision Profile 7/8.1 (+ HDR10+ hybrid) HDR10-compatible fallback routes, and verified Dolby Vision Profile 5 (`dovi5_hdr10`) via Vulkan `libplacebo` + `dovi_tool` Level 6/Level 9 static metadata synthesis are supported with strict output validation. On DV 7/8.1 HDR10-compatible routes when base CLL is absent/`0,0` and Dolby Level 6 mastering luminance conflicts with the HDR10 base, a warning is logged and CLL is omitted rather than failing or borrowing mismatched Level 6 CLL. Profile 8.4, unverified Profile 5 variants (or hosts without `libplacebo`/Intel Vulkan ICD), conflicting hybrid signals, and other unverified variants remain held.
 - For HDR10, supplement missing FFprobe mastering and content-light side data only from stream-sourced MediaInfo fields with a recognized primaries label and exact parseable luminance values. Reject disagreements between MediaInfo and FFprobe, and keep the strict output comparison against the completed source record.
 - Do not convert or relabel color solely to make a file pass. Retain unspecified tags for untagged SDR; apply the documented limited-range convention only to eligible untagged SDR YUV inputs.
 - Keep complete candidates that fail final validation under `${TDARR_RESERVATION_ROOT}/tdarr-av1-quarantine` (default `/transcode_cache/tdarr-av1-quarantine`) with source/candidate hashes and bounded validation diagnostics. Keep this directory outside all scanned libraries; the engine rejects it when it falls inside the current library root. Require the exact canonical source path and matching content hash before reuse; keep the quarantine copy until successful replacement, an exact-path `arc_force_fresh_path` run, or manual removal. Do not prune by age. Cross-filesystem quarantine copies use the existing capacity ledger and preserve configured free-space floors.

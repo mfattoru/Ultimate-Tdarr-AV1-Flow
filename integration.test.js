@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const child = require('node:child_process');
+const {runFlowCode} = require('./flow_test_runtime');
 const flow=JSON.parse(fs.readFileSync(path.join(__dirname,'flow.json')));
 const code=flow.flowPlugins.find(p=>p.id==='arc_av1_monolithic').inputsDB.code.replace(/https:\/\/discord\.com\/api\/webhooks\/[^"\s]+/g,'YOUR_WEBHOOK');
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'tdarr-v4-integration-'));
@@ -18,16 +19,22 @@ child.execFileSync('ffmpeg',['-v','error','-i',source,'-map','0:0','-map','0:1',
 child.execFileSync('ffmpeg',['-v','error','-i',multiAudioSource,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',multiAudioCandidate],{stdio:'ignore'});
 assert.ok(fs.statSync(multiAudioCandidate).size < fs.statSync(multiAudioSource).size);
 function argsFor(file,logs=[]) { const f={_id:file,container:'mkv',file_size:fs.statSync(file).size/1024/1024}; return {inputFileObj:{...f},originalLibraryFile:{...f},workDir:dir,variables:{user:{min_cache_free_mb:1}},ffmpegPath:'ffmpeg',librarySettings:{folder:dir},jobLog:m=>logs.push(String(m))}; }
-function load({sourceDiagnosticChunks,qsvValidationFailure=false,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,hdr=false,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,inputPath=source,smallerOutput=candidate}={}) {
+function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,mediaInfoPixelAspectRatio,hdr=false,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate}={}) {
   const calls=[],commands=[],logs=[],audioDecodeCommands=[]; let initialProbe=true,moverSimulated=false;
   const fakeFs=new Proxy(fs,{get(t,p){if(p==='unlinkSync' && denyIso)return name=>{if(String(name).endsWith('.iso'))throw Error('simulated ISO permission error');return t.unlinkSync(name)};if(p==='accessSync')return (name,...args)=>name==='/dev/dri/renderD129'?undefined:t.accessSync(name,...args);return t[p]}});
   const fakeChild={...child,
     spawn(cmd,args,opts){
-      const candidateVideoDecode=cmd==='ffmpeg'&&args.includes('-f')&&args[args.indexOf('-f')+1]==='null'&&args.includes('-progress')&&args[args.indexOf('-i')+1]!==inputPath&&args[args.indexOf('-map')+1]==='0:0';
-      if(candidateVideoDecode&&((qsvValidationFailure&&args.includes('-hwaccel'))||(cpuValidationFailure&&!args.includes('-hwaccel')))){
+      if(subtitleDtsRegression&&cmd==='ffprobe'&&args.includes('-show_packets')&&args.includes('-select_streams')&&args[args.indexOf('-select_streams')+1]==='s'&&args.includes(inputPath)){
         const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
         const process=new EventEmitter();process.stdout=new PassThrough();process.stderr=new PassThrough();process.kill=()=>{};
-        queueMicrotask(()=>{process.stdout.end();process.stderr.end(args.includes('-hwaccel')?'Device creation failed: unavailable Arc device':'Cannot allocate memory');process.emit('close',1,null);});
+        queueMicrotask(()=>{process.stdout.end([0,2.5,5,1.86].map(v=>`stream_index=2|pts_time=${v}|dts_time=${v}`).join('\n')+'\n');process.stderr.end();process.emit('close',0,null);});
+        return process;
+      }
+      const candidateVideoDecode=cmd==='ffmpeg'&&args.includes('-f')&&args[args.indexOf('-f')+1]==='null'&&args.includes('-progress')&&args[args.indexOf('-i')+1]!==inputPath&&args[args.indexOf('-map')+1]==='0:0';
+      if(candidateVideoDecode&&(((qsvValidationFailure||qsvTimestampFailure)&&args.includes('-hwaccel'))||(cpuValidationFailure&&!args.includes('-hwaccel')))){
+        const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
+        const process=new EventEmitter();process.stdout=new PassThrough();process.stderr=new PassThrough();process.kill=()=>{};
+        queueMicrotask(()=>{process.stdout.end();process.stderr.end(args.includes('-hwaccel')?(qsvTimestampFailure?'[null @ 0x1234] Application provided invalid, non monotonically increasing dts to muxer in stream 0: 5 >= 5':'Device creation failed: unavailable Arc device'):'Cannot allocate memory');process.emit('close',1,null);});
         return process;
       }
       if(cmd==='ffmpeg'&&args.includes('-frames:v')&&extraVideo){
@@ -104,13 +111,14 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,cpuValidationFa
     execFileSync(cmd,args,opts){
       if(cmd==='mediainfo') {
         if(!mediainfo) throw Error('no mediainfo');
-        const video={'@type':'Video',StreamOrder:'0',...(hdr?{HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10'}:{transfer_characteristics:'BT.709'})};
+   const video={'@type':'Video',StreamOrder:'0',...(mediaInfoPixelAspectRatio===undefined?{}:{PixelAspectRatio:mediaInfoPixelAspectRatio}),...(hdr?{HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10'}:{transfer_characteristics:'BT.709'})};
         const tracks=[video];if(extraVideo)tracks.push({'@type':'Video',StreamOrder:'999',Format:'AV1'});
         return JSON.stringify({media:{track:tracks}});
       }
       const result=child.execFileSync(cmd,args,opts);
       if(cmd==='ffprobe') {
         const probe=JSON.parse(result);
+   if(missingSourceSar && args[args.length-1]===inputPath) for(const stream of probe.streams||[]) if(stream.codec_type==='video') delete stream.sample_aspect_ratio;
         for(const stream of probe.streams||[])if(stream.codec_type==='video')Object.assign(stream,hdr?{color_transfer:'smpte2084',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv'}:{color_transfer:'bt709',color_primaries:'bt709',color_space:'bt709',color_range:'tv'});
         if(initialProbe && args.includes('-show_format') && args[args.length-1]===inputPath) {
           initialProbe=false;
@@ -134,18 +142,105 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,cpuValidationFa
     }
   };
   const m={exports:{}}; const req=n=>n==='fs'?fakeFs:n==='child_process'?fakeChild:require(n);
-  new Function('require','module','exports',code+'\nmodule.exports.releaseForTest=releaseCapacity;')(req,m,m.exports);
+  runFlowCode(['require','module','exports'],code,[req,m,m.exports]);
   return {fn:m.exports,calls,commands,logs,audioDecodeCommands,moverSimulated:()=>moverSimulated};
 }
 async function run(x,args) {try{return await x.fn(args);}finally{const h=args.variables?.user?.cache_reservation;if(h){await x.fn.releaseForTest(h);delete args.variables.user.cache_reservation;}}}
+
+test('quarantined retries reuse full video and retained-audio prechecks while repeating candidate validation',async()=>{
+ const library=path.join(dir,'precheck-cache-library');fs.mkdirSync(library,{recursive:true});
+ const input=path.join(library,'cached-source.mkv');fs.copyFileSync(source,input);
+ const first=load({inputPath:input,qsvValidationFailure:true,cpuValidationFailure:true});
+ const firstArgs=argsFor(input,first.logs);firstArgs.librarySettings.folder=library;
+ const firstResult=await run(first,firstArgs);
+ assert.equal(firstResult.outputNumber,2);
+ assert.ok(firstArgs.variables.user.quarantine_entry,'complete candidate must be quarantined');
+ assert.ok(fs.existsSync(`${firstArgs.variables.user.quarantine_entry.candidatePath}.prechecks.gz`),'complete source evidence must be cached');
+ const second=load({inputPath:input,qsvValidationFailure:true,cpuValidationFailure:true});
+ const secondArgs=argsFor(input,second.logs);secondArgs.librarySettings.folder=library;
+ const secondResult=await run(second,secondArgs);
+ assert.equal(secondResult.outputNumber,2);
+ assert.ok(second.logs.some(line=>line.includes('[Source precheck] Reused')));
+ assert.ok(second.logs.some(line=>line.includes('[Audio precheck] Reused')));
+ assert.ok(second.logs.some(line=>line.includes('[Validation stage] video_decode:')),'candidate validation must still run');
+ assert.equal(second.audioDecodeCommands.some(command=>command.input===input),false,'source audio must not be decoded again');
+ const cachePath=`${firstArgs.variables.user.quarantine_entry.candidatePath}.prechecks.gz`;
+ const envelope=JSON.parse(require('zlib').gunzipSync(fs.readFileSync(cachePath)));
+ const cached=JSON.parse(envelope.payload);
+ cached.data.audio.streams[0].timeBase='1/999';
+ assert.equal(require('./precheck_cache').savePrecheckCache(firstArgs.variables.user.quarantine_entry,cached.signature,cached.data),true);
+ const changedAudio=load({inputPath:input,qsvValidationFailure:true,cpuValidationFailure:true});
+ const changedAudioArgs=argsFor(input,changedAudio.logs);changedAudioArgs.librarySettings.folder=library;
+ assert.equal((await run(changedAudio,changedAudioArgs)).outputNumber,2);
+ assert.ok(changedAudio.logs.some(line=>line.includes('[Source precheck] Reused')));
+ assert.ok(changedAudio.audioDecodeCommands.some(command=>command.input===input),'a changed audio selection must be checked again');
+ fs.writeFileSync(`${firstArgs.variables.user.quarantine_entry.candidatePath}.prechecks.gz`,'damaged cache');
+ const third=load({inputPath:input,qsvValidationFailure:true,cpuValidationFailure:true});
+ const thirdArgs=argsFor(input,third.logs);thirdArgs.librarySettings.folder=library;
+ assert.equal((await run(third,thirdArgs)).outputNumber,2);
+ assert.equal(third.logs.some(line=>line.includes('[Source precheck] Reused')),false);
+ assert.ok(third.audioDecodeCommands.some(command=>command.input===input),'damaged evidence requires a new source-audio decode');
+});
+
+test('missing FFprobe source SAR accepts MediaInfo square pixels and validates the output',async()=>{
+ const x=load({missingSourceSar:true,mediaInfoPixelAspectRatio:'1.000'}),args=argsFor(source,x.logs),result=await run(x,args);
+ assert.equal(result.outputNumber,1,args.variables.user.failure_reason);
+ assert.equal(args.variables.user.validation_report.stage,'complete');
+});
+
+test('missing FFprobe source SAR with non-square MediaInfo pixels stops before encoding',async()=>{
+ const x=load({missingSourceSar:true,mediaInfoPixelAspectRatio:'1.333'}),args=argsFor(source,x.logs),result=await run(x,args);
+ assert.equal(result.outputNumber,2);
+ assert.match(args.variables.user.failure_reason,/aspect ratio/i);
+ assert.equal(x.commands.some(c=>c.args.includes('av1_qsv')),false);
+});
+
+test('missing source SAR without MediaInfo pixel aspect ratio stops before encoding',async()=>{
+ const x=load({missingSourceSar:true}),args=argsFor(source,x.logs),result=await run(x,args);
+ assert.equal(result.outputNumber,2);
+ assert.match(args.variables.user.failure_reason,/aspect ratio/i);
+ assert.equal(x.commands.some(c=>c.args.includes('av1_qsv')),false);
+});
 
 test('unavailable QSV verification recovers using real full candidate CPU decode',async()=>{
  const x=load({qsvValidationFailure:true}),args=argsFor(source,x.logs),r=await run(x,args);
  assert.equal(r.outputNumber,1);
  assert.equal(args.variables.user.validation_report.outcome,'recovered');
  assert.equal(args.variables.user.validation_report.stage,'complete');
+ for(const stage of ['frames','video_decode','audio_decode','timelines']) assert.ok(x.logs.some(line=>line.includes(`[Validation stage] ${stage}: passed in `)),`missing ${stage} timing`);
+ assert.ok(x.logs.some(line=>line.includes('[Validation decode] qsv failed')));
+ assert.ok(x.logs.some(line=>line.includes('[Validation decode] software completed')));
+ assert.ok(x.logs.some(line=>line.includes('[Validation frames]')&&line.includes('frames')));
  assert.ok(x.audioDecodeCommands.some(c=>c.input!==source&&c.maps.length===1&&c.maps[0]==='0:0'),'the complete candidate video must be decoded in software');
  assert.equal(args.variables.user.arr_corruption_search_status,undefined);
+});
+test('a null-mux timestamp diagnostic retries with isolated timestamps after clean timeline checks',async()=>{
+ const x=load({qsvTimestampFailure:true}),args=argsFor(source,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,1);
+ assert.equal(args.variables.user.validation_report.outcome,'recovered');
+ assert.equal(args.variables.user.validation_report.recoveries[0].code,'timestamp_isolated_decode');
+ assert.ok(x.audioDecodeCommands.some(c=>c.input!==source&&c.args.includes('settb=expr=1/1000000,setpts=N')));
+});
+test('ASS subtitle fonts are mapped and missing candidate attachments prevent replacement',async()=>{
+ const sub=path.join(dir,'attachment-test.ass'),font=path.join(dir,'attachment-test.ttf');
+ const input=path.join(dir,'attachment-source.mkv'),valid=path.join(dir,'attachment-valid.mkv'),missing=path.join(dir,'attachment-missing.mkv');
+ fs.writeFileSync(font,'example embedded font payload');
+ fs.writeFileSync(sub,'[Script Info]\nScriptType: v4.00+\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.10,0:00:01.00,Default,,0,0,0,,Test\n');
+ const make=(video,out,attach)=>child.execFileSync('ffmpeg',['-v','error','-i',video,'-i',sub,'-map','0','-map','1','-c','copy',...(attach?['-attach',font,'-metadata:s:t:0','mimetype=font/ttf']:[]),'-y',out],{stdio:'ignore'});
+ make(source,input,true);make(candidate,valid,true);make(candidate,missing,false);
+ const x=load({inputPath:input,smallerOutput:valid}),args=argsFor(input,x.logs),result=await run(x,args);
+ assert.equal(result.outputNumber,1);
+ const encode=x.commands.find(c=>c.args.includes('av1_qsv'));
+ const attachment=JSON.parse(child.execFileSync('ffprobe',['-v','error','-select_streams','t','-show_entries','stream=index','-of','json',input],{encoding:'utf8'})).streams[0];
+ assert.ok(encode.args.some((value,index)=>value==='-map'&&encode.args[index+1]===`0:${attachment.index}`),'encode must map the source font attachment');
+ const y=load({inputPath:input,smallerOutput:missing}),badArgs=argsFor(input,y.logs),bad=await run(y,badArgs);
+ assert.equal(bad.outputNumber,2);
+ assert.equal(badArgs.variables.user.validation_report.failure.code,'attachment_count_mismatch');
+ const z=load({inputPath:input,smallerOutput:valid,subtitleDtsRegression:true}),guardArgs=argsFor(input,z.logs);
+ const held=await run(z,guardArgs);
+ assert.equal(held.outputNumber,2);
+ assert.match(guardArgs.variables.user.failure_reason,/subtitle guard.*3\.140/i);
+ assert.equal(z.commands.some(command=>command.args.includes('av1_qsv')),false,'unsafe subtitle timing should stop before encoding');
 });
 
 test('verification process failure is inconclusive and retains the original',async()=>{
@@ -474,7 +569,7 @@ test('encoder and quality-floor failures carry a useful reason to the notifier',
 
 test('pre-replacement guard records the original-change failure reason',async()=>{
  const guard=flow.flowPlugins.find(p=>p.id==='original_recheck'),m={exports:{}};
- new Function('require','module','exports',guard.inputsDB.code)(require,m,m.exports);
+ runFlowCode(['require','module','exports'],guard.inputsDB.code,[require,m,m.exports]);
  const original=path.join(dir,'recheck-original.mkv');fs.copyFileSync(source,original);
  const stat=fs.statSync(original,{bigint:true}),saved={path:original,realPath:fs.realpathSync(original),dev:String(stat.dev),ino:String(stat.ino),size:String(stat.size),mtimeNs:String(stat.mtimeNs),ctimeNs:String(stat.ctimeNs)};
  fs.appendFileSync(original,Buffer.from([0]));
@@ -493,7 +588,7 @@ test('controlled failure notifies once and error-hook cleanup releases the reser
  const {EventEmitter}=require('node:events');
  const x=load({failEncoding:true}),args=argsFor(source),result=await x.fn(args);
  assert.equal(result.outputNumber,2);assert.ok(args.variables.user.cache_reservation);
- const loadPlugin=(id,req=require)=>{const node=flow.flowPlugins.find(p=>p.id===id),m={exports:{}};new Function('require','module','exports',node.inputsDB.code)(req,m,m.exports);return m.exports;};
+ const loadPlugin=(id,req=require)=>{const node=flow.flowPlugins.find(p=>p.id===id),m={exports:{}};runFlowCode(['require','module','exports'],node.inputsDB.code,[req,m,m.exports]);return m.exports;};
  await loadPlugin('cleanup_failure')({...args,inputFileObj:result.outputFileObj});
  assert.equal(args.variables.user.cache_reservation,undefined);
  const sent=[];const https={request(_url,_opts,callback){const req=new EventEmitter();req.setTimeout=()=>{};req.destroy=()=>{};req.end=body=>{sent.push(JSON.parse(body));const res=new EventEmitter();res.statusCode=204;res.resume=()=>{};callback(res);res.emit('end');};return req;}};

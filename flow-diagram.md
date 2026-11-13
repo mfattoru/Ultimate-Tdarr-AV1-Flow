@@ -55,6 +55,8 @@ flowchart TD
     SIZE -->|Yes| AV1VALID[Validate AV1 output]
     SIZE -->|No or encoder reached source-size limit| DISCARD[Delete AV1 attempt]
     DISCARD --> REMUX[Stream-copy original video; process retained audio, subtitles, chapters, and seek-healing mux flags]
+
+
     REMUX --> CAP{Within currently reserved scratch capacity?}
     CAP -->|Yes| REMUXVALID[Validate remux; it may exceed source size]
     CAP -->|No| GROW[Ask shared cache ledger for more capacity]
@@ -120,15 +122,15 @@ flowchart TD
 
 ## Seek-heal remux rule
 
-V15 runs one Arc AV1 encode at global ICQ 22. If its output is equal to or larger than the source, it deletes that encode attempt and remuxes the original video stream with seek-healing flags. It applies the same audio, subtitle, chapter, and metadata handling to the remux. The remux is not capped against the input size: it can replace the original even if mux overhead makes it larger, provided it passes full validation. Its scratch growth is bounded by available cache capacity, using the shared reservation ledger and retaining configured filesystem and host-RAM floors. If capacity growth is denied, Tdarr stops and removes the partial output, keeping the original.
+V15 normally runs one Arc AV1 encode at global ICQ 22. If it is equal to or larger than the source, the flow deletes the attempt and tries a seek-healing stream-copy remux. For Dolby Vision and HDR10+ sources, that remux retains the original video and its dynamic HDR signaling instead of the conversion to HDR10. Candidate checks compare source and output dynamic-metadata frame counts and static HDR metadata, and replacement still requires all validation to pass. Eligible remuxes may exceed source size; scratch growth is bounded by the shared cache reservation and safety floors.
 
 A remux can repair container indexes and packet timestamps. It cannot reconstruct damaged compressed video or audio packets. A complete candidate that reaches final validation is kept in quarantine after any validation failure; earlier failures and incomplete outputs follow normal scratch cleanup. The original stays in place, and a search is requested only when known source corruption is independently confirmed.
 
 ## Candidate quarantine and revalidation
 
-Complete candidates that fail final validation are stored with a manifest under `${TDARR_RESERVATION_ROOT}/tdarr-av1-quarantine` (default `/transcode_cache/tdarr-av1-quarantine`). The manifest binds the candidate to the canonical source path and source SHA-256 and records the candidate hash, encode/remux type, completion marker, and latest validation report. The quarantine copy stays separate from job scratch, is not age-pruned, and is removed only after replacement succeeds, an exact-path force-fresh run, or manual removal. If quarantine storage or a cross-filesystem capacity reservation fails, the original remains safe and ordinary job cleanup proceeds.
+Complete candidates that fail final validation are stored with a manifest under `${TDARR_RESERVATION_ROOT}/tdarr-av1-quarantine` (default `/transcode_cache/tdarr-av1-quarantine`). The manifest binds the candidate to the canonical source path and source SHA-256 and records the candidate hash, encode/remux type, completion marker, and latest validation report. The quarantine copy stays separate from job scratch, is not age-pruned, and is removed after replacement succeeds, an exact-path force-fresh run, subtitle preflight retirement, or manual removal. If quarantine storage or a cross-filesystem capacity reservation fails, the original remains safe and ordinary job cleanup proceeds.
 
-When the same source path and content are queued again, the flow repeats current source checks, copies the quarantined candidate into job scratch, and runs the current size and final validation policy without encoding. A changed source hash does not reuse the candidate. To discard the candidate and force a fresh encode for one file, set the library variable `arc_force_fresh_path` in Tdarr's Libraries UI to the exact node-visible source path, queue that file once, then clear the variable. The override remains active until cleared. Manual cleanup can remove the contents of `/transcode_cache/tdarr-av1-quarantine` (or the equivalent directory under `TDARR_RESERVATION_ROOT`).
+When the same source path and content are queued again, the flow can reuse saved full video-frame and retained-audio prechecks if the source hash, generated engine, media-tool versions, and relevant stream metadata match. It still hashes the source, runs current metadata, subtitle and HDR preflight checks, and validates the candidate. Missing or incompatible evidence causes fresh prechecks. Subtitle preflight can retire an incompatible candidate and start a fresh encode. To force a fresh encode, set `arc_force_fresh_path` to the exact node-visible original path, requeue once, and clear it.
 
 ## Full validation and process diagnostics
 

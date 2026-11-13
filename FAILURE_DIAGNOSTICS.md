@@ -5,7 +5,7 @@
 The final checks maintain a structured `variables.user.validation_report` with `outcome`, the current/failing `stage`, completed checks, recovery diagnostics, and the failure code. Complete candidates that reach final validation are kept in quarantine on rejected or inconclusive results. Earlier failures and incomplete outputs are removed by the existing scratch cleanup nodes.
 
 - `passed`: every required check completed successfully.
-- `recovered`: QSV verification failed, a full strict software video decode passed, and all remaining checks passed. The encode itself is not repeated.
+- `recovered`: a verification fallback completed successfully and all remaining checks passed. The encode is not repeated.
 - `rejected`: the candidate violated a required property, such as a retained stream count, HDR metadata, frame count, timing, payload, or a recognized software decode error. This alone does not identify a corrupt source.
 - `inconclusive`: verification could not establish the result, for example because a process could not start, timed out, ran out of resources, or the necessary source measurements were unavailable. This is a request to inspect/retry the check, without a claim that the media is damaged.
 
@@ -13,7 +13,13 @@ Rejected and inconclusive results keep the original, follow the failed-flow rout
 
 ### Decoder verification fallback
 
-The final video decode uses QSV only for the codec/pixel-format combinations already admitted by the flow's QSV capability policy. If that verification fails, including a zero exit with error-level diagnostics, the flow makes exactly one full software decode attempt using `-xerror`. A clean CPU result records a recovery and proceeds to retained-audio verification. If CPU verification also fails, recognized bitstream diagnostics reject the candidate; tool failures and unrecognized diagnostics are inconclusive. A timeout or killed process takes precedence over incidental corruption text in its stderr.
+For a successful retained-audio decode, the known TrueHD `quant_step_size larger than huff_lsbs` line and its immediately following FFmpeg `Last message repeated N times` summary are accepted. A nonzero process exit, an unrelated diagnostic, or an orphan repeat summary still prevents approval.
+
+For a null-output non-monotonic DTS diagnostic, timestamp-isolated software decoding is attempted only after the source/candidate frame comparison passes, every candidate frame PTS is strictly increasing, and the candidate packet scan finds no missing or non-increasing DTS. The retry must exit cleanly, report completion, and decode the expected frame count. Synthetic timestamps affect only the null verification sink and do not modify the candidate. If the prerequisites are not established, validation remains inconclusive. Decode corruption and resource failures are never ignored.
+
+The job log reports elapsed time and outcome for validation stages, source scans, and quarantine processing. Long process diagnostics retain their beginning and end within a bounded size. Quarantine notifications show the exact original path for `arc_force_fresh_path` when it can be displayed safely. Requeue normally to revalidate a stored candidate; set this variable only to request a fresh encode for that path.
+
+The final video decode uses QSV only for supported codec and pixel-format combinations. Known benign QSV initialization messages are accepted only after a successful process exit. Device and decode failures may fall back to a full strict software decode. A timeout or killed process takes precedence over incidental corruption text.
 
 Successful retained-audio verification still uses one combined decode. The specific TrueHD `quant_step_size larger than huff_lsbs` diagnostic is tolerated only when the decode process exits successfully, matching the source precheck; other diagnostics remain subject to the normal checks. A combined failure is isolated by candidate audio track. A recognized candidate decode failure prompts a strict recheck only of the corresponding source video/audio track, with the original identity checked around that source decode. Only an independently confirmed source failure authorizes the existing targeted Arr corruption search. An inconclusive or candidate-only report explicitly disables that action, even if its diagnostic text resembles a source-corruption reason.
 
@@ -57,13 +63,15 @@ Episodes require an exact Sonarr episode match; movies require an exact Radarr m
 
 ### Video presentation timestamp validation
 
+The packet timeline scan also compares the number of non-increasing video DTS transitions in source and candidate. An increase is inconclusive: packetization can differ across codecs, so the candidate is held for review without asserting source corruption. Missing and non-increasing DTS counts are logged for both files when the comparison succeeds.
+
 The earlier V14 sampled-precheck candidate used FFprobe intervals ending with `start%+5`. FFprobe can seek backward to a preceding keyframe, so the requested interval could contain only part of the expected five seconds or no frames. The resulting sample-to-output comparisons caused false frame-count failures. Although a local absolute-end-time regression passed, live jobs still failed widely; reverting to the prior full-scan flow resolved the issue. V15 removes sampling instead of relying on that optimization.
 
-After encoding, V15 scans every candidate frame and compares the full source and output timelines. Frame counting is independent of the optional `interlaced_frame` field. The check fails closed if a checked frame timestamp is missing, timestamp counts differ, full frame counts differ, or normalized timestamps differ by more than 50 ms.
+After encoding, V15 scans every candidate frame and compares source and output presentation timestamps. It rejects missing candidate timestamps, differing frame counts, and timing shifts over 50 ms. Normal video encodes use `-fflags +genpts` (reserving `+genpts+igndts` for `forceStreamCopy` seek-heal remuxes) so that decoded B-frame presentation order is not perturbed by ignoring input decode timestamps. During validation, `compareVideoTimestamps` tolerates Matroska millisecond quantization ties (`<= 2 ms` where the source advances) and at most one isolated recovered timestamp tie in streams of at least 1,000 frames, provided the next frame advances and cumulative drift stays within 50 ms. Any rejected timestamp transition logs the exact `source[i-1] -> source[i]` and `output[i-1] -> output[i]` values.
 
 The `Untagged output color range changed` diagnostic is separate from source corruption. It means the candidate range tag did not match the range expected by policy; by itself, it does not prove the source pixels were converted incorrectly or that the source is damaged. The local candidate now assigns limited `tv` range to untagged SDR YUV only when stream metadata, decoded frames, and MediaInfo provide no range. Explicit or observed full range is kept, and `yuvj422p`/`yuvj444p` are treated as full-range formats. The AV1 encode and seek-heal remux both receive the resolved range tag. Primaries, transfer, and matrix remain unspecified. This default does not apply to HDR/Dolby Vision, RGB, unsupported pixel formats, or conflicting/unrecognized range data. It records a conventional assumption; it does not recover missing source metadata.
 
-The failure detail reports source/output frame counts, timestamp counts, and the first frame indexes with missing or invalid timestamps. This is an output validation failure, not proof that the source is corrupt; it does not trigger an Arr search. The candidate is discarded and the original is kept. Later packet-timeline and full video/audio decode checks run only after the per-frame timestamp comparison passes.
+Timing failures do not establish source corruption or trigger an Arr search. Complete candidates are quarantined when possible and the original is kept. Packet and full video/audio decode checks run only after the frame timestamp comparison passes.
 
 ### Output frame count differs
 
@@ -85,13 +93,23 @@ For Jellyfin, set **Burn subtitles** to **Only Image Formats (VobSub, PGS, SUB)*
 
 ## Non-monotonic ASS/SSA subtitle timestamps
 
-`Non-monotonic DTS` while Matroska is muxing a copied ASS/SSA track means the subtitle packets arrive in backward timestamp order; it does not by itself prove source-media corruption. V15 keeps the ASS/SSA payloads and stream-copies them, clamping only backward PTS/DTS to the previous timestamp while preserving equal timestamps. It then compares every packet hash and count and checks each packet's PTS/DTS movement against the 0.5-second limit. That limit measures a mux timestamp change relative to the source and video timeline, not subtitle-to-speech synchronization. A larger change or any payload/count mismatch discards the candidate and keeps the original. This output-timing failure does not trigger an Arr search. The job log reports the stream and maximum correction when a bounded repair succeeds.
+The flow prechecks retained ASS/SSA packet order. If a predicted timestamp clamp exceeds 0.5 seconds, it attempts to reconstruct an ASS script from FFprobe stream extradata and packet payloads in job scratch, then uses it as a secondary FFmpeg input. It retains the source subtitle metadata and dispositions and copies all source attachments when a retained ASS/SSA track is copied. Candidate validation checks attachment count, payload SHA-256, filename and MIME tags. ASS/SSA packet validation checks counts, hashes and timestamps; when the source has backward PTS, it can match reordered cues by their content and timing while checking the allowed timestamp adjustment. Timing adjustments remain limited to 0.5 seconds. If reconstruction or the checks cannot establish an acceptable result, the original is kept.
+
+### Overlord S01E08: reconstruction inserted bytes
+
+The 2026-11-11 retry reconstructed ASS stream 0:4 but candidate validation reported a payload mismatch. Inspection of the source and quarantined candidate showed that the FFprobe dump parser had interpreted hex-like characters in the printable preview as additional hex bytes, changing 628 subtitle packets. The candidate was correctly rejected and must not be approved by relaxing validation. The parser now isolates the hex column, checks the decoded bytes against FFprobe SHA-256 hashes when available, and rejects invalid UTF-8. A subtitle-only remux using the corrected parser retained all 4,573 source cue payloads, presentation timestamps, and durations in an independent comparison. Its ASS header differed only in trailing blank lines. This is not a full end-to-end Tdarr replacement test.
+
+After importing the corrected flow, force a fresh encode for this exact original once; the existing quarantined candidate contains changed cues. Clear `arc_force_fresh_path` afterward.
 
 ## Cache capacity failures during seek-heal remux
 
 `[Cache reservation]` or `Insufficient available capacity to grow reservation` means the remux approached its current output limit but could not reserve more space while protecting the configured cache and host-RAM floors. The flow stops FFmpeg, removes the partial candidate, and keeps the original. Clear or expand the selected scratch cache, then retry. This is a cache-capacity failure, not evidence that the source is corrupt.
 
 The remux file-size limit grows only after the shared reservation ledger grants capacity. That ledger coordinates Tdarr jobs using it; it cannot control unrelated writers, filesystem quotas, or storage remounts. An external writer can still cause a write failure, which keeps the original.
+
+## Dynamic HDR conversion reached the size guard
+
+When an HDR10+ or Dolby Vision route reaches the source-size cap at `ICQ 22`, the flow tries a source-video seek-heal stream-copy remux (`ArcAV1_SeekHeal_V15`). This retains the original dynamic HDR video rather than producing the HDR10 conversion. Candidate validation compares the source and output counts of frames carrying Dolby Vision and HDR10+ metadata, plus static HDR metadata, frame count, timestamps, and retained streams. These checks are not a byte-for-byte comparison of dynamic metadata; full validation must still pass before replacement.
 
 ## Worker canceled by the user
 
@@ -158,6 +176,8 @@ The 80.2 GB source precheck began at `06:07:11Z` and FFprobe timed out at `10:07
 
 The source probe reports 1920×1040 but no sample or display aspect ratio. A 20-second Arc QSV sample retains those dimensions and outputs SAR `1:1` (DAR `24:13`), matching FFmpeg's square-pixel default for the untagged source. The previous validator rejected it solely because the source SAR field was empty. The local V15 rule now permits only this explicit `1:1` output when width and height are unchanged; known anamorphic SAR changes and missing/unknown output SAR remain rejected. The 20-second sample confirms the specific case, not a full-file validation.
 
+For preflight, if FFprobe omits the source SAR, the selected MediaInfo video track must report square pixels before processing can continue. The final candidate still needs an explicit `1:1` SAR and unchanged dimensions; missing or non-square MediaInfo values remain held. This addresses the Dune (2021) log, where MediaInfo reports `PixelAspectRatio: 1.000` but FFprobe omits SAR.
+
 ### The Batman (2022) — audio packet timestamp guard
 
 The 80.2 GB Remux-2160p source completed its full CPU source scan in about 4 hours 19 minutes. Both retained source audio tracks passed full software decode. The single Arc QSV ICQ 22 encode then completed in about 36 minutes and produced a 14.18 GB candidate. Candidate validation failed at `22:00:52Z` with `audio timeline has 1 packets with missing timestamps`; the job log records that the Discord failure notice was sent and the candidate cache was removed.
@@ -183,3 +203,16 @@ The V15 precheck scans packet DTS values for every retained audio stream before 
 The 53.96 GB `Remux-2160p` job completed the full source frame/HDR scan in about 49 minutes 52 seconds. The retained English stream `0:1` is 8-channel TrueHD + Atmos with a `1/1000` time base. Its packet DTS scan predicted up to 1,476.45 seconds (24 minutes 36 seconds) of correction, far beyond the 100 ms limit. The guard stopped before the full software audio decode and before AV1 encoding; the original stayed in place and no Arr search was requested. Discord accepted the failure notification.
 
 That correction was reported by the old analyzer and does not establish either backward DTS or damaged TrueHD payload. The Sample Feature Film investigation later showed that equal DTS values on this same 1/1000 time base can create a large synthetic correction with zero backward transitions. A read-only Red One scan in the test container examined the first 1,032,582 packets (about 14m 20s of media): it found 172,097 equal transitions and zero backward transitions. I stopped it before the full 53.96 GB file was scanned because it required a long array read. So Red One shows the same tie pattern in the portion checked, but its complete DTS history remains unverified. The refreshed V15 analyzer will bypass equal-only sections; rerun the full packet scan only if this specific file is reprocessed for diagnosis. See the job log supplied on 2026-11-05 for the original measurements and the Sample Feature Film follow-up in [HDR_AUDIO_REPAIR_TEST_REPORT.md](HDR_AUDIO_REPAIR_TEST_REPORT.md).
+
+### Quarantine preflight and older candidates
+
+A stored candidate is normally revalidated without encoding. If its attachment count differs from the required source count, or the source requires ASS/SSA reconstruction, preflight retires that candidate and proceeds with a fresh encode. The former checks count at preflight; the later final validation checks attachment payload hashes and identifying tags. The original remains in place unless the new candidate passes all checks and replacement succeeds.
+
+### Reusing source prechecks
+
+Quarantine can hold compressed source-frame and retained-audio precheck evidence beside the candidate. Reuse requires a matching source SHA-256, generated engine fingerprint, FFmpeg/FFprobe and Node versions, and probed video metadata; audio also requires the same retained track indexes and time bases. The cache includes full frame timestamps and audio repair decisions, not just a pass flag. A missing, invalid, oversized, or incompatible cache is ignored and the source checks run again. The source is still hashed, identity is guarded, and current candidate validation runs. Current subtitle and Dolby Vision metadata preflight checks also run. A pre-existing quarantined candidate has no evidence until its first retry under this version completes the prechecks. Cache files are removed along with their quarantine entries.
+
+### Dolby Vision Profile 5 (`dovi5_hdr10`) and Level 6 conflict warnings
+
+- **Option 1A (Level 6 mastering conflict warning)**: When a verified DV Profile 7/8.1 (or HDR10+ hybrid) source has HDR10 base mastering metadata and `0/0` (or absent) base CLL, and RPU Level 6 mastering luminance differs from the HDR10 base, the flow logs `[HDR warning]` with the conflicting luminances and ignored Level 6 CLL values, strips any `0/0` CLL placeholder, and encodes the verified HDR10 base without CLL.
+- **Profile 5 (`dovi5_hdr10`) requirements**: Profile 5 conversion requires full-range (`pc`) 10-bit 4:2:0 HEVC without pre-existing BT.2020/PQ/HLG base color tags, unique Profile 5 DOVI configuration (`compatibility_id=0`, `bl=1`, `el=0`, `rpu=1`), constant RPU Level 6 (+ recognized or absent Level 9 primaries), FFmpeg `libplacebo`, and readable `/usr/share/vulkan/icd.d/intel_icd.json`. Unverified variants or missing Vulkan/`libplacebo` support fail closed under `[HDR guard]` and retain the original. Because Mesa Intel ANV Vulkan triggers `SIGXFSZ` (exit 153) under `prlimit --fsize` caps below ~4 GB, `dovi5_hdr10` encodes run with `--fsize=unlimited` paired with FFmpeg `-fs` and `runLimitedFfmpeg` `capacity.stopOnLimit: true` to enforce the source-size cap safely.

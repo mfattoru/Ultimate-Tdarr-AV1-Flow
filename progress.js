@@ -79,7 +79,7 @@ const reportWorkerProgress = (updateWorker,data,workerDetails,mediaRatio) => {
     if (result && typeof result.catch === 'function') result.catch(()=>{});
   } catch (_) {} // UI failures must not affect the encode.
 };
-const runLimitedFfmpeg = ({command,argv,durationSec,updateWorker,workerDetails,progressStart=0,progressEnd=100,capacity}) => new Promise(resolve => {
+const runLimitedFfmpeg = ({command,argv,durationSec,updateWorker,workerDetails,progressStart=0,progressEnd=100,capacity,env}) => new Promise(resolve => {
   let child, startError, stderr='', buffer='', record={},capacityError=null,limit=capacity?BigInt(capacity.initialBytes):null,growth=null,processExited=false;
   const sampleFps=createFpsSampler();
   const start=Number.isFinite(progressStart)?Math.min(99.9,Math.max(0,progressStart)):0;
@@ -99,7 +99,9 @@ const runLimitedFfmpeg = ({command,argv,durationSec,updateWorker,workerDetails,p
     }
     record={};
   };
-  try {child=progressSpawn(command,argv,{stdio:['ignore','pipe','pipe'],detached:true});}
+  const spawnOptions={stdio:['ignore','pipe','pipe'],detached:true};
+  if (env && typeof env==='object') spawnOptions.env={...process.env,...env};
+  try {child=progressSpawn(command,argv,spawnOptions);}
   catch(error) {resolve({status:null,error,stderr:''});return;}
   if(typeof trackReservationChild==='function')trackReservationChild(child);
   const onExit=()=>{if(typeof terminateReservationChild==='function')terminateReservationChild(child,'SIGKILL');else try{child.kill('SIGKILL');}catch(_){}};
@@ -115,9 +117,10 @@ const runLimitedFfmpeg = ({command,argv,durationSec,updateWorker,workerDetails,p
     if(!capacity||processExited||growth||capacityError)return;
     let used=0n;
     try{used=progressFs.statSync(capacity.outputPath,{bigint:true}).size;}catch(_){return;}
+    if(used>=limit){stopForCapacity(Error(`${capacity.stopOnLimit?'Process':'Remux'} reached its reserved file-size limit (${limit} bytes)`));return;}
+    if(capacity.stopOnLimit)return;
     const headroom=BigInt(capacity.headroomBytes||512n*1024n*1024n);
     if(used<limit-headroom)return;
-    if(used>=limit){stopForCapacity(Error(`Remux reached its reserved file-size limit (${limit} bytes)`));return;}
     growth=(async()=>{
       const grow=capacity.grow;
       if(typeof grow!=='function')throw Error('Cache reservation growth is unavailable');
@@ -169,7 +172,7 @@ const runLimitedFfmpeg = ({command,argv,durationSec,updateWorker,workerDetails,p
   });
 });
 const runSingleQuality = async (quality, sourceSize, run) => {
-  const result=await run(quality);
+  const result = await run(quality);
   if (!result.ok) return {ok:false,quality,reason:'encoder',result};
   if (!Number.isSafeInteger(result.size) || result.size<1) return {ok:false,quality,reason:'size',result};
   if (result.size<sourceSize) return {ok:true,quality,result};

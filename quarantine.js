@@ -326,6 +326,8 @@ async function updateQuarantineFailure(entry, validationReport) {
 
 async function removeQuarantineCandidate(entry) {
   const {directory, loaded} = quarantineLoadEntry(entry, true);
+  try { quarantineFs.unlinkSync(`${loaded.candidatePath}.prechecks.gz`); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
   try { quarantineFs.unlinkSync(loaded.candidatePath); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   quarantineFs.unlinkSync(loaded.manifestPath);
@@ -352,6 +354,8 @@ async function removeQuarantineCandidatesForSource({root, sourcePath, libraryRoo
   for (const name of names) {
     const id=name.slice(0,-5);
     const candidatePath=quarantinePath.join(directory,`${id}.mkv`);
+    try { quarantineFs.unlinkSync(`${candidatePath}.prechecks.gz`); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
     // Force-fresh is an explicit request to discard this source's stored copy.
     // The path key and candidate name are derived from the exact source and a
     // validated identifier; don't let one malformed manifest block the purge.

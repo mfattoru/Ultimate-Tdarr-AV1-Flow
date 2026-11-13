@@ -59,3 +59,32 @@ test('stream-copy progress derives FPS from frame deltas when FFmpeg reports fps
  assert.equal(result.status,0);
  assert.ok(updates.some(update=>Number.isFinite(update.fps)&&update.fps>0),'remux should report measured frames per second');
 });
+
+test('runLimitedFfmpeg merges per-invocation env overrides with parent environment',async t=>{
+ const outputPath=fixture(t);
+ const script="require('fs').writeFileSync(process.argv[1],JSON.stringify({vk:process.env.VK_ICD_FILENAMES||'',driver:process.env.VK_DRIVER_FILES||'',pathSet:Boolean(process.env.PATH)}));";
+ const result=await runLimitedFfmpeg({
+  command:process.execPath,
+  argv:['-e',script,outputPath],
+  durationSec:1,
+  env:{VK_ICD_FILENAMES:'/usr/share/vulkan/icd.d/intel_icd.json',VK_DRIVER_FILES:'/usr/share/vulkan/icd.d/intel_icd.json'}
+ });
+ assert.equal(result.status,0);
+ const parsed=JSON.parse(fs.readFileSync(outputPath,'utf8'));
+ assert.equal(parsed.vk,'/usr/share/vulkan/icd.d/intel_icd.json');
+ assert.equal(parsed.driver,'/usr/share/vulkan/icd.d/intel_icd.json');
+ assert.equal(parsed.pathSet,true);
+});
+
+test('runLimitedFfmpeg enforces fixed stopOnLimit cap without requesting growth',async t=>{
+ const outputPath=fixture(t);
+ const script=`const fs=require('fs'),p=process.argv[1];fs.writeFileSync(p,Buffer.alloc(500));setTimeout(()=>{fs.appendFileSync(p,Buffer.alloc(600));setInterval(()=>{},1000);},40)`;
+ const result=await runLimitedFfmpeg({
+  command:process.execPath,
+  argv:['-e',script,outputPath],
+  durationSec:1,
+  capacity:{outputPath,initialBytes:1000n,stopOnLimit:true,pollMs:10,grow:async()=>{throw Error('grow must not run when stopOnLimit is enabled');}}
+ });
+ assert.match(result.capacityError?.message || '',/file-size limit/i);
+ assert.ok(result.signal==='SIGTERM'||result.signal==='SIGKILL');
+});

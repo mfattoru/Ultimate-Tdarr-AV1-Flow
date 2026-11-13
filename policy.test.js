@@ -2,15 +2,49 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const {runFlowCode} = require('./flow_test_runtime');
 const flow = JSON.parse(fs.readFileSync(path.join(__dirname, 'flow.json')));
 const engine = flow.flowPlugins.find(p => p.id === 'arc_av1_monolithic').inputsDB.code;
 const mod = {exports:{}};
-new Function('require','module','exports',engine + '\nmodule.exports.testPolicy = typeof selectQualityValue === "function" ? selectQualityValue : null; module.exports.testRun = typeof runSingleQuality === "function" ? runSingleQuality : null; module.exports.testDone = typeof isCompletedEncode === "function" ? isCompletedEncode : null; module.exports.testClassify = typeof classifyVideo === "function" ? classifyVideo : null; module.exports.testHdr = typeof validateHdr10 === "function" ? validateHdr10 : null; module.exports.testColor = typeof validateSdrColor === "function" ? validateSdrColor : null; module.exports.testVideoGuard = typeof guardSourceVideo === "function" ? guardSourceVideo : null; module.exports.testQsvDecode = typeof useQsvDecode === "function" ? useQsvDecode : null; module.exports.testAspect = typeof validateAspect === "function" ? validateAspect : null; module.exports.testHdrRoute = typeof determineHdrRoute === "function" ? determineHdrRoute : null; module.exports.testHybridPreflight = typeof preflightHybridHdr === "function" ? preflightHybridHdr : null; module.exports.testMergeHdr = typeof mergeHdrMetadata === "function" ? mergeHdrMetadata : null; module.exports.testRecordFrame = typeof recordHdrFrame === "function" ? recordHdrFrame : null; module.exports.testScanFrames = typeof inspectVideoFrames === "function" ? inspectVideoFrames : null; module.exports.testDecodeThreads = typeof getDecodeThreadCount === "function" ? getDecodeThreadCount : null; module.exports.testFrameScanArgs = typeof buildFrameScanArguments === "function" ? buildFrameScanArguments : null; module.exports.testWithDecoderThreads = typeof withDecoderThreads === "function" ? withDecoderThreads : null; module.exports.testL6 = typeof parseDolbyLevel6 === "function" ? parseDolbyLevel6 : null; module.exports.testCompareTimes = typeof compareVideoTimestamps === "function" ? compareVideoTimestamps : null; module.exports.testHlg = typeof validateHlg === "function" ? validateHlg : null; module.exports.testProcess = typeof runTimelineProcess === "function" ? runTimelineProcess : null; module.exports.testSdrSignal = typeof isVerifiedSdr === "function" ? isVerifiedSdr : null; module.exports.testL6Rows = typeof summarizeLevel6Rows === "function" ? summarizeLevel6Rows : null; module.exports.testResolveLight = typeof resolveHdrLight === "function" ? resolveHdrLight : null; module.exports.testHdrFrameRequirements = typeof hdrFrameMetadataRequirements === "function" ? hdrFrameMetadataRequirements : null; module.exports.testHdrStatic = typeof checkHdrFrameStatic === "function" ? checkHdrFrameStatic : null; module.exports.testVideoFilter = typeof composeVideoFilterChain === "function" ? composeVideoFilterChain : null; module.exports.testSdrTransfer = typeof validateEffectiveSdrTransfer === "function" ? validateEffectiveSdrTransfer : null; module.exports.testSdrSource = typeof effectiveSdrSource === "function" ? effectiveSdrSource : null; module.exports.testUntagged = typeof isUntaggedVideo === "function" ? isUntaggedVideo : null; module.exports.testUntaggedOutput = typeof validateUntaggedOutput === "function" ? validateUntaggedOutput : null; module.exports.testUntaggedRange = typeof inferUntaggedColorRange === "function" ? inferUntaggedColorRange : null; module.exports.testUntaggedRangeArgs = typeof untaggedColorRangeArgs === "function" ? untaggedColorRangeArgs : null; module.exports.testFreeSpace = typeof getFreeSpaceMB === "function" ? getFreeSpaceMB : null;')(require,mod,mod.exports);
+runFlowCode(['require','module','exports'],engine,[require,mod,mod.exports]);
 const p=mod.exports;
-const knownQsvHdrClamp = new Function('require','module','exports',engine+'\nreturn typeof isKnownQsvHdrMasteringClamp === "function" ? isKnownQsvHdrMasteringClamp : null;')(require,{exports:{}},{});
-const knownQsvHdrClampRisk = new Function('require','module','exports',engine+'\nreturn typeof isQsvHdrMasteringClampRisk === "function" ? isQsvHdrMasteringClampRisk : null;')(require,{exports:{}},{});
-const knownQsvHdrClampRetry = new Function('require','module','exports',engine+'\nreturn typeof shouldRetrySvtForQsvHdrClamp === "function" ? shouldRetrySvtForQsvHdrClamp : null;')(require,{exports:{}},{});
-const qsvHdrFallbackRunner = new Function('require','module','exports',engine+'\nreturn typeof validateQsvWithSvtHdrClampFallback === "function" ? validateQsvWithSvtHdrClampFallback : null;')(require,{exports:{}},{});
+const knownQsvHdrClamp=p.testKnownQsvHdrClamp;
+const knownQsvHdrClampRisk=p.testKnownQsvHdrClampRisk;
+const knownQsvHdrClampRetry=p.testKnownQsvHdrClampRetry;
+const qsvHdrFallbackRunner=p.testQsvHdrFallbackRunner;
+const mustRetainOriginalAtQualityFloor=p.testMustRetainOriginalAtQualityFloor;
+test('failed verification retains first and last diagnostic lines',async()=>{
+ const script="process.stderr.write('FIRST-DIAGNOSTIC\\n'+'x'.repeat(12000)+'\\nLAST-DIAGNOSTIC\\n');process.exitCode=1";
+ await assert.rejects(p.testProcess(process.execPath,['-e',script]),error=>{
+  assert.match(error.processFailure.diagnostic,/FIRST-DIAGNOSTIC/);
+  assert.match(error.processFailure.diagnostic,/LAST-DIAGNOSTIC/);
+  assert.ok(error.processFailure.diagnostic.length<14000);
+  return true;
+ });
+});
+test('candidate frame timestamps may not introduce a repeated or backward frame',()=>{
+ const source={frames:4,timestamps:[0,0.041,0.083,0.125]};
+ for(const timestamps of [[1,1.041,1.041,1.125],[1,1.041,1.040,1.125]]) {
+  assert.throws(()=>p.testCompareTimes(source,{frames:4,timestamps}),/timestamp.*source.*output/i);
+ }
+ assert.doesNotThrow(()=>p.testCompareTimes({frames:4,timestamps:[0,0.041,0.041,0.125]},{frames:4,timestamps:[1,1.041,1.041,1.125]}));
+});
+
+test('candidate frame timestamps tolerate a 1 ms Matroska quantization tie or single isolated B-frame tie in long streams while staying within 50 ms sync',()=>{
+ const subFrameSource={frames:4,timestamps:[0,0.041,0.042,0.083]};
+ const subFrameOutput={frames:4,timestamps:[0,0.042,0.042,0.083]};
+ assert.doesNotThrow(()=>p.testCompareTimes(subFrameSource,subFrameOutput));
+ const n=1200;
+ const longSource=Array.from({length:n},(_,i)=>Math.round(i*1000/24)/1000);
+ const longOutput=longSource.slice();
+ longOutput[800]=longOutput[799]; // single isolated tie at frame 800
+ assert.doesNotThrow(()=>p.testCompareTimes({frames:n,timestamps:longSource},{frames:n,timestamps:longOutput}));
+ // Two consecutive frozen frames in a long stream must still reject
+ const twoFrozen=longSource.slice();
+ twoFrozen[800]=twoFrozen[799];
+ twoFrozen[801]=twoFrozen[799];
+ assert.throws(()=>p.testCompareTimes({frames:n,timestamps:longSource},{frames:n,timestamps:twoFrozen}),/timestamp/i);
+});
 
 test('missing candidate video timestamps reject a proven timing regression while missing source timing is inconclusive',()=>{
   const clean={frames:3,timestamps:[0,0.04,0.08]},missing={frames:3,timestamps:[0,NaN,0.08]};
@@ -95,6 +129,22 @@ test('a non-shrinking output returns to the caller after one encode',async()=>{
   assert.equal(tooLarge.ok,false);assert.equal(tooLarge.reason,'quality_floor');assert.deepEqual(calls,[22]);
   const error=await p.testRun(22,100,q=>{calls.push(q);return {ok:false};});
   assert.equal(error.ok,false);assert.deepEqual(calls,[22,22]);
+});
+
+test('dynamic-HDR routes allow source-video stream-copy remux at the quality floor and validate preserved dynamic HDR on stream copy',()=>{
+  assert.equal(typeof mustRetainOriginalAtQualityFloor,'function','quality-floor HDR fallback policy is missing');
+  for (const route of ['hdr10plus_hdr10','dovi81_hdr10plus_hdr10','dovi7_hdr10plus_hdr10','dovi81_hdr10','dovi7_hdr10','hdr10','hlg','sdr','untagged',null,undefined]) {
+    assert.equal(mustRetainOriginalAtQualityFloor(route),false,`${route} should allow the validated source-video stream-copy remux fallback`);
+  }
+  const doviStream={
+    color_transfer:'smpte2084',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv',
+    side_data_list:[
+      {side_data_type:'DOVI configuration record',dv_profile:8},
+      {side_data_type:'Mastering display metadata',red_x:'34000/50000',red_y:'16000/50000',green_x:'13250/50000',green_y:'34500/50000',blue_x:'7500/50000',blue_y:'3000/50000',white_point_x:'15635/50000',white_point_y:'16450/50000',min_luminance:'50/10000',max_luminance:'1000/1'}
+    ]
+  };
+  assert.throws(()=>p.testHdr(doviStream,doviStream),/retains Dolby Vision/i);
+  assert.doesNotThrow(()=>p.testHdr(doviStream,doviStream,{allowDynamicHdr:true}));
 });
 
 test('quality may be configured for the whole worker, never per resolution',()=>{
@@ -206,8 +256,7 @@ test('successful output validation rejects a missing V6 completion marker',async
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'v4-marker-')), file=path.join(dir,'test.mkv');
   try {
     child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=12:duration=2','-c:v','libsvtav1','-preset','12','-svtav1-params','lp=1:log-level=0','-y',file],{stdio:'ignore'});
-    const m={exports:{}}; new Function('require','module','exports',engine+'\nmodule.exports.testValidate = validateOutput;')(require,m,m.exports);
-    await assert.rejects(()=>m.exports.testValidate('ffprobe',file,file,{codec:'av1',audio:0,subtitle:0,sourceVideoIndex:0,audioIndices:[],subtitleIndices:[],requireMarker:true}),/marker/i);
+    await assert.rejects(()=>p.testValidate('ffprobe',file,file,{codec:'av1',audio:0,subtitle:0,sourceVideoIndex:0,audioIndices:[],subtitleIndices:[],requireMarker:true}),/marker/i);
   } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });
 
@@ -222,8 +271,7 @@ test('validation detects a missing interior video frame',async()=>{
   try {
     child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=12:duration=2','-c:v','libx264','-y',source],{stdio:'ignore'});
     child.execFileSync('ffmpeg',['-v','error','-i',source,'-vf','select=not(eq(n\\,10))','-fps_mode','vfr','-c:v','libx264','-y',out],{stdio:'ignore'});
-    const m={exports:{}};new Function('require','module','exports',engine+'\nmodule.exports.testValidate=validateOutput;')(require,m,m.exports);
-    await assert.rejects(()=>m.exports.testValidate('ffprobe',source,out,{codec:'h264',audio:0,subtitle:0,sourceVideoIndex:0,audioIndices:[],subtitleIndices:[]}),/frame count/i);
+    await assert.rejects(()=>p.testValidate('ffprobe',source,out,{codec:'h264',audio:0,subtitle:0,sourceVideoIndex:0,audioIndices:[],subtitleIndices:[]}),/frame count/i);
   } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });
 
@@ -464,8 +512,7 @@ test('selected audio track cannot drift by 300 milliseconds',async()=>{
  try {
   child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=24:duration=3','-f','lavfi','-i','sine=duration=3','-c:v','libx264','-c:a','aac','-y',src],{stdio:'ignore'});
   child.execFileSync('ffmpeg',['-v','error','-i',src,'-itsoffset','0.3','-i',src,'-map','0:v','-map','1:a','-c','copy','-y',out],{stdio:'ignore'});
-  const m={exports:{}};new Function('require','module','exports',engine+'\nmodule.exports.testValidate=validateOutput;')(require,m,m.exports);
-  await assert.rejects(()=>m.exports.testValidate('ffprobe',src,out,{codec:'h264',audio:1,subtitle:0,sourceVideoIndex:0,audioIndices:[1],subtitleIndices:[]}),/audio.*timeline/i);
+  await assert.rejects(()=>p.testValidate('ffprobe',src,out,{codec:'h264',audio:1,subtitle:0,sourceVideoIndex:0,audioIndices:[1],subtitleIndices:[]}),/audio.*timeline/i);
  } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });
 
@@ -575,7 +622,11 @@ test('Dolby Level 6 fallback agrees with the HDR10 mastering data',async()=>{
  const result=await p.testResolveLight(v,'dovi81_hdr10',async()=>l6);
  assert.equal(result.override,'992,362');
  assert.deepEqual(result.metadata.side_data_list[1],{side_data_type:'Content light level metadata',max_content:992,max_average:362});
- await assert.rejects(()=>p.testResolveLight(v,'dovi81_hdr10',async()=>({...l6,max_luminance:4000})),/conflict/i);
+ const conflict=await p.testResolveLight(v,'dovi81_hdr10',async()=>({...l6,max_luminance:4000}));
+ assert.equal(conflict.override,null);
+ assert.deepEqual(conflict.metadata.side_data_list,[md]);
+ assert.match(conflict.warning,/4000.*1000|1000.*4000/);
+ assert.match(conflict.warning,/992,362/);
  let level6Calls=0;
  const hdr10MissingStatic=await p.testResolveLight(v,'hdr10',async()=>{level6Calls++;return l6;});
  assert.equal(level6Calls,0,'ordinary HDR10 must not borrow Dolby Level 6 metadata');
@@ -853,7 +904,10 @@ test('Profile 7 may recover missing HDR content-light values from verified Level
  const l6={max_content:992,max_average:120,max_luminance:4000,min_luminance:0.005};
  const resolved=await p.testResolveLight(src,'dovi7_hdr10',async()=>l6);
  assert.equal(resolved.override,'992,120');assert.equal(resolved.metadata.side_data_list[1].max_content,992);
- await assert.rejects(()=>p.testResolveLight(src,'dovi7_hdr10',async()=>({...l6,max_luminance:1000})),/conflict/i);
+ const conflict=await p.testResolveLight(src,'dovi7_hdr10',async()=>({...l6,max_luminance:1000}));
+ assert.equal(conflict.override,null);
+ assert.deepEqual(conflict.metadata.side_data_list,[mastering]);
+ assert.match(conflict.warning,/4000.*1000|1000.*4000/);
 });
 
 test('Profile 7 fallback omits unavailable content-light data without comparing unused Level 6 mastering values',async()=>{
@@ -863,4 +917,125 @@ test('Profile 7 fallback omits unavailable content-light data without comparing 
  const resolved=await p.testResolveLight(src,'dovi7_hdr10',async()=>unknown);
  assert.equal(resolved.override,null);
  assert.deepEqual(resolved.metadata.side_data_list,[mastering]);
+});
+
+test('conflicting Dolby Level 6 luminance rejects when base mastering luminance is missing or partial source CLL is invalid',async()=>{
+ const incompleteMd={side_data_type:'Mastering display metadata',red_x:'34000/50000'};
+ const cllZero={side_data_type:'Content light level metadata',max_content:0,max_average:0};
+ const l6={max_content:992,max_average:362,max_luminance:4000,min_luminance:0.005};
+ await assert.rejects(()=>p.testResolveLight({...pqVideo,side_data_list:[incompleteMd,cllZero]},'dovi81_hdr10',async()=>l6),/mastering metadata is missing or invalid/i);
+ const validMd={side_data_type:'Mastering display metadata',min_luminance:'50/10000',max_luminance:'1000/1'};
+ await assert.rejects(()=>p.testResolveLight({...pqVideo,side_data_list:[validMd,{side_data_type:'Content light level metadata',max_content:100,max_average:0}]},'dovi81_hdr10',async()=>l6),/content-light metadata is invalid/i);
+});
+
+test('Dolby Vision Profile 5 is verified only with full-range 10-bit HEVC IPT-PQ signaling and per-frame RPUs',()=>{
+ const p5Config={side_data_type:'DOVI configuration record',dv_profile:5,dv_level:6,rpu_present_flag:1,el_present_flag:0,bl_present_flag:1,dv_bl_signal_compatibility_id:0};
+ const p5Video={codec_name:'hevc',pix_fmt:'yuv420p10le',color_range:'pc',side_data_list:[p5Config]};
+ const p5Info={HDR_Format:'Dolby Vision',HDR_Format_Profile:'dvhe.05.06',HDR_Format_Compatibility:'IPT-PQ-c2',colour_range:'Full'};
+ const p5Scan={frames:100,interlaced:0,dovi:100,hdr10plus:0,otherDynamic:0};
+ assert.equal(p.testDolbyPreflight(p5Video,p5Info,'not_hybrid'),'dovi5_hdr10');
+ assert.equal(p.testHdrRoute(p5Video,p5Info,p5Scan),'dovi5_hdr10');
+ assert.throws(()=>p.testDolbyPreflight({...p5Video,color_range:'tv'},p5Info,'not_hybrid'),/Dolby/i);
+ assert.throws(()=>p.testDolbyPreflight({...p5Video,color_transfer:'smpte2084'},p5Info,'not_hybrid'),/Dolby/i);
+ assert.throws(()=>p.testDolbyPreflight({...p5Video,color_primaries:'bt2020'},p5Info,'not_hybrid'),/Dolby/i);
+ assert.throws(()=>p.testDolbyPreflight({...p5Video,codec_name:'h264'},p5Info,'not_hybrid'),/Dolby/i);
+ assert.throws(()=>p.testDolbyPreflight({...p5Video,pix_fmt:'yuv420p'},p5Info,'not_hybrid'),/Dolby/i);
+ assert.throws(()=>p.testDolbyPreflight({...p5Video,side_data_list:[{...p5Config,dv_bl_signal_compatibility_id:1}]},p5Info,'not_hybrid'),/Dolby/i);
+ assert.throws(()=>p.testDolbyPreflight({...p5Video,side_data_list:[{...p5Config,el_present_flag:1}]},p5Info,'not_hybrid'),/Dolby/i);
+ assert.throws(()=>p.testDolbyPreflight(p5Video,p5Info,'unsupported_hybrid'),/hybrid|HDR|Dolby/i);
+ assert.throws(()=>p.testHdrRoute(p5Video,p5Info,{...p5Scan,dovi:0}),/Dolby/i);
+ assert.throws(()=>p.testHdrRoute(p5Video,p5Info,{...p5Scan,hdr10plus:1}),/Dolby|hybrid|HDR/i);
+ assert.throws(()=>p.testHdrRoute(p5Video,p5Info,{...p5Scan,interlaced:1}),/interlac/i);
+});
+
+test('Dolby Vision Profile 5 Level 6 and Level 9 RPU metadata synthesize validated HDR10 output targets',()=>{
+ assert.equal(typeof p.testL9,'function');
+ assert.equal(typeof p.testL9Rows,'function');
+ assert.equal(typeof p.testBuildDovi5Target,'function');
+ assert.equal(typeof p.testMasteringDisplayArg,'function');
+ assert.deepEqual(p.testL9('0,1,0'),{length:1,source_primary_index:0});
+ assert.deepEqual(p.testL9Rows(['frame,length,source_primary_index','0,1,0','1,1,0'],2),{source_primary_index:0,frames:2});
+ assert.equal(p.testL9Rows(['frame,length,source_primary_index'],100),null);
+ assert.throws(()=>p.testL9Rows(['frame,length,source_primary_index'],0),/invalid/i);
+ assert.throws(()=>p.testL9Rows(['frame,length,source_primary_index','0,1,0','1,1,2'],2),/Level 9 changes/i);
+
+ const l6={max_content:10000,max_average:315,max_luminance:1000,min_luminance:0.0001};
+ const dune=p.testBuildDovi5Target(l6,{source_primary_index:0});
+ assert.equal(dune.masteringDisplayArg,'G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)');
+ assert.equal(dune.contentLightArg,'10000,315');
+ assert.equal(dune.targetVideo.color_transfer,'smpte2084');
+ assert.equal(dune.targetVideo.color_primaries,'bt2020');
+ assert.equal(dune.targetVideo.color_space,'bt2020nc');
+ assert.equal(dune.targetVideo.color_range,'tv');
+ assert.equal(knownQsvHdrClampRisk(dune.targetVideo),false);
+ assert.deepEqual(p.testHdrFrameRequirements(dune.targetVideo),{requireLight:true,requireMastering:true});
+ const duneOutputMaster={side_data_type:'Mastering display metadata',red_x:'34000/50000',red_y:'16000/50000',green_x:'13250/50000',green_y:'34500/50000',blue_x:'7500/50000',blue_y:'3000/50000',white_point_x:'15635/50000',white_point_y:'16450/50000',min_luminance:'1/10000',max_luminance:'1000/1'};
+ const duneOutputLight={side_data_type:'Content light level metadata',max_content:10000,max_average:315};
+ assert.doesNotThrow(()=>p.testHdr(dune.targetVideo,{...pqVideo,side_data_list:[duneOutputMaster,duneOutputLight]}));
+ assert.throws(()=>p.testHdr(dune.targetVideo,{...pqVideo,side_data_list:[duneOutputMaster]}),/missing/i);
+
+ const bt2020Target=p.testBuildDovi5Target(l6,{source_primary_index:2});
+ assert.equal(bt2020Target.masteringDisplayArg,'G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)');
+ assert.equal(knownQsvHdrClampRisk(bt2020Target.targetVideo),true);
+
+ const cmv29Target=p.testBuildDovi5Target({max_content:800,max_average:200,max_luminance:1000,min_luminance:0.0001},null);
+ assert.equal(cmv29Target.masteringDisplayArg,null);
+ assert.equal(cmv29Target.contentLightArg,'800,200');
+ assert.deepEqual(p.testHdrFrameRequirements(cmv29Target.targetVideo),{requireLight:true,requireMastering:false});
+ assert.doesNotThrow(()=>p.testHdr(cmv29Target.targetVideo,{...pqVideo,side_data_list:[{side_data_type:'Content light level metadata',max_content:800,max_average:200}]}));
+
+ const noCllTarget=p.testBuildDovi5Target({max_content:0,max_average:0,max_luminance:1000,min_luminance:0.0001},{source_primary_index:0});
+ assert.equal(noCllTarget.contentLightArg,null);
+ assert.deepEqual(p.testHdrFrameRequirements(noCllTarget.targetVideo),{requireLight:false,requireMastering:true});
+ assert.throws(()=>p.testBuildDovi5Target(l6,{source_primary_index:99}),/Level 9/i);
+
+ const p5Filter=p.testVideoFilter('libplacebo=apply_dolbyvision=true:colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084:range=tv:tonemapping=clip:peak_detect=false:format=p010le,sidedata=mode=delete:type=DOVI_METADATA',{removeContentLight:true});
+ assert.equal(p5Filter,'sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL,libplacebo=apply_dolbyvision=true:colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084:range=tv:tonemapping=clip:peak_detect=false:format=p010le,sidedata=mode=delete:type=DOVI_METADATA');
+});
+
+test('extractDolbyProfile5HdrMetadata returns level6 and level9 fields wired for buildDovi5HdrTarget',async()=>{
+ const nodeFs=require('node:fs'),nodeOs=require('node:os'),nodePath=require('node:path');
+ const binDir=nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(),'tdarr-p5-extract-'));
+ const oldPath=process.env.PATH||'';
+ try{
+  const writeStub=(name,body)=>{
+   const pBin=nodePath.join(binDir,name);
+   nodeFs.writeFileSync(pBin,`#!/bin/sh\n${body}\n`,{mode:0o755});
+  };
+  writeStub('ffmpeg','printf "FAKE_HEVC_ANNEXB"');
+  writeStub('dovi_tool',`cmd="$1"; shift
+if [ "$cmd" = "extract-rpu" ]; then
+ out=""; while [ "$#" -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done
+ printf "FAKE_RPU" > "$out"
+elif [ "$cmd" = "export" ]; then
+ levels=""; while [ "$#" -gt 0 ]; do [ "$1" = "--levels" ] && levels="$2"; shift; done
+ l6=\${levels#*level6=}; l6=\${l6%%,*}
+ l9=\${levels#*level9=}
+ printf "frame,max_display_mastering_luminance,min_display_mastering_luminance,max_content_light_level,max_frame_average_light_level\\n0,1000,1,10000,315\\n1,1000,1,10000,315\\n" > "$l6"
+ if [ "\${TEST_OMIT_L9:-0}" = "1" ]; then
+  printf "frame,length,source_primary_index\\n" > "$l9"
+ else
+  printf "frame,length,source_primary_index\\n0,1,0\\n1,1,0\\n" > "$l9"
+ fi
+fi`);
+  process.env.PATH=`${binDir}:${oldPath}`;
+  const full=await p.testExtractP5('ffmpeg','/fake/dune.mkv',0,2);
+  assert.deepEqual(full.level6,{max_content:10000,max_average:315,max_luminance:1000,min_luminance:0.0001});
+  assert.deepEqual(full.level9,{source_primary_index:0,frames:2});
+  const target=p.testBuildDovi5Target(full.level6,full.level9);
+  assert.equal(target.masteringDisplayArg,'G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)');
+  assert.equal(target.contentLightArg,'10000,315');
+
+  process.env.TEST_OMIT_L9='1';
+  const cmv29=await p.testExtractP5('ffmpeg','/fake/cmv29.mkv',0,2);
+  assert.deepEqual(cmv29.level6,{max_content:10000,max_average:315,max_luminance:1000,min_luminance:0.0001});
+  assert.equal(cmv29.level9,null);
+  const noMaster=p.testBuildDovi5Target(cmv29.level6,cmv29.level9);
+  assert.equal(noMaster.masteringDisplayArg,null);
+  assert.equal(noMaster.contentLightArg,'10000,315');
+ }finally{
+  delete process.env.TEST_OMIT_L9;
+  process.env.PATH=oldPath;
+  nodeFs.rmSync(binDir,{recursive:true,force:true});
+ }
 });

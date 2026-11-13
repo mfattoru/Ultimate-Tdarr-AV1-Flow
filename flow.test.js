@@ -14,6 +14,18 @@ test('V15 export has its own identity and contains no embedded webhook credentia
  assert.equal(engine.includes('https://discord.com/api/webhooks/'),false);
 });
 
+test('HDR size-floor retention guard runs before the source-video copy fallback',()=>{
+ const qualityFloor=engine.indexOf('if (res.qualityFloor) {');
+ const retainMatch=engine.slice(qualityFloor).match(/if\s*\(mustRetainOriginalAtQualityFloor\(hdrClass\)\)/);
+ const retainGuard=retainMatch ? qualityFloor+retainMatch.index : -1;
+ const remux=engine.indexOf('const remuxRes = await runFfmpeg(false, true);',qualityFloor);
+ assert.ok(qualityFloor>=0&&retainGuard>qualityFloor&&remux>retainGuard,'HDR retention policy must run inside the quality-floor path before remux');
+ const guard=engine.slice(retainGuard,remux);
+ assert.ok(guard.includes('cleanupChapters();'),'the early return must clean temporary chapter data');
+ assert.match(guard,/outputNumber\s*:\s*2/,'the early return must keep the original');
+ assert.match(guard,/skipping source-video remux/,'the early return must explain why remux was skipped');
+});
+
 test('exported failure notifier explains an oversized audio DTS repair without claiming corruption',()=>{
  const notifier=flow.flowPlugins.find(p=>p.id==='notify_failure').inputsDB.code;
  assert.ok(notifier.includes('audio_timestamp_limit'));
@@ -163,7 +175,7 @@ test('source and output timelines are fully scanned with source and output inter
  const sourceScan=engine.indexOf('frameScan=await inspectVideoFrames(ffprobeBin,inputPath,mainVideo.index');
  const encode=engine.indexOf('runSingleQuality(');
  assert.ok(sourceScan>=0&&encode>sourceScan,'every eligible source must be fully scanned before encoding');
- const sourceAspectValidation=engine.search(/validateAspect\(mainVideo,\s*mainVideo,\s*false\)/);
+ const sourceAspectValidation=engine.search(/validateAspect\(mainVideo,\s*preflightAspectVideo,\s*false\)/);
  assert.ok(sourceAspectValidation>=0&&sourceAspectValidation<sourceScan,'source aspect metadata must be validated before the full frame scan');
  assert.ok(engine.includes('if (frameScan.interlaced) throw Error("Interlaced video frames are unsupported")'),'decoded interlaced source frames must remain held');
  assert.ok(engine.includes('if (order && ![\'progressive\',\'unknown\'].includes(order)) throw Error(\'Output has interlaced field order\')'),'encoded output field-order guard must remain');
@@ -212,4 +224,27 @@ test('failure plugin uses a processing category instead of its testing defaults'
  assert.equal(node.inputsDB.failureCategory,'custom');
  assert.equal(node.inputsDB.customCategoryName,'transcode');
  assert.equal(node.inputsDB.analyzeVariables,false);
+});
+
+test('flow normalizes out-of-order ASS tracks and validates preserved dynamic HDR on seek-heal stream-copy remuxes',()=>{
+ assert.ok(engine.includes('removeQuarantineCandidate(quarantinedCandidate)'),'engine must retire incompatible quarantined candidates automatically');
+ assert.ok(engine.includes('reconstructAssSubtitleFile'),'engine must normalize out-of-order ASS tracks rather than failing or clamping by >0.5s');
+ assert.equal(engine.includes('-map_metadata:s:'),false,'-map_metadata:s disables FFmpeg automatic stream metadata copying for font attachments');
+ assert.ok(engine.includes('cmdArgs.push(`-metadata:s:s:${idx}`, `${tagKey}=${tagVal}`)'),'normalized ASS stream metadata must copy tags via -metadata:s:s without disabling attachment mimetype inheritance');
+ assert.ok(engine.includes('const isStreamCopyFallback = expected.outputMarker === "ArcAV1_SeekHeal_V15"'),'engine must distinguish seek-heal stream-copy remuxes during HDR validation');
+ assert.ok(engine.includes('validateHdr10(sourceHdrCopy, outputHdrCopy, {allowDynamicHdr: true})'),'stream-copy fallback must validate HDR metadata while preserving source dynamic HDR');
+ assert.ok(engine.includes('forceStreamCopy ? "+genpts+igndts" : "+genpts"'),'normal encodes must preserve valid input DTS while stream-copy remuxes use +genpts+igndts');
+});
+
+test('Dolby Vision Profile 5 converts via libplacebo with Intel Vulkan override and Option 1A logs Level 6 fallback warnings',()=>{
+ assert.ok(engine.includes('dovi5_hdr10'),'engine must support the dovi5_hdr10 route');
+ assert.ok(engine.includes('/\\\\blibplacebo\\\\b/') || engine.includes('/\\blibplacebo\\b/'),'dovi5_hdr10 preflight regex must keep word boundaries');
+ assert.ok(engine.includes('/usr/share/vulkan/icd.d/intel_icd.json'),'dovi5_hdr10 must target the Intel Vulkan ICD');
+ assert.ok(engine.includes('libplacebo=apply_dolbyvision=true:colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084:range=tv:tonemapping=clip:peak_detect=false'),'dovi5_hdr10 must use libplacebo Dolby Vision IPT-PQ->BT.2020 PQ conversion');
+ assert.ok(engine.includes('VK_ICD_FILENAMES'),'dovi5_hdr10 must override VK_ICD_FILENAMES for FFmpeg');
+ assert.ok(engine.includes('VK_DRIVER_FILES'),'dovi5_hdr10 must override VK_DRIVER_FILES for FFmpeg');
+ assert.ok(engine.includes('"-mastering_display"'),'dovi5_hdr10 must support synthesized -mastering_display input metadata');
+ assert.ok(engine.includes('resolved.warning'),'engine must log Option 1A Level 6 fallback warnings');
+ assert.ok(engine.includes('expected.sourceClass === "dovi5_hdr10"'),'stream-copy seek-heal fallback must validate Profile 5 source preservation separately from HDR10 encodes');
+ assert.ok(engine.includes('stopOnLimit: true'),'dovi5_hdr10 Vulkan encodes must enforce a fixed output cap cleanly without finite RLIMIT_FSIZE tripping Intel ANV');
 });

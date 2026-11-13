@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
-const {reserveCapacity, registerReservationWorkspace, heartbeatCapacityReservation, releaseCapacity, growCapacityReservation} = require('./reservations');
+const {reserveCapacity, registerReservationWorkspace, heartbeatCapacityReservation, trackReservationChild, untrackReservationChild, terminateReservationChild, releaseCapacity, growCapacityReservation} = require('./reservations');
 
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tdarr-reservations-'));
@@ -227,4 +227,61 @@ test('distinct device IDs cannot double-spend the same underlying storage throug
  fs.statfsSync=(p,opts)=>(p===ra||p===rb)?{bavail:1000n,bsize:1n,type:0n}:oldSpace(p,opts);
  try {const one=await reserveCapacity({...options(root,600n),candidate:a});await assert.rejects(reserveCapacity({...options(root,500n),candidate:b}),/insufficient/i);await releaseCapacity(one);}
  finally {fs.statSync=oldStat;fs.statfsSync=oldSpace;}
+});
+
+test('child tracking removes idle signal handlers and termination falls back to child.kill', t => {
+  const sigtermListeners=process.listenerCount('SIGTERM'),sigintListeners=process.listenerCount('SIGINT'),signals=[];
+  const child={kill(signal){signals.push(signal);}};
+  trackReservationChild(null);
+  trackReservationChild(child);
+  assert.equal(process.listenerCount('SIGTERM'),sigtermListeners+1);
+  assert.equal(process.listenerCount('SIGINT'),sigintListeners+1);
+  untrackReservationChild(child);
+  untrackReservationChild(null);
+  assert.equal(process.listenerCount('SIGTERM'),sigtermListeners);
+  assert.equal(process.listenerCount('SIGINT'),sigintListeners);
+  terminateReservationChild(child,'SIGTERM');
+  assert.deepEqual(signals,['SIGTERM']);
+  assert.doesNotThrow(()=>terminateReservationChild({kill(){throw Error('already exited');}}));
+});
+
+test('RAM reservations and growth preserve system headroom and fail closed when MemAvailable is unknown', async t => {
+  const dir=fixture(t),realDir=fs.realpathSync(dir),oldStatfs=fs.statfsSync,oldRead=fs.readFileSync;
+  const state={meminfo:'MemAvailable: 1000000 kB\n'};
+  fs.statfsSync=(target,opts)=>String(target)===realDir
+    ? {bavail:1000000000n,bsize:1n,type:16914836n}
+    : oldStatfs(target,opts);
+  fs.readFileSync=(target,...args)=>String(target)==='/proc/meminfo'
+    ? state.meminfo
+    : oldRead(target,...args);
+  try {
+    state.meminfo='unrecognized memory report\n';
+    await assert.rejects(reserveCapacity({...options(dir,2048n),systemRamFloorBytes:4096n}),/cannot determine system RAM/i);
+    state.meminfo='MemAvailable: 1 kB\n';
+    await assert.rejects(reserveCapacity({...options(dir,2048n),systemRamFloorBytes:4096n}),/system RAM headroom/i);
+    state.meminfo='MemAvailable: 1000000 kB\n';
+    const owner=await reserveCapacity({...options(dir,2048n),systemRamFloorBytes:4096n});
+    state.meminfo='MemAvailable: 50000 kB\n';
+    await assert.rejects(growCapacityReservation(owner,100000000n,0n,{marginBytes:0n}),/available system RAM/i);
+    state.meminfo='MemAvailable: 1000000 kB\n';
+    assert.equal(await growCapacityReservation(owner,100000000n,0n,{marginBytes:0n}),100000000n);
+    await releaseCapacity(owner);
+  } finally {
+    fs.statfsSync=oldStatfs;
+    fs.readFileSync=oldRead;
+  }
+});
+
+test('failed reservation record replacement removes its temporary file and keeps the old lease', async t => {
+  const dir=fixture(t),owner=await reserveCapacity(options(dir,1n));
+  const ledger=path.join(dir,'.tdarr-av1-reservations'),oldRename=fs.renameSync;
+  fs.renameSync=()=>{throw Error('simulated atomic rename failure');};
+  try {
+    await assert.rejects(heartbeatCapacityReservation(owner),/simulated atomic rename failure/);
+    await assert.rejects(growCapacityReservation(owner,2n,0n,{marginBytes:0n}),/simulated atomic rename failure/);
+  } finally {fs.renameSync=oldRename;}
+  const record=JSON.parse(fs.readFileSync(path.join(ledger,`${owner.id}.json`),'utf8'));
+  assert.equal(record.bytes,'1');
+  assert.deepEqual(fs.readdirSync(ledger).filter(name=>name.endsWith('.tmp')),[]);
+  await releaseCapacity(owner);
 });

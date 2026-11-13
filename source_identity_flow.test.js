@@ -4,12 +4,13 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const {runFlowCode} = require('./flow_test_runtime');
 const flow = JSON.parse(fs.readFileSync(path.join(__dirname, 'flow.json'), 'utf8'));
 const recheckCode = flow.flowPlugins.find(plugin => plugin.id === 'original_recheck').inputsDB.code;
 
 function loadPlugin(code) {
   const module = { exports: {} };
-  new Function('module', 'require', code)(module, require);
+  runFlowCode(['module', 'require'], code, [module, require]);
   return module.exports;
 }
 
