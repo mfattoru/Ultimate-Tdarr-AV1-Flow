@@ -256,7 +256,7 @@ one("  for (const [,dstIndex] of tracks.audio) decode.push('-map',`0:${dstIndex}
 one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(updateWorker,{percentage:96,fps:0,status:"Validation: strict output video decode"});
   await verifyCandidateDecodes({
     report:validationReport,canUseQsv,audioTracks:tracks.audio,sourceVideoIndex:sourceIndex,
-    candidatePacketTimestampsVerified:durationHints?.strictCandidateFrames===true && b.totalPackets>0 && b.missingDtsCount===0 && b.outputDtsNonIncreasingCount===0,
+    candidatePacketTimestampsVerified:durationHints?.strictCandidateFrames===true && a.totalPackets>0 && b.totalPackets>0 && b.missingDtsCount===0 && b.outputDtsNonIncreasingCount<=a.outputDtsNonIncreasingCount,
     isCorruption:type=>type==='video'?isKnownVideoCorruptionDiagnostic:isKnownAudioCorruptionDiagnostic,
     runVideo:async mode=>{
       const decodeStartedAt=Date.now();

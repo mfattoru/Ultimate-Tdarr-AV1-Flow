@@ -200,3 +200,45 @@ All four changes are approved in-place enhancements/bug fixes triggered from the
 3. **Refactor & Verify:**
    - Review shared helpers (SDR transfer maps, `isVerifiedHdr10CompatibleDv8`) to ensure zero duplication and clean readability.
    - Run `python3 scripts/build.py`, full `npm test` (and check `package.json` for coverage script if present), and `git diff --check`.
+
+---
+
+# V15 Timestamp-Isolated Video Decode Recovery & Null-Muxer Hardening Plan
+
+## Goal
+Fix false-negative `video_decode` (`decode_unverified`) holds when a verified candidate MKV preserves pre-existing Matroska packet DTS ties (`candidate.outputDtsNonIncreasingCount <= source.outputDtsNonIncreasingCount`) and FFmpeg's `-f null -` muxer emits non-monotonic DTS warnings (`OMe5KdY`), while hardening `handleNullMuxTimestamp` so unrelated stderr errors cannot be masked by `timestamp-isolated` recovery.
+
+## Change Categorization
+- **Bug Fix (Behavior Modification):** Not a new user-facing feature or breaking external API change, though it modifies existing internal `video_decode` acceptance behavior in-place for candidates whose source already contains tied packet DTS values (`outputDtsNonIncreasingCount > 0`).
+
+## Affected Files
+1. `src/validation.js`
+   - Extract a shared benign-QSV-init line predicate so `isBenignQsvInitializationDiagnostic` and a new `isNullMuxDtsOnlyDiagnostic(text)` helper reuse the same `libva info:` / `driver() returns 0` rules without duplicating logic.
+   - In `isNullMuxDtsOnlyDiagnostic(text)`, require at least one `[null @ 0x[0-9a-f]+] Application provided invalid, non monotonically increasing dts to muxer` line and verify every non-empty line matches either a null-muxer DTS warning, a benign QSV initialization line, or the `... diagnostics truncated ...` separator from `runTimelineProcess`.
+   - Update `handleNullMuxTimestamp` in `verifyCandidateDecodes` to gate on `isNullMuxDtsOnlyDiagnostic(detail)` (in addition to `!validationDecodeInfrastructure(error)` and `!isCorruption('video')(detail)`) before retrying with `runVideo('timestamp-isolated')`.
+2. `scripts/build.py`
+   - Update `candidatePacketTimestampsVerified` passed to `verifyCandidateDecodes` inside `verifyVideoTimeline` from:
+     `durationHints?.strictCandidateFrames===true && b.totalPackets>0 && b.missingDtsCount===0 && b.outputDtsNonIncreasingCount===0`
+     to:
+     `durationHints?.strictCandidateFrames===true && a.totalPackets>0 && b.totalPackets>0 && b.missingDtsCount===0 && b.outputDtsNonIncreasingCount<=a.outputDtsNonIncreasingCount`
+     (safe because `validateVideoPacketDts(a,b)` has already enforced `b.outputDtsNonIncreasingCount <= a.outputDtsNonIncreasingCount`, and `strictCandidateFrames === true` has verified strictly increasing finite PTS across every decoded frame).
+3. `tests/validation.test.js`
+   - Add unit tests for `verifyCandidateDecodes` covering:
+     - QSV `libva info:` + `[null @ 0x...]` DTS lines recovering cleanly via `timestamp-isolated` when `candidatePacketTimestampsVerified: true`.
+     - Mixed diagnostics containing a `[null @ 0x...]` DTS line alongside an unrecognized non-corruption error line NOT falling back to `timestamp-isolated`.
+4. `tests/integration.test.js`
+   - Add an integration test verifying a source and candidate with matched non-zero DTS ties (`outputDtsNonIncreasingCount > 0`, `strictCandidateFrames === true`) where QSV `-f null -` emits `libva info:` + `[null @ 0x...]` DTS warnings recovers via `timestamp-isolated` decode and approves the candidate.
+5. `flow.json`
+   - Regenerate deterministically via `python3 scripts/build.py`.
+
+## Step-by-Step Execution Path (TDD)
+1. **Red (Failing Tests First):**
+   - Add the new unit tests in `tests/validation.test.js` and integration test in `tests/integration.test.js`.
+   - Run `npm test` and confirm the new tests fail for the expected reasons.
+2. **Green (Minimal Implementation):**
+   - Implement `isNullMuxDtsOnlyDiagnostic` (sharing line predicates with `isBenignQsvInitializationDiagnostic`) and wire it into `handleNullMuxTimestamp` in `src/validation.js`.
+   - Update `candidatePacketTimestampsVerified` in `scripts/build.py`.
+   - Run `python3 scripts/build.py` and `npm test` to confirm all tests pass.
+3. **Refactor & Verify:**
+   - Ensure helper predicates are concise, non-duplicated, and handle truncated diagnostic banners cleanly.
+   - Run `python3 scripts/build.py`, `npm run test:coverage`, and `git diff --check`.

@@ -19,11 +19,22 @@ child.execFileSync('ffmpeg',['-v','error','-i',source,'-map','0:0','-map','0:1',
 child.execFileSync('ffmpeg',['-v','error','-i',multiAudioSource,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',multiAudioCandidate],{stdio:'ignore'});
 assert.ok(fs.statSync(multiAudioCandidate).size < fs.statSync(multiAudioSource).size);
 function argsFor(file,logs=[]) { const f={_id:file,container:'mkv',file_size:fs.statSync(file).size/1024/1024}; return {inputFileObj:{...f},originalLibraryFile:{...f},workDir:dir,variables:{user:{min_cache_free_mb:1}},ffmpegPath:'ffmpeg',librarySettings:{folder:dir},jobLog:m=>logs.push(String(m))}; }
-function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,mediaInfoPixelAspectRatio,hdr=false,colorOverride=null,mediaInfoOverride=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate}={}) {
+function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,matchedVideoDtsTies=false,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,mediaInfoPixelAspectRatio,hdr=false,colorOverride=null,mediaInfoOverride=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate}={}) {
   const calls=[],commands=[],logs=[],audioDecodeCommands=[]; let initialProbe=true,moverSimulated=false;
   const fakeFs=new Proxy(fs,{get(t,p){if(p==='unlinkSync' && denyIso)return name=>{if(String(name).endsWith('.iso'))throw Error('simulated ISO permission error');return t.unlinkSync(name)};if(p==='accessSync')return (name,...args)=>name==='/dev/dri/renderD129'?undefined:t.accessSync(name,...args);return t[p]}});
   const fakeChild={...child,
     spawn(cmd,args,opts){
+      if(matchedVideoDtsTies&&cmd==='ffprobe'&&args.includes('-show_packets')&&args.includes('packet=pts_time,dts_time,duration_time,pos')&&args.includes('-select_streams')&&args[args.indexOf('-select_streams')+1]==='0'){
+        const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
+        const process=new EventEmitter();process.stdout=new PassThrough();process.stderr=new PassThrough();process.kill=()=>{};
+        const lines=[];
+        for(let i=0;i<96;i++){
+          const pts=(i/24).toFixed(6),dts=((i===11?10:i)/24).toFixed(6);
+          lines.push(`pts_time=${pts}|dts_time=${dts}|duration_time=0.041667|pos=${1024+i*512}`);
+        }
+        queueMicrotask(()=>{process.stdout.end(lines.join('\n')+'\n');process.stderr.end();process.emit('close',0,null);});
+        return process;
+      }
       if(subtitleDtsRegression&&cmd==='ffprobe'&&args.includes('-show_packets')&&args.includes('-select_streams')&&args[args.indexOf('-select_streams')+1]==='s'&&args.includes(inputPath)){
         const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
         const process=new EventEmitter();process.stdout=new PassThrough();process.stderr=new PassThrough();process.kill=()=>{};
@@ -34,7 +45,10 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
       if(candidateVideoDecode&&(((qsvValidationFailure||qsvTimestampFailure)&&args.includes('-hwaccel'))||(cpuValidationFailure&&!args.includes('-hwaccel')))){
         const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
         const process=new EventEmitter();process.stdout=new PassThrough();process.stderr=new PassThrough();process.kill=()=>{};
-        queueMicrotask(()=>{process.stdout.end();process.stderr.end(args.includes('-hwaccel')?(qsvTimestampFailure?'[null @ 0x1234] Application provided invalid, non monotonically increasing dts to muxer in stream 0: 5 >= 5':'Device creation failed: unavailable Arc device'):'Cannot allocate memory');process.emit('close',1,null);});
+        const qsvStderr=qsvTimestampFailure
+          ?(qsvTimestampExitZero?'libva info: VA-API version 1.22.0\n[null @ 0x55cac3600580] Application provided invalid, non monotonically increasing dts to muxer in stream 0: 5 >= 5\n':'[null @ 0x1234] Application provided invalid, non monotonically increasing dts to muxer in stream 0: 5 >= 5')
+          :'Device creation failed: unavailable Arc device';
+        queueMicrotask(()=>{process.stdout.end();process.stderr.end(args.includes('-hwaccel')?qsvStderr:'Cannot allocate memory');process.emit('close',(qsvTimestampExitZero&&args.includes('-hwaccel'))?0:1,null);});
         return process;
       }
       if(cmd==='ffmpeg'&&args.includes('-frames:v')&&extraVideo){
@@ -219,6 +233,14 @@ test('a null-mux timestamp diagnostic retries with isolated timestamps after cle
  assert.equal(r.outputNumber,1);
  assert.equal(args.variables.user.validation_report.outcome,'recovered');
  assert.equal(args.variables.user.validation_report.recoveries[0].code,'timestamp_isolated_decode');
+ assert.ok(x.audioDecodeCommands.some(c=>c.input!==source&&c.args.includes('settb=expr=1/1000000,setpts=N')));
+});
+test('matched source/candidate DTS ties with verified frame PTS recover via timestamp-isolated decode',async()=>{
+ const x=load({qsvTimestampFailure:true,qsvTimestampExitZero:true,matchedVideoDtsTies:true}),args=argsFor(source,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,1);
+ assert.equal(args.variables.user.validation_report.outcome,'recovered');
+ assert.equal(args.variables.user.validation_report.recoveries[0].code,'timestamp_isolated_decode');
+ assert.ok(x.logs.some(line=>line.includes('Non-increasing DTS transitions: source 1, candidate 1; missing DTS: source 0, candidate 0.')));
  assert.ok(x.audioDecodeCommands.some(c=>c.input!==source&&c.args.includes('settb=expr=1/1000000,setpts=N')));
 });
 test('ASS subtitle fonts are mapped and missing candidate attachments prevent replacement',async()=>{

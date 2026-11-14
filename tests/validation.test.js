@@ -73,6 +73,28 @@ test('timestamp isolation is not used when a mux error also reports corrupt deco
  await verifyCandidateDecodes(o);
  assert.deepEqual(modes,['qsv','software']);
 });
+test('timestamp isolation recovers from QSV exit-0 libva init plus null-muxer DTS diagnostics and handles truncation',async()=>{
+ const modes=[],o=options({candidatePacketTimestampsVerified:true,runVideo:async mode=>{
+  modes.push(mode);
+  if(mode==='qsv')return `libva info: VA-API version 1.22.0\nlibva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so\n... diagnostics truncated ...\n${muxTimestampError}\nLast message repeated 2 times`;
+  return '';
+ }});
+ await verifyCandidateDecodes(o);completeValidation(o.report);
+ assert.deepEqual(modes,['qsv','timestamp-isolated']);
+ assert.equal(o.report.outcome,'recovered');
+ assert.equal(o.report.recoveries[0].code,'timestamp_isolated_decode');
+});
+test('timestamp isolation is not used when a mux error is mixed with an unrecognized diagnostic',async()=>{
+ const modes=[],o=options({candidatePacketTimestampsVerified:true,runVideo:async mode=>{
+  modes.push(mode);
+  if(mode==='qsv')throw Error(`libva info: VA-API version 1.22.0\n${muxTimestampError}\n[matroska @ 0x55f8a6427a40] Read error at pos. 1234`);
+  return '';
+ }});
+ await verifyCandidateDecodes(o);completeValidation(o.report);
+ assert.deepEqual(modes,['qsv','software']);
+ assert.equal(o.report.outcome,'recovered');
+ assert.equal(o.report.recoveries[0].code,'qsv_decode_fallback');
+});
 
 test('QSV device failure recovers through one complete software verification',async()=>{
   const modes=[],o=options({runVideo:async mode=>{modes.push(mode);if(mode==='qsv')throw failure('Device creation failed');return '';},checkSource:async()=>{throw Error('source must not be rescanned after successful recovery');}});

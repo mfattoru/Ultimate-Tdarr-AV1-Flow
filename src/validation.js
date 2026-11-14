@@ -68,11 +68,24 @@ const isKnownNonFatalTrueHdDiagnostic=text=>{
   }
   return sawWarning;
 };
+const isBenignQsvInitLine=line=>/^libva info:/i.test(line) || /^(?:d?river)\(\) returns 0$/i.test(line);
 const isBenignQsvInitializationDiagnostic=text=>{
   const lines=String(text || '').split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
-  return lines.length>0 && lines.every(line=>
-    /^libva info:/i.test(line) || /^(?:d?river)\(\) returns 0$/i.test(line)
-  );
+  return lines.length>0 && lines.every(isBenignQsvInitLine);
+};
+const isNullMuxDtsOnlyDiagnostic=text=>{
+  const lines=String(text || '').split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+  let sawMuxDts=false,previousWasMuxDts=false;
+  for(const line of lines){
+    if(/^\[null @ 0x[0-9a-f]+\] Application provided invalid, non monotonically increasing dts to muxer\b/i.test(line)){
+      sawMuxDts=true;previousWasMuxDts=true;
+    } else if(previousWasMuxDts && /^Last message repeated [1-9]\d* times?$/i.test(line)){
+      previousWasMuxDts=false;
+    } else if(isBenignQsvInitLine(line) || /^\.\.\. diagnostics truncated \.\.\.$/i.test(line)){
+      previousWasMuxDts=false;
+    } else return false;
+  }
+  return sawMuxDts;
 };
 const validateVideoPacketDts=(source,candidate)=>{
   const before=source?.outputDtsNonIncreasingCount,after=candidate?.outputDtsNonIncreasingCount;
@@ -144,7 +157,7 @@ const verifyCandidateDecodes=async({report,canUseQsv=true,candidatePacketTimesta
   await validationStage(report,'video_decode',async()=>{
     const handleNullMuxTimestamp=async error=>{
       const detail=String(error?.processFailure?.diagnostic || error?.message || error);
-      if(!/\[null @ 0x[0-9a-f]+\] Application provided invalid, non monotonically increasing dts to muxer/i.test(detail)
+      if(!isNullMuxDtsOnlyDiagnostic(detail)
           || validationDecodeInfrastructure(error) || isCorruption('video')(detail)) return false;
       if(!candidatePacketTimestampsVerified) await failDecode('video',[{sourceIndex:sourceVideoIndex,error}]);
       try { await clean(()=>runVideo('timestamp-isolated')); }
