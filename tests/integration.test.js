@@ -19,7 +19,7 @@ child.execFileSync('ffmpeg',['-v','error','-i',source,'-map','0:0','-map','0:1',
 child.execFileSync('ffmpeg',['-v','error','-i',multiAudioSource,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',multiAudioCandidate],{stdio:'ignore'});
 assert.ok(fs.statSync(multiAudioCandidate).size < fs.statSync(multiAudioSource).size);
 function argsFor(file,logs=[]) { const f={_id:file,container:'mkv',file_size:fs.statSync(file).size/1024/1024}; return {inputFileObj:{...f},originalLibraryFile:{...f},workDir:dir,variables:{user:{min_cache_free_mb:1}},ffmpegPath:'ffmpeg',librarySettings:{folder:dir},jobLog:m=>logs.push(String(m))}; }
-function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,mediaInfoPixelAspectRatio,hdr=false,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate}={}) {
+function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,mediaInfoPixelAspectRatio,hdr=false,colorOverride=null,mediaInfoOverride=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate}={}) {
   const calls=[],commands=[],logs=[],audioDecodeCommands=[]; let initialProbe=true,moverSimulated=false;
   const fakeFs=new Proxy(fs,{get(t,p){if(p==='unlinkSync' && denyIso)return name=>{if(String(name).endsWith('.iso'))throw Error('simulated ISO permission error');return t.unlinkSync(name)};if(p==='accessSync')return (name,...args)=>name==='/dev/dri/renderD129'?undefined:t.accessSync(name,...args);return t[p]}});
   const fakeChild={...child,
@@ -90,8 +90,8 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
       commands.push({cmd,args});
       queueMicrotask(()=>{
         if(missingPrlimit){process.emit('error',Error('spawn prlimit ENOENT'));process.emit('close',null,null);return;}
-        const av=args.slice(args.indexOf('--')+2),qi=av.indexOf('-global_quality'),q=Number(av[qi+1]);if(qi>=0)calls.push(q);
-        if(qi<0){
+        const av=args.slice(args.indexOf('--')+2),qi=av.indexOf('-global_quality'),crfIdx=av.includes('libsvtav1')?av.indexOf('-crf'):-1,q=qi>=0?Number(av[qi+1]):crfIdx>=0?Number(av[crfIdx+1]):NaN;if(qi>=0||crfIdx>=0)calls.push(q);
+        if(qi<0 && crfIdx<0){
           if(failRemux){process.stderr.write('Metadata: subtitle details\nPress [q] to stop, [?] for help\n');process.emit('close',1,null);return;}
           const output=av[av.length-1],remuxArgs=['-v','error','-i',inputPath,'-map','0','-c','copy','-metadata:g','encoded_by=ArcAV1_SeekHeal_V15'];
           if(remuxBloat)remuxArgs.push('-metadata:g',`comment=${'x'.repeat(2048)}`);
@@ -111,7 +111,7 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
     execFileSync(cmd,args,opts){
       if(cmd==='mediainfo') {
         if(!mediainfo) throw Error('no mediainfo');
-   const video={'@type':'Video',StreamOrder:'0',...(mediaInfoPixelAspectRatio===undefined?{}:{PixelAspectRatio:mediaInfoPixelAspectRatio}),...(hdr?{HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10'}:{transfer_characteristics:'BT.709'})};
+   const video={'@type':'Video',StreamOrder:'0',...(mediaInfoPixelAspectRatio===undefined?{}:{PixelAspectRatio:mediaInfoPixelAspectRatio}),...(mediaInfoOverride?mediaInfoOverride:hdr?{HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10'}:{transfer_characteristics:'BT.709'})};
         const tracks=[video];if(extraVideo)tracks.push({'@type':'Video',StreamOrder:'999',Format:'AV1'});
         return JSON.stringify({media:{track:tracks}});
       }
@@ -119,7 +119,7 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
       if(cmd==='ffprobe') {
         const probe=JSON.parse(result);
    if(missingSourceSar && args[args.length-1]===inputPath) for(const stream of probe.streams||[]) if(stream.codec_type==='video') delete stream.sample_aspect_ratio;
-        for(const stream of probe.streams||[])if(stream.codec_type==='video')Object.assign(stream,hdr?{color_transfer:'smpte2084',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv'}:{color_transfer:'bt709',color_primaries:'bt709',color_space:'bt709',color_range:'tv'});
+        for(const stream of probe.streams||[])if(stream.codec_type==='video')Object.assign(stream,colorOverride?colorOverride:hdr?{color_transfer:'smpte2084',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv'}:{color_transfer:'bt709',color_primaries:'bt709',color_space:'bt709',color_range:'tv'});
         if(initialProbe && args.includes('-show_format') && args[args.length-1]===inputPath) {
           initialProbe=false;
           const video=probe.streams.find(s=>s.codec_type==='video');video.width=uhd?3840:1920;video.height=uhd?2160:1080;
@@ -595,8 +595,44 @@ test('controlled failure notifies once and error-hook cleanup releases the reser
  const mockRequire=n=>n==='https'?https:require(n);
  const previousWebhook=process.env.TDARR_DISCORD_WEBHOOK;process.env.TDARR_DISCORD_WEBHOOK='https://discord.invalid/test';
  await loadPlugin('notify_failure',mockRequire)(args);
+ assert.equal(args.variables.flowFailed,true);
  await loadPlugin('cleanup_on_error')(args);
  await loadPlugin('notify_failure_on_error',mockRequire)(args);
  if(previousWebhook===undefined)delete process.env.TDARR_DISCORD_WEBHOOK;else process.env.TDARR_DISCORD_WEBHOOK=previousWebhook;
  assert.equal(sent.length,1);assert.match(sent[0].embeds[0].description,/simulated failure/i);
+});
+
+test('BT.2020 bt2020-10 wide-gamut SDR source encodes without forcing PQ transfer and passes color validation',async()=>{
+ const wcgInput=path.join(dir,'wcg-sdr-source.mkv'),wcgOutput=path.join(dir,'wcg-sdr-candidate.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24:duration=4','-f','lavfi','-i','sine=frequency=440:duration=4','-map','0:v:0','-map','1:a:0','-c:v','libsvtav1','-preset','12','-crf','10','-svtav1-params','lp=1:log-level=0','-c:a','aac','-color_primaries','bt2020','-color_trc','bt2020-10','-colorspace','bt2020nc','-color_range','tv','-bsf:v','av1_metadata=color_primaries=9:transfer_characteristics=14:matrix_coefficients=9','-y',wcgInput],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',wcgInput,'-map','0','-c:v','libsvtav1','-preset','12','-crf','40','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt2020','-color_trc','bt2020-10','-colorspace','bt2020nc','-color_range','tv','-bsf:v','av1_metadata=color_primaries=9:transfer_characteristics=14:matrix_coefficients=9','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',wcgOutput],{stdio:'ignore'});
+ const x=load({
+  inputPath:wcgInput,
+  smallerOutput:wcgOutput,
+  colorOverride:{color_transfer:'bt2020-10',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv'},
+  mediaInfoOverride:{colour_range:'Limited',colour_primaries:'BT.2020',transfer_characteristics:'BT.2020 (10-bit)',matrix_coefficients:'BT.2020 non-constant'}
+ });
+ const args=argsFor(wcgInput,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,1);
+ const encode=x.commands.find(c=>c.args.includes('av1_qsv'));
+ assert.ok(encode,'WCG-SDR source should encode with av1_qsv');
+ const ffArgs=encode.args.slice(encode.args.indexOf('--')+2);
+ assert.equal(ffArgs[ffArgs.indexOf('-color_trc')+1],'bt2020-10');
+ assert.equal(ffArgs[ffArgs.indexOf('-color_primaries')+1],'bt2020');
+ assert.equal(ffArgs[ffArgs.indexOf('-colorspace')+1],'bt2020nc');
+ assert.equal(ffArgs.includes('smpte2084'),false,'WCG-SDR encode must never inject PQ transfer');
+});
+
+test('HDR source with QSV green-y clamp mastering routes proactively to SVT-AV1 CRF 28 without an initial QSV encode',async()=>{
+ const clampInput=path.join(dir,'hdr-clamp-source.mkv'),clampOutput=path.join(dir,'hdr-clamp-candidate.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24:duration=2','-f','lavfi','-i','sine=frequency=440:duration=2','-map','0:v:0','-map','1:a:0','-c:v','libx265','-preset','ultrafast','-crf','28','-x265-params','log-level=error:pools=1:master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1):max-cll=992,518','-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-c:a','aac','-y',clampInput],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',clampInput,'-map','0','-c:v','libsvtav1','-preset','12','-crf','40','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-metadata:g','encoded_by=ArcAV1_SVTAV1_HDRFallback_V15','-y',clampOutput],{stdio:'ignore'});
+ const x=load({hdr:true,inputPath:clampInput,smallerOutput:clampOutput});
+ const args=argsFor(clampInput,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,1);
+ assert.equal(x.commands.some(c=>c.args.includes('av1_qsv')),false,'proactive clamp route must not run av1_qsv first');
+ const svt=x.commands.find(c=>c.args.includes('libsvtav1'));
+ assert.ok(svt,'expected proactive libsvtav1 encode');
+ assert.deepEqual(x.calls,[28]);
+ assert.ok(x.logs.some(line=>/proactive.*clamp|green-y/i.test(line)));
 });

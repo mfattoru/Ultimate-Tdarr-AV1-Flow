@@ -133,6 +133,15 @@ const humanizeFailure = (reason,validationReport,quarantineEntry) => {
       details
     };
   }
+  if (/\[video guard\]/i.test(text)) {
+    return {
+      category: 'video_color_signaling', severity: 'warning',
+      summary: 'The source video color, transfer, aspect, pixel-format, or scan-order check could not be safely verified.',
+      fileState: retained ? 'The original was kept; encoding did not start.' : 'Check the Tdarr job record to confirm the file state.',
+      action: 'Review the color/stream properties and diagnostic detail below. This safety hold does not establish source corruption and does not trigger an Arr search.',
+      details
+    };
+  }
   if (/\[cache reservation\]|insufficient available (?:system ram|capacity)|file-size limit/i.test(text)) {
     return {
       category: 'scratch_capacity', severity: 'warning',
@@ -178,7 +187,10 @@ module.exports = async (args) => {
     ? user.failure_reason.trim() : 'The flow failed; inspect the Tdarr job log for details.';
   const isoRemoved = /disc image removed/i.test(reason);
   const result = {outputFileObj: args.inputFileObj, outputNumber: isoRemoved ? 2 : 1, variables: args.variables};
-  if (user.failure_notified === true) return result;
+  if (user.failure_notified === true) {
+    args.variables.flowFailed = true;
+    return result;
+  }
   const log = message => { try { if (typeof args.jobLog === 'function') args.jobLog(message); } catch (_) {} };
   try {
     const {sendDiscordWebhook: sendWebhook} = typeof sendDiscordWebhook === 'function'
@@ -246,7 +258,10 @@ module.exports = async (args) => {
       timeoutMs: 10000,
       log
     });
-    if (delivery.ok) user.failure_notified = true;
+    if (delivery.ok) {
+      user.failure_notified = true;
+      args.variables.flowFailed = true;
+    }
   } catch (_) {
     // Avoid logging the webhook or network exception, which can contain credentials.
     log('[Failure notification] Delivery failed (request or URL error); check TDARR_DISCORD_WEBHOOK and node connectivity.');

@@ -134,3 +134,69 @@ Work in a separate export; never change the live Tdarr workflow or library. Pres
 3. **Refactor & Verify**:
    - Run `make check` (`python3 scripts/build.py`, `npm run test:coverage`, and `git diff --check`) and confirm all tests and >=90% coverage thresholds pass.
 
+---
+
+# V15 WCG-SDR, Dolby Vision 8.6, Proactive SVT-AV1 & Failure Alert Polish Plan
+
+## Change Categorization
+All four changes are approved in-place enhancements/bug fixes triggered from the production log diagnosis of [`GU38OXc-log.txt`](file:///Users/mfattoru/Downloads/GU38OXc-log.txt) and [`w2H4THa-log.txt`](file:///Users/mfattoru/Downloads/w2H4THa-log.txt):
+1. **WCG-SDR (`BT.2020` + `bt2020-10` / `bt2020-12` / `bt709` SDR) Support — Feature Addition:**
+   - Admits genuine wide-color-gamut SDR sources (such as BT.2020 10-bit anime/mastered SDR without PQ/HLG/dynamic-HDR/mastering/CLL signals) instead of misclassifying/holding them as unrecognized HDR or failing MediaInfo `"BT.2020 (10-bit)"` normalization.
+2. **Dolby Vision Profile 8 `dv_bl_signal_compatibility_id === 6` ("Blu-ray / HDR10") Support — Feature Addition:**
+   - Admits Dolby Vision Profile 8 (`BL+RPU`, `el_present_flag=0`) with `dv_bl_signal_compatibility_id === 6` alongside `1` only when base-layer HEVC PQ/BT.2020/`tv` metadata and MediaInfo `HDR_Format_Compatibility` containing `HDR10` are independently verified; all unverified `id` values (`0`, `2`, `3`, `4`) and non-HDR10 `id=6` streams remain rejected.
+3. **Proactive `libsvtav1` Routing on QSV Green-y Clamp Risk — In-Place Behavioral Change:**
+   - Replaces the reactive-only workflow (full `av1_qsv` encode -> strict rejection -> `libsvtav1` retry) with proactive direct routing to `libsvtav1` (`CRF 28`) when `isQsvHdrMasteringClampRisk(hdrSource)` is already known true in preflight, while retaining `validateQsvWithSvtHdrClampFallback` as defense-in-depth (and for any quarantined QSV candidate). Requires updating existing reactive-only assertions in `tests/flow.test.js` and `tests/policy.test.js`.
+4. **Failure Notifier & Controlled-Failure Error-Hook Polish — In-Place Hardening:**
+   - Adds a dedicated `video_color_signaling` (`[Video guard]`) warning classification in `src/failure_notify.js` so color/transfer/guard holds do not fall through to generic `processing_failure` (`❌ error`).
+   - Marks `args.variables.flowFailed = true` in `src/failure_notify.js` once notification delivery has succeeded (or was already recorded), preventing Tdarr's `fail_flow` (`DeNiX Enhanced Fail Flow`) from needlessly invoking `on_flow_error` -> `cleanup_on_error` -> `notify_failure_on_error` after controlled failure cleanup and alerting have already succeeded.
+
+## Files Affected
+- [`src/policy.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/policy.js):
+  - **WCG-SDR:**
+    - Extract/share a canonical SDR transfer normalizer covering `'bt709'`, `'smpte170m'`, `'bt470bg'`, `'bt470m'`, `'gamma22'`, `'gamma28'`, `'smpte240m'`, `'iec6196621'`, plus **`bt2020-10`** (`'bt202010'`, `'bt202010bit'`) and **`bt2020-12`** (`'bt202012'`, `'bt202012bit'`).
+    - Update `classifyVideo(video, info)` so `bt2020` primaries/color space alone does NOT set the HDR hint when transfer is an explicit SDR transfer (including `bt2020-10` / `bt2020-12`) and there are no PQ (`smpte2084`), HLG (`arib-std-b67`), ST 2086/2094/2100, `HDR_Format`, mastering display, content light, or dynamic HDR signals. Keep `bt2020` with unknown/missing transfer or any HDR signal as `'unsupported'`.
+    - Update `validateMediaInfoHdrColors(video, info)` transfer/matrix/primaries mappings to include `bt202010` / `bt202010bit` -> `'bt2020-10'`, `bt202012` / `bt202012bit` -> `'bt2020-12'`, and standard SDR aliases (`smpte170m`, `bt601`, `bt470bg`, `bt470m`, `gamma22`, `gamma28`, `iec6196621`, `srgb`, `smpte240m`).
+    - Update `validateSdrFrameSignaling(basic, scan, sourceVideo)` to continue rejecting frame-level HDR transfers (`smpte2084`, `arib-std-b67`), and allow observed `bt2020` primaries/matrix for verified SDR only when the stream is not a `bt709`/narrow-gamut stream unexpectedly reporting `bt2020` (i.e. when source metadata itself carries `bt2020` or WCG-SDR transfer).
+    - Update `effectiveSdrSource(video, info, scan)` fallback map to recognize `bt202010` / `bt202010bit` (`'bt2020-10'`) and `bt202012` / `bt202012bit` (`'bt2020-12'`).
+  - **DV8 `id=6`:**
+    - Add a single shared helper `isVerifiedHdr10CompatibleDv8(dovi, info)` requiring `dv_profile === 8`, `bl_present_flag === 1`, `el_present_flag === 0`, `rpu_present_flag === 1`, and either `dv_bl_signal_compatibility_id === 1` OR (`dv_bl_signal_compatibility_id === 6` AND `/\bhdr10\b/i.test(String(info?.HDR_Format_Compatibility || ''))`).
+    - Use `isVerifiedHdr10CompatibleDv8` uniformly across `preflightHybridHdr`, `preflightDolbyHdrRoute`, and `determineHdrRoute`.
+- [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py) (patches over [`src/base/flow-template-v3.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/base/flow-template-v3.json)):
+  - **WCG-SDR:**
+    - Patch `const isHdr = isHlg || isPq || isBt2020 || isDovi;` to `const isHdr = isHlg || isPq || isDovi;` so WCG-SDR (`bt2020` without PQ/HLG/DoVi) is not classified as HDR in template tier sizing or `-color_trc smpte2084` injection.
+    - Gate `validateMediaInfoHdrColors(mainVideo, preflightInfoVideo)` so WCG-SDR (`bt2020` color space/primaries/transfer) is also validated against MediaInfo alongside HDR streams.
+    - When `!isHdr && hdrClass === "sdr"`, emit explicit `-color_primaries`, `-color_trc`, `-colorspace`, and `-color_range` flags from `sdrSource` whenever those values are explicitly known (non-unknown/unspecified), preserving `bt2020` / `bt2020-10` / `bt2020nc` / `tv` across QSV/FFmpeg encoding and `validateSdrColor`.
+    - Pass `mainVideo` as 3rd arg to `validateSdrFrameSignaling(preflightBasic, frameScan, mainVideo)` (and similarly in `src/policy.js` inside `validateOutput`).
+  - **Proactive SVT-AV1:**
+    - Update `softwareHdrFallback` initialization to `quarantinedCandidate?.kind === "svt_av1_encode" || (!quarantinedCandidate && qsvHdrClampRetryEligible)`.
+    - Differentiate logging/mode when `softwareHdrFallback` comes from quarantine revalidation (`"Software SVT-AV1 HDR candidate revalidation"`) vs proactive routing (`"Software SVT-AV1 HDR encode (proactive QSV green-y clamp avoidance)"`).
+- [`src/failure_notify.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/failure_notify.js):
+  - Add a dedicated `video_color_signaling` (`severity: 'warning'`) branch in `humanizeFailure` for `[Video guard]` color, transfer, aspect ratio, pixel format, and interlaced hold messages so they produce accurate warning embeds without suggesting source corruption or generic error status.
+  - Set `args.variables.flowFailed = true` when `user.failure_notified === true` (both after successful webhook delivery and on the already-notified early return), suppressing redundant `on_flow_error` execution after controlled failures while keeping `on_flow_error` retries active if delivery failed.
+- **Test Files:**
+  - [`tests/policy.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/policy.test.js):
+    - Add unit tests for WCG-SDR (`BT.2020` + `bt2020-10`/`bt2020-12` + `BT.2020 (10-bit)` MediaInfo) acceptance and preservation via `validateSdrColor`, plus rejection of `BT.2020` with unknown transfer, contradicting MediaInfo PQ/BT.709, or PQ/HLG/HDR10+ signals.
+    - Add unit tests for DV8 `dv_bl_signal_compatibility_id === 6` acceptance with `HDR10` compatibility (and DV8.6 + HDR10+ hybrid) and rejection when `HDR10` compatibility is absent.
+    - Update clamp-routing unit coverage if needed while preserving reactive `validateQsvWithSvtHdrClampFallback` tests.
+  - [`tests/flow.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/flow.test.js):
+    - Update `known Intel QSV HDR mastering clamp...` test to verify proactive SVT-AV1 routing on `qsvHdrClampRetryEligible`, WCG-SDR non-HDR `-color_trc` emission (never `smpte2084`), and reactive fallback retention.
+  - [`tests/failure_notify.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/failure_notify.test.js):
+    - Add tests for `[Video guard]` color/MediaInfo hold categorization (`warning` embed, accurate file state/action) and `args.variables.flowFailed === true` on successful delivery vs unset on failed/missing delivery.
+  - [`tests/integration.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/integration.test.js):
+    - Add an end-to-end integration test with a real synthetic `bt2020` + `bt2020-10` WCG-SDR fixture and verify full pass-through encoding, validation, and output color tags (`libsvtav1` mock/transcode path), plus verify controlled failure sets `variables.flowFailed === true` after `notify_failure`.
+- [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json):
+  - Rebuild deterministically via `python3 scripts/build.py`.
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase:**
+   - Add failing tests across `tests/policy.test.js`, `tests/failure_notify.test.js`, `tests/flow.test.js`, and `tests/integration.test.js` covering WCG-SDR (`bt2020-10`, MediaInfo `"BT.2020 (10-bit)"`, negative guards), DV8 `id=6` (with and without `HDR10` compatibility), proactive SVT-AV1 green-y routing, `[Video guard]` color humanization, and `flowFailed = true` propagation.
+   - Run `npm test` and verify the new assertions fail as expected.
+2. **Green Phase:**
+   - Implement WCG-SDR and DV8 `id=6` updates in `src/policy.js`.
+   - Implement `humanizeFailure` video color/guard classification and `flowFailed = true` propagation in `src/failure_notify.js`.
+   - Update `scripts/build.py` for WCG-SDR `isHdr`/color flags/MediaInfo validation and proactive `libsvtav1` routing on `qsvHdrClampRetryEligible`.
+   - Regenerate `flow.json` via `python3 scripts/build.py`.
+   - Run `npm test` to confirm all tests turn green.
+3. **Refactor & Verify:**
+   - Review shared helpers (SDR transfer maps, `isVerifiedHdr10CompatibleDv8`) to ensure zero duplication and clean readability.
+   - Run `python3 scripts/build.py`, full `npm test` (and check `package.json` for coverage script if present), and `git diff --check`.

@@ -1005,6 +1005,7 @@ test('extractDolbyProfile5HdrMetadata returns level6 and level9 fields wired for
   writeStub('ffmpeg','printf "FAKE_HEVC_ANNEXB"');
   writeStub('dovi_tool',`cmd="$1"; shift
 if [ "$cmd" = "extract-rpu" ]; then
+ cat >/dev/null
  out=""; while [ "$#" -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done
  printf "FAKE_RPU" > "$out"
 elif [ "$cmd" = "export" ]; then
@@ -1038,4 +1039,44 @@ fi`);
   process.env.PATH=oldPath;
   nodeFs.rmSync(binDir,{recursive:true,force:true});
  }
+});
+
+test('classifies verified BT.2020 wide-gamut SDR sources without HDR cues and rejects unknown or conflicting BT.2020 transfers',()=>{
+ const wcgVideo={codec_name:'hevc',pix_fmt:'yuv420p10le',color_range:'tv',color_space:'bt2020nc',color_transfer:'bt2020-10',color_primaries:'bt2020'};
+ const wcgInfo={colour_range:'Limited',colour_primaries:'BT.2020',transfer_characteristics:'BT.2020 (10-bit)',matrix_coefficients:'BT.2020 non-constant'};
+ const wcgScan={...pqScan,staticInfo:{mastering:null,light:null,conflict:false},colorInfo:{observed:{color_range:'tv',color_space:'bt2020nc',color_transfer:'bt2020-10',color_primaries:'bt2020'},conflict:false}};
+ assert.equal(p.testClassify(wcgVideo,wcgInfo),'sdr');
+ assert.doesNotThrow(()=>p.testMediaInfoColors(wcgVideo,wcgInfo));
+ assert.doesNotThrow(()=>p.testSdrTransfer(wcgVideo,wcgInfo,wcgScan));
+ assert.doesNotThrow(()=>p.testSdrFrameSignaling('sdr',wcgScan,wcgVideo));
+ const wcgSource=p.testSdrSource(wcgVideo,wcgInfo,wcgScan);
+ assert.equal(wcgSource.color_transfer,'bt2020-10');
+ assert.doesNotThrow(()=>p.testColor(wcgSource,{...wcgVideo}));
+ assert.throws(()=>p.testColor(wcgSource,{...wcgVideo,color_transfer:'smpte2084'}),/color/i);
+
+ const wcg12={...wcgVideo,pix_fmt:'yuv420p12le',color_transfer:'bt2020-12'};
+ const wcg12Info={...wcgInfo,transfer_characteristics:'BT.2020 (12-bit)'};
+ assert.equal(p.testClassify(wcg12,wcg12Info),'sdr');
+ assert.doesNotThrow(()=>p.testMediaInfoColors(wcg12,wcg12Info));
+
+ assert.equal(p.testClassify({...wcgVideo,color_transfer:'unknown'},{}),'unsupported');
+ assert.equal(p.testClassify(wcgVideo,{...wcgInfo,HDR_Format:'SMPTE ST 2086'}),'unsupported');
+ assert.throws(()=>p.testMediaInfoColors(wcgVideo,{...wcgInfo,transfer_characteristics:'PQ'}),/color/i);
+ const bt709WithBt2020Frames={...pqScan,colorInfo:{observed:{color_transfer:'bt709',color_primaries:'bt2020',color_space:'bt2020nc'},conflict:false}};
+ assert.throws(()=>p.testSdrFrameSignaling('sdr',bt709WithBt2020Frames,{color_transfer:'bt709',color_primaries:'bt709',color_space:'bt709'}),/conflicts/i);
+});
+
+test('Dolby Vision Profile 8.6 with verified HDR10 compatibility routes cleanly while non-HDR10 8.6 stays rejected',()=>{
+ const dv86={...dvConfig,dv_profile:8,dv_bl_signal_compatibility_id:6,bl_present_flag:1,el_present_flag:0,rpu_present_flag:1};
+ const dv86Info={HDR_Format:'Dolby Vision / SMPTE ST 2086',HDR_Format_Compatibility:'Blu-ray / HDR10',transfer_characteristics:'PQ',colour_primaries:'BT.2020',matrix_coefficients:'BT.2020 non-constant',colour_range:'Limited'};
+ assert.equal(p.testDolbyPreflight({...pqVideo,side_data_list:[dv86]},dv86Info,'not_hybrid'),'dovi81_hdr10');
+ assert.equal(p.testHdrRoute({...pqVideo,side_data_list:[dv86]},dv86Info,{...pqScan,dovi:100}),'dovi81_hdr10');
+ const dv86HybridInfo={...dv86Info,HDR_Format:'Dolby Vision / HDR10+'};
+ assert.equal(p.testHybridPreflight({...pqVideo,side_data_list:[dv86]},dv86HybridInfo),'dovi81_hdr10plus_candidate');
+ assert.equal(p.testDolbyPreflight({...pqVideo,side_data_list:[dv86]},dv86HybridInfo,'dovi81_hdr10plus_candidate'),'dovi81_hdr10plus_hdr10');
+ assert.equal(p.testHdrRoute({...pqVideo,side_data_list:[dv86]},dv86HybridInfo,{...pqScan,dovi:100,hdr10plus:10}),'dovi81_hdr10plus_hdr10');
+
+ assert.throws(()=>p.testDolbyPreflight({...pqVideo,side_data_list:[dv86]},{...dv86Info,HDR_Format_Compatibility:'Blu-ray'},'not_hybrid'),/Dolby/i);
+ assert.throws(()=>p.testHdrRoute({...pqVideo,side_data_list:[dv86]},{...dv86Info,HDR_Format_Compatibility:'Blu-ray'},{...pqScan,dovi:100}),/Dolby/i);
+ assert.throws(()=>p.testHdrRoute({...pqVideo,side_data_list:[{...dv86,dv_bl_signal_compatibility_id:3}]},dv86Info,{...pqScan,dovi:100}),/Dolby/i);
 });

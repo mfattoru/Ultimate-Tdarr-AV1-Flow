@@ -23,8 +23,34 @@ const isCompletedEncode = (codec, tags) => {
 const isNonDolbyDynamic = value => /2094|hdr10\+|hdr10[ _-]*plus|hdr.?vivid|cuva|dynamic hdr|hdr dynamic|sl.?hdr/i.test(String(value || ''));
 const isDynamicHdrSignal = value => /dolby|dovi/i.test(String(value || '')) || isNonDolbyDynamic(value);
 const mustRetainOriginalAtQualityFloor = _hdrClass => false;
+const SDR_TRANSFER_MAP = {
+  bt709: 'bt709',
+  smpte170m: 'smpte170m',
+  bt470bg: 'bt470bg',
+  bt470m: 'bt470m',
+  gamma22: 'gamma22',
+  gamma28: 'gamma28',
+  smpte240m: 'smpte240m',
+  iec6196621: 'iec61966-2-1',
+  srgb: 'iec61966-2-1',
+  bt202010: 'bt2020-10',
+  bt202010bit: 'bt2020-10',
+  bt202012: 'bt2020-12',
+  bt202012bit: 'bt2020-12'
+};
+const normalizeColorToken = value => String(value || '').toLowerCase().replace(/[\s.()_-]/g, '');
+const normalizeSdrTransfer = value => SDR_TRANSFER_MAP[normalizeColorToken(value)] || null;
+const isBt2020Color = v => /bt2020/i.test(String(v?.color_primaries || '')) || /bt2020/i.test(String(v?.color_space || ''));
+const isVerifiedHdr10CompatibleDv8 = (dovi, info, requireCompatibilityTag=false) => {
+  if (!dovi || Number(dovi.dv_profile) !== 8 || Number(dovi.bl_present_flag) !== 1
+      || Number(dovi.el_present_flag) !== 0 || Number(dovi.rpu_present_flag) !== 1) return false;
+  const compatId = Number(dovi.dv_bl_signal_compatibility_id);
+  const hasHdr10Compat = /\bhdr10\b(?!\s*\+)/i.test(String(info?.HDR_Format_Compatibility || ''));
+  if (compatId === 1) return !requireCompatibilityTag || hasHdr10Compat;
+  return compatId === 6 && hasHdr10Compat;
+};
 const normalizeSdrMatrix = value => {
-  const normalized=String(value || '').toLowerCase().replace(/[\s._-]/g,'');
+  const normalized=normalizeColorToken(value);
   const aliases={bt709:'bt709',bt601:'smpte170m',smpte170m:'smpte170m',bt470bg:'bt470bg'};
   return aliases[normalized] || null;
 };
@@ -33,13 +59,14 @@ const classifyVideo = (video, info) => {
   const values = fields.map(([,v]) => String(v)).join(' ').toLowerCase();
   const side = JSON.stringify(video.side_data_list || []).toLowerCase();
   if (isDynamicHdrSignal(values + ' ' + side) || /hdr10 plus/.test(values + ' ' + side)) return 'unsupported';
-  const hdrHint = /hdr|2086|smpte ?2084|\bpq\b|2020|hlg|2100/.test(values)
+  const hdrFieldSignaled = Object.entries(info || {}).some(([k,v]) => /^(?:hdr_format(?:_.*)?|dolby_vision(?:_.*)?|mastering.*)/i.test(k) && !isUnknownColorValue(v));
+  const explicitHdrHint = hdrFieldSignaled
+    || /2086|smpte ?2084|\bpq\b|hlg|2100/.test(values)
     || /smpte2084|arib-std-b67/.test(String(video.color_transfer || ''))
-    || /bt2020/.test(String(video.color_space || '') + String(video.color_primaries || ''))
     || /mastering display|content light/.test(side);
-  if (!hdrHint) {
-    const transfer = String(video.color_transfer || info?.transfer_characteristics || '').toLowerCase().replace(/[ ._-]/g, '');
-    if (['bt709','smpte170m','bt470bg','gamma22','gamma28','smpte240m','iec6196621'].includes(transfer)) return 'sdr';
+  if (!explicitHdrHint) {
+    const transfer = normalizeSdrTransfer(video.color_transfer || info?.transfer_characteristics || '');
+    if (transfer) return 'sdr';
     // Some SDR files carry a recognized matrix but omit transfer and primaries.
     // Accept only common SDR matrices with no HDR/DV hint; keep missing tags missing.
     const streamMatrix=normalizeSdrMatrix(video.color_space);
@@ -142,8 +169,8 @@ const mediaInfoHdrText = info => Object.entries(info || {})
   .map(([key,value]) => `${key}=${String(value || '')}`).join(' ');
 const validateMediaInfoHdrColors = (video, info) => {
   const mappings = [
-    [['transfer_characteristics'], 'color_transfer', {pq:'smpte2084', smptest2084:'smpte2084', smpte2084:'smpte2084', hlg:'arib-std-b67', aribstdb67:'arib-std-b67', bt709:'bt709'}],
-    [['colour_primaries','color_primaries'], 'color_primaries', {bt2020:'bt2020', bt709:'bt709'}],
+    [['transfer_characteristics'], 'color_transfer', {pq:'smpte2084', smptest2084:'smpte2084', smpte2084:'smpte2084', hlg:'arib-std-b67', aribstdb67:'arib-std-b67', ...SDR_TRANSFER_MAP}],
+    [['colour_primaries','color_primaries'], 'color_primaries', {bt2020:'bt2020', bt709:'bt709', bt601:'smpte170m', smpte170m:'smpte170m', bt470bg:'bt470bg'}],
     [['matrix_coefficients'], 'color_space', {bt2020nonconstant:'bt2020nc', bt2020nonconstantluminance:'bt2020nc', bt2020nc:'bt2020nc', bt2020constant:'bt2020c', bt2020constantluminance:'bt2020c', bt2020c:'bt2020c', bt709:'bt709', bt601:'smpte170m', smpte170m:'smpte170m', bt470bg:'bt470bg'}],
     [['colour_range','color_range'], 'color_range', {limited:'tv', full:'pc', tv:'tv', pc:'pc'}]
   ];
@@ -151,7 +178,7 @@ const validateMediaInfoHdrColors = (video, info) => {
     const value=info?.[key];
     if (isUnknownColorValue(value)) continue;
     for (const part of String(value).split(/\s*\/\s*/)) {
-      const normalized=part.toLowerCase().replace(/[\s._-]/g,'');
+      const normalized=normalizeColorToken(part);
       if (!map[normalized] || map[normalized] !== video[field]) throw Error(`MediaInfo color ${key} conflicts with stream or is unrecognized`);
     }
   }
@@ -181,9 +208,7 @@ const preflightHybridHdr = (video, info, frameHdr10Plus=false) => {
     }
     return 'dovi7_hdr10plus_candidate';
   }
-  if (Number(d.dv_profile)!==8 || Number(d.bl_present_flag)!==1
-      || Number(d.el_present_flag)!==0 || Number(d.rpu_present_flag)!==1
-      || Number(d.dv_bl_signal_compatibility_id)!==1 || !compatible) {
+  if (!isVerifiedHdr10CompatibleDv8(d, info, true)) {
     throw Error('Hybrid Dolby Vision and HDR10+ combination is not verified for automated conversion');
   }
   return 'dovi81_hdr10plus_candidate';
@@ -222,9 +247,7 @@ const preflightDolbyHdrRoute = (video, info, hybrid='not_hybrid') => {
   if (hybrid==='dovi7_hdr10plus_candidate' && Number(d.dv_profile)===7
       && Number(d.bl_present_flag)===1 && Number(d.el_present_flag)===1
       && Number(d.rpu_present_flag)===1 && Number(d.dv_bl_signal_compatibility_id)===6) return 'dovi7_hdr10plus_hdr10';
-  if (hybrid==='dovi81_hdr10plus_candidate' && Number(d.dv_profile)===8
-      && Number(d.bl_present_flag)===1 && Number(d.el_present_flag)===0
-      && Number(d.rpu_present_flag)===1 && Number(d.dv_bl_signal_compatibility_id)===1) return 'dovi81_hdr10plus_hdr10';
+  if (hybrid==='dovi81_hdr10plus_candidate' && isVerifiedHdr10CompatibleDv8(d, info, true)) return 'dovi81_hdr10plus_hdr10';
   if (Number(d.dv_profile)===7) {
     if (Number(d.bl_present_flag)!==1 || Number(d.el_present_flag)!==1
         || Number(d.rpu_present_flag)!==1 || Number(d.dv_bl_signal_compatibility_id)!==6
@@ -233,12 +256,8 @@ const preflightDolbyHdrRoute = (video, info, hybrid='not_hybrid') => {
     }
     return 'dovi7_hdr10';
   }
-  if (Number(d.dv_profile)!==8 || Number(d.bl_present_flag)!==1
-      || Number(d.el_present_flag)!==0 || Number(d.rpu_present_flag)!==1) {
-    throw Error('Dolby Vision profile or base layer is not verified for conversion');
-  }
-  if (Number(d.dv_bl_signal_compatibility_id)===4) throw Error('Dolby Vision Profile 8.4 HLG-base route is unverified');
-  if (Number(d.dv_bl_signal_compatibility_id)!==1) throw Error('Dolby Vision profile or base layer is not verified for HDR10 conversion');
+  if (Number(d.dv_profile)===8 && Number(d.dv_bl_signal_compatibility_id)===4) throw Error('Dolby Vision Profile 8.4 HLG-base route is unverified');
+  if (!isVerifiedHdr10CompatibleDv8(d, info)) throw Error('Dolby Vision profile or base layer is not verified for HDR10 conversion');
   return 'dovi81_hdr10';
 };
 const determineHdrRoute = (video, info, scan) => {
@@ -278,12 +297,11 @@ const determineHdrRoute = (video, info, scan) => {
       if (video.color_transfer!=='smpte2084' || video.color_primaries!=='bt2020' || video.color_space!=='bt2020nc') throw Error('Dolby Vision Profile 7 HDR10 base-layer color metadata conflicts');
       return 'dovi7_hdr10';
     }
-    if (Number(d.dv_profile)!==8 || Number(d.bl_present_flag)!==1 || Number(d.rpu_present_flag)!==1 || Number(d.el_present_flag)!==0 || video.codec_name!=='hevc') throw Error('Dolby Vision profile or base layer is not verified for conversion');
-    if (Number(d.dv_bl_signal_compatibility_id)===4) {
+    if (Number(d.dv_profile)===8 && Number(d.dv_bl_signal_compatibility_id)===4 && video.codec_name==='hevc') {
       if (video.color_transfer!=='arib-std-b67' || video.color_primaries!=='bt2020' || video.color_space!=='bt2020nc') throw Error('Dolby Vision HLG base-layer color metadata conflicts');
       throw Error('Dolby Vision Profile 8.4 HLG-base route is unverified pending a genuine source sample');
     }
-    if (Number(d.dv_bl_signal_compatibility_id)!==1) throw Error('Dolby Vision profile or base layer is not verified for HDR10 conversion');
+    if (!isVerifiedHdr10CompatibleDv8(d, info) || video.codec_name!=='hevc') throw Error('Dolby Vision profile or base layer is not verified for HDR10 conversion');
     if (video.color_transfer!=='smpte2084' || video.color_primaries!=='bt2020' || video.color_space!=='bt2020nc') throw Error('Dolby Vision HDR10 base-layer color metadata conflicts');
     return 'dovi81_hdr10';
   }
@@ -406,7 +424,7 @@ const inspectVideoFrames = async (ffprobe, file, index, options={}) => {
     if (scan.otherDynamic) throw Error('Unsupported dynamic HDR metadata detected in decoded frames');
     if (options.rejectDolbyVision && scan.dovi) throw Error('Dolby Vision metadata is not allowed in this output');
     if (options.rejectHdr10Plus && scan.hdr10plus) throw Error('HDR10+ metadata is not allowed in this output');
-    if (options.sourceBasic==='sdr') validateSdrFrameSignaling(options.sourceBasic,scan);
+    if (options.sourceBasic==='sdr') validateSdrFrameSignaling(options.sourceBasic,scan,options.expectedColor);
   };
   update(false);
   const argv=buildFrameScanArguments(file,index,options.threads ?? getDecodeThreadCount());
@@ -797,20 +815,24 @@ const validateHlg = (source, output) => {
 const isVerifiedSdr = (basic, scan) => basic === 'sdr' && !scan.dovi && !scan.hdr10plus && !scan.otherDynamic && !!scan.staticInfo && !scan.staticInfo.mastering && !scan.staticInfo.light && !scan.staticInfo.conflict;
 
 const validateEffectiveSdrTransfer = (video,info,scan) => {
-  const norm=x=>String(x || '').toLowerCase().replace(/[ ._-]/g,'');
+  const norm=x=>normalizeSdrTransfer(x) || normalizeColorToken(x);
   const stream=String(video.color_transfer || '').toLowerCase();
   const expected=stream && stream!=='unknown' && stream!=='unspecified' ? stream : info?.transfer_characteristics;
   const actual=scan?.colorInfo?.observed?.color_transfer;
   if (actual && !isUnknownColorValue(expected) && norm(actual)!==norm(expected)) throw Error('SDR decoded-frame transfer conflicts with source signaling');
 };
 
-const validateSdrFrameSignaling = (basic,scan) => {
+const validateSdrFrameSignaling = (basic,scan,sourceVideo=null) => {
   if (basic!=='sdr') return;
   const observed=scan?.colorInfo?.observed || {};
-  const transfer=String(observed.color_transfer || '').toLowerCase().replace(/[ ._-]/g,'');
-  const primaries=String(observed.color_primaries || '').toLowerCase().replace(/[ ._-]/g,'');
-  const matrix=String(observed.color_space || '').toLowerCase().replace(/[ ._-]/g,'');
-  if (['smpte2084','aribstdb67'].includes(transfer) || primaries.includes('bt2020') || matrix.includes('bt2020')) {
+  const transfer=normalizeColorToken(observed.color_transfer);
+  const primaries=normalizeColorToken(observed.color_primaries);
+  const matrix=normalizeColorToken(observed.color_space);
+  if (['smpte2084','aribstdb67'].includes(transfer)) {
+    throw Error('Decoded-frame HDR color signaling conflicts with SDR stream classification');
+  }
+  const allowBt2020=sourceVideo && isBt2020Color(sourceVideo) && Boolean(normalizeSdrTransfer(sourceVideo.color_transfer));
+  if (!allowBt2020 && (primaries.includes('bt2020') || matrix.includes('bt2020'))) {
     throw Error('Decoded-frame HDR color signaling conflicts with SDR stream classification');
   }
 };
@@ -819,9 +841,8 @@ const effectiveSdrSource = (video,info,scan) => {
   const effective={...video},observed=scan?.colorInfo?.observed || {};
   for (const field of ['color_transfer','color_primaries','color_space','color_range']) if (!effective[field] || ['unknown','unspecified'].includes(effective[field])) if (observed[field]) effective[field]=observed[field];
   if (!effective.color_transfer || ['unknown','unspecified'].includes(effective.color_transfer)) {
-    const map={bt709:'bt709',smpte170m:'smpte170m',bt470bg:'bt470bg',gamma22:'gamma22',gamma28:'gamma28',smpte240m:'smpte240m',iec6196621:'iec61966-2-1'};
-    const key=String(info?.transfer_characteristics || '').toLowerCase().replace(/[ ._-]/g,'');
-    if (map[key]) effective.color_transfer=map[key];
+    const mapped=normalizeSdrTransfer(info?.transfer_characteristics);
+    if (mapped) effective.color_transfer=mapped;
   }
   return effective;
 };

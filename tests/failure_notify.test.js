@@ -251,6 +251,33 @@ test('missing or invalid configuration does not throw or mark notification as se
     const result = await h.run(h.args);
     assert.equal(result.outputNumber, 1);
     assert.notEqual(h.args.variables.user.failure_notified, true);
+    assert.notEqual(h.args.variables.flowFailed, true);
     assert.equal(h.requests.length, 0);
   }
+});
+
+test('successful failure notification sets variables.flowFailed to skip redundant error hook execution', async () => {
+  const h = harness();
+  h.args.variables.user.failure_reason = '[Video guard] Sample check failed; original retained.';
+  await h.run(h.args);
+  assert.equal(h.args.variables.user.failure_notified, true);
+  assert.equal(h.args.variables.flowFailed, true);
+
+  const failed = harness({status: 429});
+  failed.args.variables.user.failure_reason = '[Video guard] Sample check failed; original retained.';
+  await failed.run(failed.args);
+  assert.notEqual(failed.args.variables.user.failure_notified, true);
+  assert.notEqual(failed.args.variables.flowFailed, true);
+});
+
+test('Video guard color and MediaInfo holds are explained as warnings instead of generic failures', async () => {
+  const h = harness();
+  h.args.variables.user.failure_reason = '[Video guard] MediaInfo color transfer_characteristics conflicts with stream or is unrecognized; original retained.';
+  await h.run(h.args);
+  const embed = h.requests[0].body.embeds[0];
+  assert.equal(embed.color, 15105570);
+  assert.match(embed.title, /^⚠️/);
+  assert.match(embed.description, /color|transfer/i);
+  assert.match(embed.description, /original was kept/i);
+  assert.match(embed.footer.text, /video color signaling/i);
 });

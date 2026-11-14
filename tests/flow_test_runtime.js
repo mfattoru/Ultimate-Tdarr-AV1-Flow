@@ -40,6 +40,8 @@ const engineExports = {
   testHdrStatic: 'checkHdrFrameStatic',
   testVideoFilter: 'composeVideoFilterChain',
   testSdrTransfer: 'validateEffectiveSdrTransfer',
+  testSdrFrameSignaling: 'validateSdrFrameSignaling',
+  testMediaInfoColors: 'validateMediaInfoHdrColors',
   testSdrSource: 'effectiveSdrSource',
   testUntagged: 'isUntaggedVideo',
   testUntaggedOutput: 'validateUntaggedOutput',

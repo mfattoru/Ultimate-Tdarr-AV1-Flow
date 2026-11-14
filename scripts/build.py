@@ -534,7 +534,7 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
     const preflightAspectVideo=missingSourceSar && infoSquarePixels ? {...mainVideo,sample_aspect_ratio:"1:1"} : mainVideo;
     validateAspect(mainVideo,preflightAspectVideo,false);
     if (is12Bit && preflightBasic !== "sdr") throw new Error("12-bit conversion is only verified for tagged SDR sources; HDR, Dolby Vision, and untagged 12-bit video remain held");
-    if (preflightBasic !== "sdr") validateMediaInfoHdrColors(mainVideo,preflightInfoVideo);
+    if (preflightBasic !== "sdr" || isBt2020Color(mainVideo)) validateMediaInfoHdrColors(mainVideo,preflightInfoVideo);
   } catch (err) {
     args.variables.user.failure_reason=`[Video guard] ${err.message || err}; original retained.`;
     log(args.variables.user.failure_reason);
@@ -618,7 +618,7 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
     if(preflightLevel6 && preflightLevel6.frames!==frameScan.frames) throw Error(`Dolby Level 6 frame count mismatch (${preflightLevel6.frames} / ${frameScan.frames})`);
     if (frameScan.interlaced) throw Error("Interlaced video frames are unsupported");
     if (frameScan.colorInfo.conflict) throw Error("Source frame color signaling conflicts with the stream");
-    validateSdrFrameSignaling(preflightBasic,frameScan);
+    validateSdrFrameSignaling(preflightBasic,frameScan,mainVideo);
     log(`[Source precheck] Scanned ${frameScan.frames} frames in ${((Date.now()-sourceScanStartedAt)/1000).toFixed(2)}s.`);
   } catch (err) {
     const detail=String(err?.message || err);
@@ -791,15 +791,19 @@ one('  const rawSizeMB = (args.originalLibraryFile?.file_size || args.inputFileO
 one('  const isTargetRam = typeof targetDir === "string" && targetDir.startsWith("/dev/shm");', '  const isTargetRam = BigInt.asUintN(32,fs.statfsSync(targetDir,{bigint:true}).type) === 16914836n;')
 one('Math.abs((d.first-s.first)-shift)>tolerance || Math.abs((d.last-s.last)-shift)>tolerance', 'Math.abs((d.first-s.first)-shift)>0.1 || Math.abs((d.last-s.last)-shift)>0.1')
 one('        "-look_ahead", "1",\n        "-look_ahead_depth", "40",\n','')
-one('  const needsProactiveHybrid = isH26410bit || isVC1 || isNon420Chroma;', '  const needsProactiveHybrid = hdrClass === "dovi5_hdr10" || !useQsvDecode(mainVideo);\n  const qsvHdrClampRetryEligible = isHdr && isQsvHdrMasteringClampRisk(hdrSource);\n  let softwareHdrFallback = quarantinedCandidate?.kind === "svt_av1_encode";\n  quality = softwareHdrFallback ? 28 : selectedQuality;\n  let qualityLabel = softwareHdrFallback ? "SVT-AV1 CRF" : "ICQ";')
+one('  const isHdr = isHlg || isPq || isBt2020 || isDovi;', '  const isHdr = isHlg || isPq || isDovi;')
+one('  const needsProactiveHybrid = isH26410bit || isVC1 || isNon420Chroma;', '  const needsProactiveHybrid = hdrClass === "dovi5_hdr10" || !useQsvDecode(mainVideo);\n  const qsvHdrClampRetryEligible = isHdr && isQsvHdrMasteringClampRisk(hdrSource);\n  let softwareHdrFallback = quarantinedCandidate?.kind === "svt_av1_encode" || (!quarantinedCandidate && qsvHdrClampRetryEligible);\n  quality = softwareHdrFallback ? 28 : selectedQuality;\n  let qualityLabel = softwareHdrFallback ? "SVT-AV1 CRF" : "ICQ";')
 one('''  if (!isAlreadyAV1 && isHdr) {
     pipelineMode += isHlg ? " [HLG]" : " [HDR10]";
   }''', '''  if (!isAlreadyAV1 && isHdr) {
     pipelineMode += isHlg ? " [HLG]" : " [HDR10]";
   }
-  if (softwareHdrFallback) {
+  if (quarantinedCandidate?.kind === "svt_av1_encode") {
     pipelineMode = "Software SVT-AV1 HDR candidate revalidation";
     log(`[Arc AV1] Revalidating a quarantined SVT-AV1 HDR candidate against the current checks.`);
+  } else if (softwareHdrFallback) {
+    pipelineMode = "Software SVT-AV1 HDR encode (proactive QSV green-y clamp avoidance)";
+    log(`[Arc AV1] Source mastering display green-y coordinate exceeds the Intel QSV AV1 clamp limit; routing proactively to SVT-AV1 CRF 28 to preserve HDR metadata.`);
   }''')
 one('    cmdArgs.push("-i", inputPath);', '    if (hdrMasterOverride && !forceStreamCopy) cmdArgs.push("-mastering_display", hdrMasterOverride);\n    if (hdrLightOverride && !forceStreamCopy) cmdArgs.push("-content_light", hdrLightOverride);\n    if (useHybrid && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));\n    cmdArgs.push("-i", inputPath);\n    if (is12Bit && !forceStreamCopy) cmdArgs.push("-sws_dither", "ed");')
 one('    if (useHybrid && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));', '    if ((useHybrid || useSoftwareFallback) && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));')
@@ -845,7 +849,19 @@ one('''      if (useHybrid) {
         removeContentLight:isHdr && !sourceHasContentLight
       });
       cmdArgs.push("-vf",videoFilter);''')
-one('          cmdArgs.push("-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc");', '          cmdArgs.push("-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc");\n          if (hdrClass === "dovi5_hdr10") cmdArgs.push("-color_range", "tv");')
+one('''        } else {
+          cmdArgs.push("-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc");
+        }
+      }''', '''        } else {
+          cmdArgs.push("-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc");
+          if (hdrClass === "dovi5_hdr10") cmdArgs.push("-color_range", "tv");
+        }
+      } else if (!isHdr && hdrClass === "sdr" && sdrSource) {
+        if (!isUnknownColorValue(sdrSource.color_primaries)) cmdArgs.push("-color_primaries", sdrSource.color_primaries);
+        if (!isUnknownColorValue(sdrSource.color_transfer)) cmdArgs.push("-color_trc", sdrSource.color_transfer);
+        if (!isUnknownColorValue(sdrSource.color_space)) cmdArgs.push("-colorspace", sdrSource.color_space);
+        if (!isUnknownColorValue(sdrSource.color_range)) cmdArgs.push("-color_range", sdrSource.color_range);
+      }''')
 one('    const cmdArgs = ["-y", "-fflags", "+genpts+igndts"];', '    const cmdArgs = ["-y", "-xerror", "-fflags", "+genpts+igndts"];')
 one('''      cmdArgs.push(
         "-c:v", "av1_qsv",

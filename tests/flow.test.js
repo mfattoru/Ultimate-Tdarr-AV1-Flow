@@ -60,16 +60,22 @@ test('V15 engine performs full source and output scans without sampling branches
  assert.match(engine,/compareVideoTimestamps\(expected\.sourceFrameScan,\s*outputFrameScan\)/);
 });
 
-test('known Intel QSV HDR mastering clamp retries SVT only after strict QSV validation',()=>{
- assert.ok(engine.includes('const qsvHdrClampRetryEligible = isHdr && isQsvHdrMasteringClampRisk(hdrSource)'), 'the known source mastering range should gate only the narrow retry');
- assert.ok(engine.includes('let softwareHdrFallback = quarantinedCandidate?.kind === "svt_av1_encode"'), 'ordinary eligible files should start on the Arc QSV path');
- assert.ok(engine.includes('validateQsvWithSvtHdrClampFallback({'), 'the candidate must pass strict validation before fallback is considered');
- assert.ok(engine.includes('source:qsvHdrClampRetryEligible && !softwareHdrFallback ? hdrSource : null'), 'only the known source mastering range may qualify for the retry');
- assert.ok(engine.includes('identified Intel QSV AV1 green-y clamp'), 'the retry must require the exact validator diagnosis');
+test('known Intel QSV HDR mastering clamp routes proactively to SVT-AV1 while retaining strict reactive fallback',()=>{
+ assert.ok(engine.includes('const qsvHdrClampRetryEligible = isHdr && isQsvHdrMasteringClampRisk(hdrSource)'), 'the known source mastering range must be detected from source metadata');
+ assert.ok(engine.includes('let softwareHdrFallback = quarantinedCandidate?.kind === "svt_av1_encode" || (!quarantinedCandidate && qsvHdrClampRetryEligible)'), 'clamp-risk sources should route proactively to SVT-AV1');
+ assert.ok(engine.includes('validateQsvWithSvtHdrClampFallback({'), 'the candidate validation wrapper must remain in place');
+ assert.ok(engine.includes('source:qsvHdrClampRetryEligible && !softwareHdrFallback ? hdrSource : null'), 'reactive retry stays armed as defense-in-depth when QSV ran');
+ assert.ok(engine.includes('identified Intel QSV AV1 green-y clamp'), 'the reactive retry must require the exact validator diagnosis');
  assert.ok(engine.includes('"libsvtav1"'), 'the fallback must use the verified software AV1 encoder');
  assert.ok(engine.includes('"-preset", "8", "-crf", "28"'), 'the fallback quality settings must match the test-container sample');
  assert.ok(engine.includes('ArcAV1_SVTAV1_HDRFallback_V15'), 'software output needs a distinct idempotence marker');
  assert.ok(engine.includes('isKnownQsvHdrMasteringClamp'), 'strict validation should retain a narrow diagnostic for the known QSV clamp');
+});
+
+test('WCG-SDR is not treated as HDR or forced to PQ transfer in FFmpeg args',()=>{
+ assert.ok(engine.includes('const isHdr = isHlg || isPq || isDovi;'), 'isHdr must not include raw isBt2020 without HDR transfer or Dolby signaling');
+ assert.ok(engine.includes('validateMediaInfoHdrColors(mainVideo,preflightInfoVideo)'), 'MediaInfo color checks must remain active');
+ assert.ok(engine.includes('if (!isHdr && hdrClass === "sdr" && sdrSource)'), 'SDR output color signaling must be emitted explicitly from sdrSource');
 });
 
 test('sparse subtitle streams cannot hold the mux queue without a time bound',()=>{
