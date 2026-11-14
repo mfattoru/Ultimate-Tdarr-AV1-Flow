@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-import hashlib, json, os, pathlib, re
+import hashlib, json, os, pathlib, re, sys
 scripts_dir=pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(scripts_dir))
+from stage_signatures import STAGES, compute_stage_hashes
 root=scripts_dir.parent
 src=root/'src'
 flow=json.loads((src/'base/flow-template-v3.json').read_text())
@@ -327,7 +329,7 @@ r'''    const detail=String(err?.message || err);
     const quarantineStartedAt=Date.now();
     if (quarantinedCandidate) {
       try {
-        quarantinedCandidate=await updateQuarantineFailure(quarantinedCandidate,quarantineReport);
+        quarantinedCandidate=await updateQuarantineFailure(quarantinedCandidate,quarantineReport,currentStageSignatures);
         args.variables.user.quarantine_entry=quarantinedCandidate;
         log(`[Quarantine] Candidate remains stored after failed current validation (${quarantinedCandidate.candidatePath}).`);
       } catch (quarantineError) {
@@ -344,9 +346,14 @@ r'''    const detail=String(err?.message || err);
           marker:isBloat?"ArcAV1_SeekHeal_V15":softwareHdrFallback?"ArcAV1_SVTAV1_HDRFallback_V15":"ArcAV1_QSV_V15",
           kind:isBloat?"seek_heal_remux":softwareHdrFallback?"svt_av1_encode":"qsv_av1_encode",
           validationReport:quarantineReport,
+          stageSignatures:currentStageSignatures,
           assertSourceUnchanged:assertOriginalUnchanged
         });
         args.variables.user.quarantine_entry=storedCandidate;
+        persistPrechecks(storedCandidate, true);
+        if (quarantineReport?.outputFrameScan && effectiveCandidateFramesSignature) {
+          saveCandidateFramesCache(storedCandidate, effectiveCandidateFramesSignature, quarantineReport.outputFrameScan);
+        }
         log(`[Quarantine] Stored complete candidate after final validation failed: ${storedCandidate.candidatePath}. Original remains unchanged.`);
       } catch (quarantineError) {
         log(`[Quarantine] Candidate was not retained: ${quarantineError.message || quarantineError}; normal scratch cleanup will continue.`);
@@ -460,8 +467,41 @@ one('  // 2. Stream Probing', '''  const saveOriginalSnapshot = (stat, realPath,
   const forceFreshSetting = args.userVariables?.library?.arc_force_fresh_path;
   const forceFreshRequested = typeof forceFreshSetting === "string" && forceFreshSetting.trim().length > 0
     && path.resolve(forceFreshSetting.trim()) === path.resolve(originalPath);
-  let quarantinedCandidate = null;
+  const hashJson = value => require('crypto').createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  let quarantinedCandidate = null, retiredCandidatePrecheckRef = null;
+  let currentEncodeSignature = null, effectiveCandidateFramesSignature = null, currentDecodeSignature = null, currentStageSignatures = undefined;
+  let buildCandidateFramesSignature = () => null;
+  const retireQuarantinedCandidate = async (reason, { keepSourcePrecheck = true } = {}) => {
+    if (!quarantinedCandidate) return;
+    const stale = quarantinedCandidate;
+    if (keepSourcePrecheck) {
+      retiredCandidatePrecheckRef = {
+        root: stale.root,
+        quarantineRoot: stale.quarantineRoot,
+        sourceKey: stale.sourceKey,
+        sourceHash: stale.sourceHash,
+        id: stale.id,
+        candidatePath: stale.candidatePath
+      };
+      args.variables.user.source_precheck_entry = retiredCandidatePrecheckRef;
+    }
+    await removeQuarantineCandidate(stale, { keepSourcePrecheck });
+    log(reason);
+    quarantinedCandidate = null;
+    delete args.variables.user.quarantine_entry;
+  };
+  const ensureGpuDeviceAccessible = () => {
+    try {
+      fs.accessSync(gpuDevice, fs.constants.R_OK | fs.constants.W_OK);
+      return true;
+    } catch (err) {
+      args.variables.user.failure_reason = `[Arc GPU] Device not accessible: ${gpuDevice}: ${err.message || err}; original retained.`;
+      log(args.variables.user.failure_reason);
+      return false;
+    }
+  };
   delete args.variables.user.quarantine_entry;
+  delete args.variables.user.source_precheck_entry;
   if (forceFreshRequested) {
     try {
       const removedCount = await removeQuarantineCandidatesForSource({root:quarantineRootForJob,sourcePath:originalPath,libraryRoots:quarantineLibraryRoots});
@@ -485,9 +525,7 @@ one('  // 2. Stream Probing', '''  const saveOriginalSnapshot = (stat, realPath,
           } catch (_) {}
         }
         if (retireInterlaced) {
-          await removeQuarantineCandidate(quarantinedCandidate);
-          log(`[Quarantine] Retired stored candidate with interlaced field order; proceeding with fresh encode.`);
-          quarantinedCandidate = null;
+          await retireQuarantinedCandidate(`[Quarantine] Retired stored candidate with interlaced field order; proceeding with fresh encode.`, { keepSourcePrecheck: true });
         } else {
           args.variables.user.quarantine_entry = quarantinedCandidate;
           assertOriginalUnchanged();
@@ -582,14 +620,8 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
     log(args.variables.user.failure_reason);
     return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
   }
-  if (!quarantinedCandidate) {
-    try {
-      fs.accessSync(gpuDevice,fs.constants.R_OK|fs.constants.W_OK);
-    } catch(err) {
-      args.variables.user.failure_reason=`[Arc GPU] Device not accessible: ${gpuDevice}: ${err.message || err}; original retained.`;
-      log(args.variables.user.failure_reason);
-      return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
-    }
+  if (!quarantinedCandidate && !ensureGpuDeviceAccessible()) {
+    return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
   }
   let hybridPreflight='not_hybrid';
   try {
@@ -675,17 +707,37 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
   reportWorkerProgress(args.updateWorker,{percentage:8,fps:0,status:"Precheck: classify source color and HDR"},initialWorkerProgressDetails);
   let sourceScanFailureDetail="";
   const vCodec = (mainVideo.codec_name || "").toLowerCase();''')
-one('  // 2. Audio & Subtitle stream count & codec checks', '''  if (expected.requireMarker && !Object.entries(dst.format?.tags || {}).some(([k,v]) => k.toLowerCase() === "encoded_by" && String(v) === (expected.outputMarker || "ArcAV1_QSV_V15"))) throw new Error("Output completion marker missing");
+one('  // 2. Audio & Subtitle stream count & codec checks', '''  // [STAGE:decode:start]
+  if (expected.requireMarker && !Object.entries(dst.format?.tags || {}).some(([k,v]) => k.toLowerCase() === "encoded_by" && String(v) === (expected.outputMarker || "ArcAV1_QSV_V15"))) throw new Error("Output completion marker missing");
+  // [STAGE:decode:end]
   let outputFrameScan;
   const isStreamCopyFallback = expected.outputMarker === "ArcAV1_SeekHeal_V15";
   if (expected.sourceFrameScan || expected.hdr10) {
+    // [STAGE:candidate_frames:start]
     reportWorkerProgress(expected.updateWorker,{percentage:82,fps:0,status:"Validation: output frame, color, and HDR scan"});
     const expectedFrames=expected.sourceFrameScan?.frames || estimateVideoFrames(video[0],Number(dst.format?.duration || 0));
     if(typeof expected.assertOriginalUnchanged==='function')expected.assertOriginalUnchanged();
     const allowSourceDovi = isStreamCopyFallback && (expected.sourceFrameScan?.dovi || 0) > 0;
     const allowSourceHdr10Plus = isStreamCopyFallback && (expected.sourceFrameScan?.hdr10plus || 0) > 0;
-    outputFrameScan = await inspectVideoFrames(ffprobeBin,outputPath,video[0].index,{staticMetadata:!!expected.hdr10 || !!expected.hlg || !!expected.untagged,timestamps:!!expected.sourceFrameScan,failFast:true,scanRole:"candidate",rejectDolbyVision:(!!expected.hdr10 || !!expected.hlg || !!expected.untagged) && !allowSourceDovi,rejectHdr10Plus:(!!expected.hdr10 || !!expected.hlg || !!expected.untagged) && !allowSourceHdr10Plus,threads:getDecodeThreadCount(),expectedColor:video[0],expectedFrames,assertUnchanged:expected.assertOriginalUnchanged,onProgress:(frames,total,complete,fps)=>reportWorkerProgress(expected.updateWorker,{percentage:82+8*(complete?1:total>0?Math.min(0.99,frames/total):0),fps,status:"Validation: output frame, color, and HDR scan"})});
-    if(typeof expected.log==='function')expected.log(`[Validation frames] Scanned ${outputFrameScan.frames} candidate frames.`);
+    const candFramesRef = expected.quarantineEntry;
+    const candFramesSig = expected.candidateFramesSignature;
+    const cachedCandidateFrames = (candFramesRef && candFramesSig)
+      ? loadCandidateFramesCache(candFramesRef, candFramesSig)
+      : { hit: false, frameScan: null, reason: candFramesRef ? 'missing_signature' : 'no_quarantine_entry' };
+    if (cachedCandidateFrames.hit) {
+      outputFrameScan = cachedCandidateFrames.frameScan;
+      if (typeof expected.log === 'function') expected.log(`[Validation frames] Reused ${outputFrameScan.frames} verified candidate frames.`);
+    } else {
+      outputFrameScan = await inspectVideoFrames(ffprobeBin,outputPath,video[0].index,{staticMetadata:!!expected.hdr10 || !!expected.hlg || !!expected.untagged,timestamps:!!expected.sourceFrameScan,failFast:true,scanRole:"candidate",rejectDolbyVision:(!!expected.hdr10 || !!expected.hlg || !!expected.untagged) && !allowSourceDovi,rejectHdr10Plus:(!!expected.hdr10 || !!expected.hlg || !!expected.untagged) && !allowSourceHdr10Plus,threads:getDecodeThreadCount(),expectedColor:video[0],expectedFrames,assertUnchanged:expected.assertOriginalUnchanged,onProgress:(frames,total,complete,fps)=>reportWorkerProgress(expected.updateWorker,{percentage:82+8*(complete?1:total>0?Math.min(0.99,frames/total):0),fps,status:"Validation: output frame, color, and HDR scan"})});
+      if (typeof expected.log === 'function') expected.log(`[Validation frames] Scanned ${outputFrameScan.frames} candidate frames.`);
+      if (candFramesRef && candFramesSig) {
+        saveCandidateFramesCache(candFramesRef, candFramesSig, outputFrameScan);
+      }
+    }
+    if (expected.validationReport) {
+      try { Object.defineProperty(expected.validationReport, "outputFrameScan", { value: outputFrameScan, configurable: true }); } catch (_) {}
+    }
+    // [STAGE:candidate_frames:end]
     if(typeof expected.assertOriginalUnchanged==='function')expected.assertOriginalUnchanged();
     reportWorkerProgress(expected.updateWorker,{percentage:90,fps:0,status:"Validation: output frame scan complete"});
     if (outputFrameScan.colorInfo.conflict) throw Error("Output frame color signaling conflicts with the stream");
@@ -933,7 +985,12 @@ one('''      cmdArgs.push(
 one('encoded_by=ArcAV1_QSV','encoded_by=ArcAV1_QSV_V15')
 one('cmdArgs.push("-metadata:g", "encoded_by=ArcAV1_QSV_V15");', 'cmdArgs.push("-metadata:g", forceStreamCopy ? "encoded_by=ArcAV1_SeekHeal_V15" : useSoftwareFallback ? "encoded_by=ArcAV1_SVTAV1_HDRFallback_V15" : "encoded_by=ArcAV1_QSV_V15");')
 one('      codec: expectedVideoCodec,\n', '      codec: expectedVideoCodec,\n      requireMarker: true,\n      hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10" || hdrClass === "dovi5_hdr10",\n      optionalHdrStatic: hdrClass === "hdr10",\n      hlg: hdrClass === "hlg",\n      untagged: hdrClass === "untagged",\n      sourceClass: hdrClass,\n      sourceHdr: hdrSource,\n      sdrSource,\n      sourceFrameScan: frameScan,\n      outputMarker: isBloat ? \"ArcAV1_SeekHeal_V15\" : softwareHdrFallback ? \"ArcAV1_SVTAV1_HDRFallback_V15\" : \"ArcAV1_QSV_V15\",\n')
-one('      sourceFrameScan: frameScan,\n', '      sourceFrameScan: frameScan,\n      sourceSquarePixels: infoSquarePixels,\n      updateWorker: args.updateWorker,\n      log,\n      assertOriginalUnchanged: assertOriginalUnchanged,\n      audioTimestampRepairIndices: Array.from(audioTimestampRepairs.keys()),\n')
+one('      sourceFrameScan: frameScan,\n', '      sourceFrameScan: frameScan,\n      sourceSquarePixels: infoSquarePixels,\n      updateWorker: args.updateWorker,\n      log,\n      assertOriginalUnchanged: assertOriginalUnchanged,\n      audioTimestampRepairIndices: Array.from(audioTimestampRepairs.keys()),\n      quarantineEntry: quarantinedCandidate,\n      candidateFramesSignature: effectiveCandidateFramesSignature,\n')
+one('    const valResult = await validateOutput(ffprobeBin, inputPath, outputPath, {', '''    effectiveCandidateFramesSignature = buildCandidateFramesSignature(quarantinedCandidate ? quarantinedCandidate.marker === "ArcAV1_SeekHeal_V15" : isBloat);
+    currentStageSignatures = (currentEncodeSignature && effectiveCandidateFramesSignature && currentDecodeSignature)
+      ? { encode: currentEncodeSignature, candidateFrames: effectiveCandidateFramesSignature, decode: currentDecodeSignature }
+      : undefined;
+    const valResult = await validateOutput(ffprobeBin, inputPath, outputPath, {''')
 one('outputMarker: isBloat ? "ArcAV1_SeekHeal_V15" : softwareHdrFallback ? "ArcAV1_SVTAV1_HDRFallback_V15" : "ArcAV1_QSV_V15",', 'outputMarker: quarantinedCandidate?.marker || (isBloat ? "ArcAV1_SeekHeal_V15" : softwareHdrFallback ? "ArcAV1_SVTAV1_HDRFallback_V15" : "ArcAV1_QSV_V15"),')
 a=e.index('  log(`[Arc AV1 Single-Pass] Processing:')
 b=e.index('\n  // Cleanup temporary clamped chapters file',a)
@@ -1060,11 +1117,8 @@ one('  const cleanBase =', '''  // Styled Matroska subtitles can depend on attac
         } catch(_){}
         if(!candidateSubNormalized){
           try {
-            await removeQuarantineCandidate(quarantinedCandidate);
-            log(`[Quarantine] Retired stored candidate to apply chronological ASS/SSA subtitle normalization; proceeding with fresh encode.`);
+            await retireQuarantinedCandidate(`[Quarantine] Retired stored candidate to apply chronological ASS/SSA subtitle normalization; proceeding with fresh encode.`, { keepSourcePrecheck: true });
           } catch(_){}
-          quarantinedCandidate=null;
-          delete args.variables.user.quarantine_entry;
         }
       }
       log(`[Subtitle precheck] Checked ${guards.size} ASS/SSA track(s) in ${((Date.now()-subtitleStartedAt)/1000).toFixed(2)}s.`);
@@ -1196,48 +1250,132 @@ one('''  } catch (e) {
 };''')
 e=(src/'progress.js').read_text()+'\n'+e
 e=(src/'precheck_cache.js').read_text()+'\n'+e
-one('  const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scanRole:"source",', '''  // A changed engine or tool build invalidates the saved evidence. Current
-  // probed stream and MediaInfo data are part of the key as well.
-  let precheckSignature=null,cachedPrecheck=null;
+e='const STAGE_CODE_HASHES=__STAGE_CODE_HASHES_JSON__;\n'+e
+one('  const needsProactiveHybrid = hdrClass === "dovi5_hdr10"', '  // [STAGE:encode:start]\n  const needsProactiveHybrid = hdrClass === "dovi5_hdr10"')
+one('    pipelineMode = "Size Bloat Fallback (Original Video Stream-Copy + Seek Healed)";', '    // [STAGE:encode:end]\n    pipelineMode = "Size Bloat Fallback (Original Video Stream-Copy + Seek Healed)";')
+one('  const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scanRole:"source",', '''  // [STAGE:precheck_video:start]
+  // Stage-scoped signatures isolate source precheck, encode, candidate frame scan, and decode checks.
+  let toolVersions=null,sourceVideoSignature=null,sourceAudioSignature=null,precheckResult=null,cachedFrameScan=null,cachedAudioPrecheck=null;
+  let didRunVideoPrecheck=false,didRunAudioPrecheck=false;
+  const resolveSourcePrecheckRef=()=>{
+    if(quarantinedCandidate)return quarantinedCandidate;
+    if(retiredCandidatePrecheckRef)return retiredCandidatePrecheckRef;
+    try {
+      const qRoot=fs.realpathSync(quarantineRootForJob);
+      const qDir=path.join(qRoot,'tdarr-av1-quarantine');
+      const sKey=require('crypto').createHash('sha256').update(originalSnapshot.realPath).digest('hex');
+      const matches=fs.readdirSync(qDir).filter(name=>name.startsWith(`${sKey}-`) && /^[a-f0-9]{64}-[a-f0-9]{64}\\.prechecks\\.gz$/.test(name));
+      if(!matches.length)return null;
+      return {root:qRoot,quarantineRoot:qDir,sourceKey:sKey,sourceHash:hashFilePath(originalSnapshot.realPath)};
+    } catch(_) { return null; }
+  };
   try {
     const versionOf=bin=>{
       const result=require('child_process').spawnSync(bin,['-version'],{encoding:'utf8',timeout:15000,maxBuffer:1024*1024});
       if(result.status!==0 || !result.stdout)throw Error('Unable to identify media tool');
       return result.stdout;
     };
-    precheckSignature=require('crypto').createHash('sha256').update(JSON.stringify({engine:'__PRECHECK_ENGINE_HASH__',node:process.version,ffprobe:versionOf(ffprobeBin),ffmpeg:versionOf(ffmpegBin),video:mainVideo,mediaInfo:preflightInfoVideo})).digest('hex');
-    if(quarantinedCandidate){
+    toolVersions={node:process.version,ffprobe:versionOf(ffprobeBin),ffmpeg:versionOf(ffmpegBin)};
+    sourceVideoSignature=hashJson({codeHash:STAGE_CODE_HASHES.precheck_video,node:toolVersions.node,ffprobe:toolVersions.ffprobe,video:mainVideo,mediaInfo:preflightInfoVideo});
+    sourceAudioSignature=hashJson({codeHash:STAGE_CODE_HASHES.precheck_audio,node:toolVersions.node,ffprobe:toolVersions.ffprobe,ffmpeg:toolVersions.ffmpeg,audioStreams:(streams || []).filter(s=>s.codec_type==='audio').map(s=>({index:s.index,codec:s.codec_name,timeBase:s.time_base,channels:s.channels,tags:s.tags,disposition:s.disposition}))});
+    const sourcePrecheckRef=resolveSourcePrecheckRef();
+    if(sourcePrecheckRef){
       assertOriginalUnchanged();
-      cachedPrecheck=loadPrecheckCache(quarantinedCandidate,precheckSignature);
+      precheckResult=loadSourcePrecheck(sourcePrecheckRef,{videoSignature:sourceVideoSignature,audioSignature:sourceAudioSignature});
       assertOriginalUnchanged();
+      cachedFrameScan=precheckResult.frameScan;
+      cachedAudioPrecheck=precheckResult.audio;
+      args.variables.user.source_precheck_entry={root:sourcePrecheckRef.root,quarantineRoot:sourcePrecheckRef.quarantineRoot,sourceKey:sourcePrecheckRef.sourceKey,sourceHash:sourcePrecheckRef.sourceHash};
+      if(precheckResult.hit!=='none'){
+        log(`[Precheck cache] Source lookup (${precheckResult.hit}): video=${precheckResult.videoReason}, audio=${precheckResult.audioReason}.`);
+      } else if(precheckResult.videoReason!=='missing' || precheckResult.audioReason!=='missing'){
+        log(`[Precheck cache] Invalidated: video=${precheckResult.videoReason}, audio=${precheckResult.audioReason}; running required source prechecks.`);
+      }
     }
   } catch(error) { log(`[Precheck cache] Reuse unavailable: ${error.message || error}`); }
   const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scanRole:"source",''')
-one('    frameScan=await inspectVideoFrames(ffprobeBin,inputPath,mainVideo.index,scanOptions);', '''    if(cachedPrecheck){
-      frameScan=cachedPrecheck.frameScan;
+one('    frameScan=await inspectVideoFrames(ffprobeBin,inputPath,mainVideo.index,scanOptions);', '''    if(cachedFrameScan){
+      frameScan=cachedFrameScan;
       log(`[Source precheck] Reused ${frameScan.frames} verified source frames from quarantine.`);
-    } else frameScan=await inspectVideoFrames(ffprobeBin,inputPath,mainVideo.index,scanOptions);''')
-one('    log("[Source precheck] Running the full CPU source frame, color, HDR, and timestamp scan before encoding.");', '    if(!cachedPrecheck)log("[Source precheck] Running the full CPU source frame, color, HDR, and timestamp scan before encoding.");')
+    } else {
+      didRunVideoPrecheck=true;
+      frameScan=await inspectVideoFrames(ffprobeBin,inputPath,mainVideo.index,scanOptions);
+    }
+    // [STAGE:precheck_video:end]''')
+one('    log("[Source precheck] Running the full CPU source frame, color, HDR, and timestamp scan before encoding.");', '    if(!cachedFrameScan)log("[Source precheck] Running the full CPU source frame, color, HDR, and timestamp scan before encoding.");')
 one('  const audioTimestampRepairs = new Map();', '''  const audioTimestampRepairs = new Map();
   const currentAudioPrecheckStreams=finalAudioStreams.map(s=>({index:s.index,timeBase:String(s.time_base || '')}));
-  const persistPrechecks=entry=>{
-    if(!precheckSignature || !entry)return;
+  const persistPrechecks=(entry,force=false)=>{
+    if(!sourceVideoSignature || !entry)return;
+    if(!force && !didRunVideoPrecheck && !didRunAudioPrecheck && !precheckResult?.migratedFromLegacy)return;
     assertOriginalUnchanged();
-    const saved=savePrecheckCache(entry,precheckSignature,{frameScan,audio:{streams:currentAudioPrecheckStreams,repairs:Array.from(audioTimestampRepairs.entries())}});
+    const saved=saveSourcePrecheck(entry,{videoSignature:sourceVideoSignature,audioSignature:sourceAudioSignature},{frameScan,audio:{streams:currentAudioPrecheckStreams,repairs:Array.from(audioTimestampRepairs.entries())}});
     assertOriginalUnchanged();
+    if(saved && entry.sourceKey && entry.sourceHash){
+      args.variables.user.source_precheck_entry={root:entry.root,quarantineRoot:entry.quarantineRoot,sourceKey:entry.sourceKey,sourceHash:entry.sourceHash};
+    }
     log(saved?'[Precheck cache] Saved full source video and retained-audio evidence.':'[Precheck cache] Evidence could not be cached; future retries will run source prechecks.');
   };''')
 one('  const precheckRetainedSourceAudio = async () => {', '''  const precheckRetainedSourceAudio = async () => {
-    if(cachedPrecheck && JSON.stringify(cachedPrecheck.audio.streams)===JSON.stringify(currentAudioPrecheckStreams)){
-      for(const [index,timing] of cachedPrecheck.audio.repairs) audioTimestampRepairs.set(index,timing);
+    if(cachedAudioPrecheck && JSON.stringify(cachedAudioPrecheck.streams)===JSON.stringify(currentAudioPrecheckStreams)){
+      for(const [index,timing] of cachedAudioPrecheck.repairs) audioTimestampRepairs.set(index,timing);
       log(`[Audio precheck] Reused verified timing and decode results for ${currentAudioPrecheckStreams.length} retained source track(s).`);
       return;
-    }''')
-one('await precheckRetainedSourceAudio();', 'await precheckRetainedSourceAudio();\n    if(quarantinedCandidate)persistPrechecks(quarantinedCandidate);')
-one('args.variables.user.quarantine_entry=storedCandidate;', 'args.variables.user.quarantine_entry=storedCandidate;\n        persistPrechecks(storedCandidate);')
-engine_hash=hashlib.sha256(e.encode()).hexdigest()
-if e.count('__PRECHECK_ENGINE_HASH__')!=1: raise RuntimeError('Unexpected precheck cache signature placeholder')
-e=e.replace('__PRECHECK_ENGINE_HASH__',engine_hash)
+    }
+    didRunAudioPrecheck=true;''')
+one('await precheckRetainedSourceAudio();', '''await precheckRetainedSourceAudio();
+  if(quarantinedCandidate || retiredCandidatePrecheckRef)persistPrechecks(quarantinedCandidate || retiredCandidatePrecheckRef);
+  currentEncodeSignature = toolVersions ? hashJson({
+    codeHash: STAGE_CODE_HASHES.encode,
+    ffmpeg: toolVersions.ffmpeg,
+    selectedQuality,
+    hdrClass,
+    hdrMasterOverride,
+    hdrLightOverride,
+    color: {p: mainVideo.color_primaries, t: mainVideo.color_transfer, s: mainVideo.color_space, r: mainVideo.color_range},
+    finalAudioIndices: finalAudioStreams.map(s => s.index),
+    audioRepairs: Array.from(audioTimestampRepairs.entries()),
+    finalSubIndices: finalSubStreams.map(s => ({i: s.index, c: s.codec_name})),
+    normalizedAss: Array.from(normalizedAssContents.keys()),
+    attachments: retainedAttachmentStreams.map(s => s.index)
+  }) : null;
+  buildCandidateFramesSignature = isSeekHeal => toolVersions ? hashJson({
+    codeHash: STAGE_CODE_HASHES.candidate_frames,
+    ffprobe: toolVersions.ffprobe,
+    hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10" || hdrClass === "dovi5_hdr10",
+    hlg: hdrClass === "hlg",
+    untagged: hdrClass === "untagged",
+    isSeekHeal: Boolean(isSeekHeal),
+    sourceFrames: frameScan?.frames || null,
+    sourceDovi: frameScan?.dovi || 0,
+    sourceHdr10Plus: frameScan?.hdr10plus || 0
+  }) : null;
+  currentDecodeSignature = toolVersions ? hashJson({
+    codeHash: STAGE_CODE_HASHES.decode,
+    ffprobe: toolVersions.ffprobe,
+    ffmpeg: toolVersions.ffmpeg
+  }) : null;
+  if (quarantinedCandidate) {
+    const candSigs = quarantinedCandidate.stageSignatures;
+    if (candSigs?.encode && currentEncodeSignature && candSigs.encode !== currentEncodeSignature) {
+      await retireQuarantinedCandidate(`[Quarantine] Retiring stale candidate (encode signature changed); preserving valid source prechecks and running fresh encode.`, { keepSourcePrecheck: true });
+    } else {
+      log(`[Quarantine] Reusing stored candidate (${candSigs ? 'encode signature matched' : 'legacy manifest compatibility'}).`);
+    }
+  }
+  if (!quarantinedCandidate && !ensureGpuDeviceAccessible()) {
+    return { outputFileObj: args.inputFileObj, outputNumber: 2, variables: args.variables };
+  }''')
+one('args.variables.user.quarantine_entry=storedCandidate;', 'args.variables.user.quarantine_entry=storedCandidate;')
+inline_sections={stage:[] for stage in STAGES}
+for m in re.finditer(r'// \[STAGE:([a-z_]+):start\](.*?)// \[STAGE:\1:end\]', e, flags=re.DOTALL):
+ if m.group(1) not in inline_sections: raise RuntimeError(f'Unknown inline stage marker {m.group(1)!r}')
+ inline_sections[m.group(1)].append(m.group(2))
+for stage in STAGES:
+ if not inline_sections[stage]: raise RuntimeError(f'Missing inline stage marker for {stage!r}')
+stage_hashes=compute_stage_hashes(src,inline_sections=inline_sections)
+if e.count('__STAGE_CODE_HASHES_JSON__')!=1: raise RuntimeError('Unexpected stage hashes placeholder')
+e=e.replace('__STAGE_CODE_HASHES_JSON__',json.dumps(stage_hashes,sort_keys=True,separators=(',',':')))
 plugin['inputsDB']['code']=e
 flow['flowPlugins'].append({'name':'Discord: Already Processed (Info)','sourceRepo':'Community','pluginName':'customFunction','version':'1.0.0','inputsDB':{'code':'module.exports = async args => ({outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables});'},'fpEnabled':True,'id':'already_completed','position':{'x':1380,'y':850}})
 flow['flowEdges'].append({'source':'arc_av1_monolithic','sourceHandle':'4','target':'already_completed','targetHandle':None,'id':'edge_already_completed'})

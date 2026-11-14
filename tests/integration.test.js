@@ -189,7 +189,8 @@ test('quarantined retries reuse full video and retained-audio prechecks while re
  const firstResult=await run(first,firstArgs);
  assert.equal(firstResult.outputNumber,2);
  assert.ok(firstArgs.variables.user.quarantine_entry,'complete candidate must be quarantined');
- assert.ok(fs.existsSync(`${firstArgs.variables.user.quarantine_entry.candidatePath}.prechecks.gz`),'complete source evidence must be cached');
+ const cachePath=require('../src/precheck_cache').sourcePrecheckPathFor(firstArgs.variables.user.quarantine_entry);
+ assert.ok(fs.existsSync(cachePath),'complete source evidence must be cached');
  const second=load({inputPath:input,qsvValidationFailure:true,cpuValidationFailure:true});
  const secondArgs=argsFor(input,second.logs);secondArgs.librarySettings.folder=library;
  const secondResult=await run(second,secondArgs);
@@ -198,17 +199,16 @@ test('quarantined retries reuse full video and retained-audio prechecks while re
  assert.ok(second.logs.some(line=>line.includes('[Audio precheck] Reused')));
  assert.ok(second.logs.some(line=>line.includes('[Validation stage] video_decode:')),'candidate validation must still run');
  assert.equal(second.audioDecodeCommands.some(command=>command.input===input),false,'source audio must not be decoded again');
- const cachePath=`${firstArgs.variables.user.quarantine_entry.candidatePath}.prechecks.gz`;
  const envelope=JSON.parse(require('zlib').gunzipSync(fs.readFileSync(cachePath)));
  const cached=JSON.parse(envelope.payload);
  cached.data.audio.streams[0].timeBase='1/999';
- assert.equal(require('../src/precheck_cache').savePrecheckCache(firstArgs.variables.user.quarantine_entry,cached.signature,cached.data),true);
+ assert.equal(require('../src/precheck_cache').saveSourcePrecheck(firstArgs.variables.user.quarantine_entry,{videoSignature:cached.videoSignature,audioSignature:cached.audioSignature},cached.data),true);
  const changedAudio=load({inputPath:input,qsvValidationFailure:true,cpuValidationFailure:true});
  const changedAudioArgs=argsFor(input,changedAudio.logs);changedAudioArgs.librarySettings.folder=library;
  assert.equal((await run(changedAudio,changedAudioArgs)).outputNumber,2);
  assert.ok(changedAudio.logs.some(line=>line.includes('[Source precheck] Reused')));
  assert.ok(changedAudio.audioDecodeCommands.some(command=>command.input===input),'a changed audio selection must be checked again');
- fs.writeFileSync(`${firstArgs.variables.user.quarantine_entry.candidatePath}.prechecks.gz`,'damaged cache');
+ fs.writeFileSync(cachePath,'damaged cache');
  const third=load({inputPath:input,qsvValidationFailure:true,cpuValidationFailure:true});
  const thirdArgs=argsFor(input,third.logs);thirdArgs.librarySettings.folder=library;
  assert.equal((await run(third,thirdArgs)).outputNumber,2);
@@ -725,4 +725,72 @@ test('progressive MBAFF-tagged source normalizes field order in Hybrid CPU filte
  assert.equal(ffArgs.includes('-hwaccel'),false,'MBAFF progressive source must route through Hybrid CPU decode');
  assert.equal(ffArgs[ffArgs.indexOf('-vf')+1],'setfield=mode=prog,format=p010le');
  assert.equal(ffArgs[ffArgs.indexOf('-field_order')+1],'progressive');
+});
+
+test('stage_signatures module computes isolated per-stage hashes and rejects unmapped symbols',()=>{
+ const out=child.execFileSync('python3',['scripts/stage_signatures.py','--check-isolation'],{encoding:'utf8'});
+ const parsed=JSON.parse(out);
+ assert.deepEqual(Object.keys(parsed.hashes).sort(),['candidate_frames','decode','encode','precheck_audio','precheck_video']);
+ assert.equal(parsed.isolation.decodeEditChangedOnlyDecode,true);
+ assert.equal(parsed.isolation.audioTimingEditChangedOnlyPrecheckAudio,true);
+ assert.equal(parsed.isolation.encodeEditChangedOnlyEncode,true);
+ assert.equal(parsed.isolation.frameScanEditLeftEncodeAndAudioUntouched,true);
+});
+
+test('post-check-only rebuild reuses source precheck, candidate mkv, and candidate frames while encode rebuild retires only candidate',async()=>{
+ const manifestRaw=flow.flowPlugins.find(p=>p.id==='arc_av1_monolithic').inputsDB.code.match(/STAGE_CODE_HASHES=(\{[^}]+\})/);
+ assert.ok(manifestRaw,'assembled code must embed STAGE_CODE_HASHES');
+ const baseHashes=JSON.parse(manifestRaw[1].replace(/'/g,'"'));
+ const replaceStageHash=(stage,newHash)=>code.replace(manifestRaw[0],`STAGE_CODE_HASHES=${JSON.stringify({...baseHashes,[stage]:newHash})}`);
+
+ const library=path.join(dir,'stage-cache-library');fs.mkdirSync(library,{recursive:true});
+ const input=path.join(library,'staged-source.mkv');fs.copyFileSync(source,input);
+
+ // 1. Initial failing run stores candidate + source precheck + candidate frames
+ const first=load({inputPath:input,qsvValidationFailure:true,cpuValidationFailure:true});
+ const firstArgs=argsFor(input,first.logs);firstArgs.librarySettings.folder=library;
+ assert.equal((await run(first,firstArgs)).outputNumber,2);
+ const entry=firstArgs.variables.user.quarantine_entry;
+ assert.ok(entry?.stageSignatures?.encode && entry?.stageSignatures?.candidateFrames && entry?.stageSignatures?.decode);
+ const sourcePrecheckFile=require('../src/precheck_cache').sourcePrecheckPathFor(entry);
+ assert.ok(fs.existsSync(sourcePrecheckFile),'source-scoped precheck must be persisted');
+ assert.ok(fs.existsSync(`${entry.candidatePath}.frames.gz`),'candidate frame scan must be cached alongside quarantined mkv');
+
+ // 2. Decode-only change: reuses source precheck, candidate mkv, and candidate .frames.gz while running video_decode live
+ const decodeChanged=load({inputPath:input,qsvValidationFailure:true,cpuValidationFailure:true,codeOverride:replaceStageHash('decode','d'.repeat(64))});
+ const decodeArgs=argsFor(input,decodeChanged.logs);decodeArgs.librarySettings.folder=library;
+ assert.equal((await run(decodeChanged,decodeArgs)).outputNumber,2);
+ assert.ok(decodeChanged.logs.some(line=>line.includes('[Source precheck] Reused')));
+ assert.ok(decodeChanged.logs.some(line=>line.includes('[Audio precheck] Reused')));
+ assert.ok(decodeChanged.logs.some(line=>line.includes('[Validation frames] Reused')));
+ assert.ok(decodeChanged.logs.some(line=>line.includes('[Validation stage] video_decode:')));
+ assert.equal(decodeChanged.commands.some(c=>c.args.includes('av1_qsv')),false,'decode-only change must not re-encode');
+ assert.equal(decodeChanged.audioDecodeCommands.some(c=>c.input===input),false,'decode-only change must not re-run source audio');
+
+ // 3. Candidate-frames-only change: reuses source precheck and candidate mkv, refreshes candidate .frames.gz
+ const framesChanged=load({inputPath:input,qsvValidationFailure:true,cpuValidationFailure:true,codeOverride:replaceStageHash('candidate_frames','c'.repeat(64))});
+ const framesArgs=argsFor(input,framesChanged.logs);framesArgs.librarySettings.folder=library;
+ assert.equal((await run(framesChanged,framesArgs)).outputNumber,2);
+ assert.ok(framesChanged.logs.some(line=>line.includes('[Source precheck] Reused')));
+ assert.equal(framesChanged.logs.some(line=>line.includes('[Validation frames] Reused')),false,'candidateFrames hash change must re-run candidate frame scan');
+ assert.equal(framesChanged.commands.some(c=>c.args.includes('av1_qsv')),false,'candidateFrames-only change must not re-encode');
+
+ // 4. Encode-only change: retires old candidate (.mkv/.json/.frames.gz), keeps & reuses source precheck, runs fresh encode
+ const encodeChanged=load({inputPath:input,codeOverride:replaceStageHash('encode','e'.repeat(64))});
+ const encodeArgs=argsFor(input,encodeChanged.logs);encodeArgs.librarySettings.folder=library;
+ assert.equal((await run(encodeChanged,encodeArgs)).outputNumber,1,encodeArgs.variables.user.failure_reason);
+ assert.equal(fs.existsSync(entry.manifestPath),false,'old candidate manifest must be retired on encode signature mismatch');
+ assert.equal(fs.existsSync(`${entry.candidatePath}.frames.gz`),false,'old candidate frames cache must be retired');
+ assert.equal(fs.existsSync(sourcePrecheckFile),true,'source precheck must survive encode-driven candidate retirement');
+ assert.ok(encodeChanged.logs.some(line=>line.includes('[Quarantine] Retiring stale candidate')));
+ assert.ok(encodeChanged.logs.some(line=>line.includes('[Source precheck] Reused')),'source precheck must be reused after retiring stale candidate');
+ assert.ok(encodeChanged.logs.some(line=>line.includes('[Audio precheck] Reused')));
+ assert.ok(encodeChanged.commands.some(c=>c.args.includes('av1_qsv')),'encode change must run a fresh encode');
+ assert.ok(encodeArgs.variables.user.source_precheck_entry,'retired encode path must retain cleanup reference for source precheck');
+ const cleanupPlugin=flow.flowPlugins.find(p=>p.id==='cleanup_success');
+ const cleanupLogs=[];
+ const cleanupMod={exports:{}};
+ runFlowCode(['require','module','exports'],cleanupPlugin.inputsDB.code,[require,cleanupMod,cleanupMod.exports]);
+ await cleanupMod.exports({...encodeArgs,jobLog:m=>cleanupLogs.push(String(m))});
+ assert.equal(fs.existsSync(sourcePrecheckFile),false,'cleanup_success must remove source precheck after replacement succeeds');
 });

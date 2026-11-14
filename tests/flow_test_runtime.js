@@ -66,7 +66,9 @@ const engineTestExports = Object.entries(engineExports)
 
 function runFlowCode(parameters, code, values) {
   let body = code;
-  if (code === engineSource) body += `\n${engineTestExports}\nmodule.exports.testPlugin = module.exports;`;
+  const isEngineCode = code === engineSource
+    || (typeof code === 'string' && code.startsWith('const STAGE_CODE_HASHES=') && code.includes('const runV6ArcJob ='));
+  if (isEngineCode) body += `\n${engineTestExports}\nmodule.exports.testPlugin = module.exports;`;
   return new Function(...parameters, body)(...values);
 }
 

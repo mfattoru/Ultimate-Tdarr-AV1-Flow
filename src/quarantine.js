@@ -15,6 +15,31 @@ const QUARANTINE_MARKERS = new Set([
   'ArcAV1_SeekHeal_V15'
 ]);
 const QUARANTINE_KINDS = new Set(['qsv_av1_encode', 'svt_av1_encode', 'seek_heal_remux']);
+const QUARANTINE_STAGE_KEYS = ['encode', 'candidateFrames', 'decode'];
+
+function quarantineNormalizeStageSignatures(stageSignatures) {
+  if (stageSignatures === undefined || stageSignatures === null) return undefined;
+  if (typeof stageSignatures !== 'object' || Array.isArray(stageSignatures)) {
+    throw Error('Invalid quarantine stageSignatures object');
+  }
+  const normalized = {};
+  for (const key of Object.keys(stageSignatures)) {
+    if (!QUARANTINE_STAGE_KEYS.includes(key)) throw Error(`Unknown quarantine stageSignatures key: ${key}`);
+    const val = stageSignatures[key];
+    if (val !== undefined && val !== null) {
+      if (typeof val !== 'string' || !QUARANTINE_HASH_RE.test(val)) {
+        throw Error(`Invalid quarantine stage signature for ${key}`);
+      }
+      normalized[key] = val;
+    }
+  }
+  return Object.keys(normalized).length ? normalized : undefined;
+}
+
+function quarantineUnlinkIfPresent(filePath) {
+  try { quarantineFs.unlinkSync(filePath); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+}
 
 function quarantineRootPath(root) {
   if (typeof root !== 'string' || !quarantinePath.isAbsolute(root)) throw Error('Quarantine root must be an absolute existing directory');
@@ -109,6 +134,9 @@ function quarantineReadManifest(directory, manifestName) {
       || !manifest.validationReport || typeof manifest.validationReport !== 'object' || Array.isArray(manifest.validationReport)) {
     throw Error(`Invalid quarantine manifest fields: ${manifestName}`);
   }
+  if (manifest.stageSignatures !== undefined) {
+    quarantineNormalizeStageSignatures(manifest.stageSignatures);
+  }
   return {id, manifest, manifestPath, candidatePath: quarantinePath.join(directory, manifest.candidateName)};
 }
 
@@ -140,7 +168,8 @@ function quarantineEntry(root, directory, loaded) {
     candidateHash: loaded.manifest.candidateHash,
     marker: loaded.manifest.marker,
     kind: loaded.manifest.kind,
-    validationReport: loaded.manifest.validationReport
+    validationReport: loaded.manifest.validationReport,
+    stageSignatures: loaded.manifest.stageSignatures || null
   };
 }
 
@@ -222,10 +251,11 @@ async function findQuarantineCandidate({root, sourcePath, sourceHash, libraryRoo
   return null;
 }
 
-async function storeQuarantineCandidate({root, sourcePath, sourceHash, candidatePath, marker, kind, validationReport, assertSourceUnchanged, libraryRoots}) {
+async function storeQuarantineCandidate({root, sourcePath, sourceHash, candidatePath, marker, kind, validationReport, stageSignatures, assertSourceUnchanged, libraryRoots}) {
   root = quarantineRootPath(root);
   quarantineAssertOutsideLibraries(root,libraryRoots);
   const canonicalSource = quarantineSourcePath(sourcePath);
+  const normalizedStageSignatures = quarantineNormalizeStageSignatures(stageSignatures);
   if ((sourceHash !== undefined && !QUARANTINE_HASH_RE.test(String(sourceHash || ''))) || !QUARANTINE_MARKERS.has(marker) || !QUARANTINE_KINDS.has(kind)) throw Error('Invalid quarantine source hash, marker, or candidate kind');
   if (typeof candidatePath !== 'string' || !quarantinePath.isAbsolute(candidatePath)) throw Error('Quarantine candidate path must be absolute');
   const canonicalCandidate = quarantineFs.realpathSync(candidatePath);
@@ -256,6 +286,7 @@ async function storeQuarantineCandidate({root, sourcePath, sourceHash, candidate
     marker,
     kind,
     validationReport: safeReport,
+    ...(normalizedStageSignatures ? {stageSignatures: normalizedStageSignatures} : {}),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -313,24 +344,32 @@ async function storeQuarantineCandidate({root, sourcePath, sourceHash, candidate
   }
 }
 
-async function updateQuarantineFailure(entry, validationReport) {
+async function updateQuarantineFailure(entry, validationReport, stageSignatures) {
   const {root, directory, loaded} = quarantineLoadEntry(entry);
+  const normalizedStageSignatures = stageSignatures !== undefined
+    ? quarantineNormalizeStageSignatures(stageSignatures)
+    : loaded.manifest.stageSignatures;
   const manifest = {
     ...loaded.manifest,
     validationReport: quarantineSafeReport(validationReport),
     updatedAt: new Date().toISOString()
   };
+  if (normalizedStageSignatures) manifest.stageSignatures = normalizedStageSignatures;
+  else delete manifest.stageSignatures;
   quarantineWriteManifest(loaded.manifestPath, manifest);
   return quarantineEntry(root, directory, quarantineReadManifest(directory, `${loaded.id}.json`));
 }
 
-async function removeQuarantineCandidate(entry) {
+async function removeQuarantineCandidate(entry, {keepSourcePrecheck = false} = {}) {
   const {directory, loaded} = quarantineLoadEntry(entry, true);
-  try { quarantineFs.unlinkSync(`${loaded.candidatePath}.prechecks.gz`); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; }
-  try { quarantineFs.unlinkSync(loaded.candidatePath); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; }
-  quarantineFs.unlinkSync(loaded.manifestPath);
+  quarantineUnlinkIfPresent(`${loaded.candidatePath}.prechecks.gz`);
+  quarantineUnlinkIfPresent(`${loaded.candidatePath}.frames.gz`);
+  if (!keepSourcePrecheck) {
+    const sourcePrecheckPath = quarantinePath.join(directory, `${loaded.id.split('-')[0]}-${loaded.manifest.sourceHash}.prechecks.gz`);
+    quarantineUnlinkIfPresent(sourcePrecheckPath);
+  }
+  quarantineUnlinkIfPresent(loaded.candidatePath);
+  quarantineUnlinkIfPresent(loaded.manifestPath);
 }
 
 async function removeQuarantineCandidatesForSource({root, sourcePath, libraryRoots}) {
@@ -345,8 +384,10 @@ async function removeQuarantineCandidatesForSource({root, sourcePath, libraryRoo
     if (error.code === 'ENOENT') return 0;
     throw error;
   }
-  const prefix = `${quarantinePathKey(canonicalSource)}-`;
-  const names = quarantineFs.readdirSync(directory).filter(name => {
+  const sourceKey = quarantinePathKey(canonicalSource);
+  const prefix = `${sourceKey}-`;
+  const entries = quarantineFs.readdirSync(directory);
+  const names = entries.filter(name => {
     if(!name.startsWith(prefix)||!name.endsWith('.json'))return false;
     return QUARANTINE_ID_RE.test(name.slice(0,-5));
   });
@@ -354,8 +395,8 @@ async function removeQuarantineCandidatesForSource({root, sourcePath, libraryRoo
   for (const name of names) {
     const id=name.slice(0,-5);
     const candidatePath=quarantinePath.join(directory,`${id}.mkv`);
-    try { quarantineFs.unlinkSync(`${candidatePath}.prechecks.gz`); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    quarantineUnlinkIfPresent(`${candidatePath}.prechecks.gz`);
+    quarantineUnlinkIfPresent(`${candidatePath}.frames.gz`);
     // Force-fresh is an explicit request to discard this source's stored copy.
     // The path key and candidate name are derived from the exact source and a
     // validated identifier; don't let one malformed manifest block the purge.
@@ -366,8 +407,14 @@ async function removeQuarantineCandidatesForSource({root, sourcePath, libraryRoo
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
-    quarantineFs.unlinkSync(quarantinePath.join(directory,name));
+    quarantineUnlinkIfPresent(quarantinePath.join(directory,name));
     removed++;
+  }
+  for (const name of entries) {
+    if (!name.startsWith(prefix)) continue;
+    if (new RegExp(`^${sourceKey}-[a-f0-9]{64}\\.prechecks\\.gz$`).test(name) || QUARANTINE_ID_RE.test(name.replace(/\.(?:frames|prechecks)\.gz$/, ''))) {
+      quarantineUnlinkIfPresent(quarantinePath.join(directory, name));
+    }
   }
   return removed;
 }

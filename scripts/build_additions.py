@@ -6,7 +6,7 @@ one('  if (isUndersized) {', '''  if (isUndersized) {
       const sizeFailureReport={version:1,outcome:"rejected",stage:"size_policy",checks:[{stage:"size_policy",outcome:"rejected",code:"candidate_size_policy"}],failure:{outcome:"rejected",stage:"size_policy",code:"candidate_size_policy",message:`Quarantined candidate failed the current size floor (${newSizeMB.toFixed(2)} MB, ${ratioPct.toFixed(1)}% of source).`}};
       args.variables.user.validation_report=sizeFailureReport;
       try {
-        quarantinedCandidate=await updateQuarantineFailure(quarantinedCandidate,sizeFailureReport);
+        quarantinedCandidate=await updateQuarantineFailure(quarantinedCandidate,sizeFailureReport,currentStageSignatures);
         args.variables.user.quarantine_entry=quarantinedCandidate;
         log(`[Quarantine] Candidate remains stored after failing the current size policy (${quarantinedCandidate.candidatePath}).`);
       } catch (quarantineError) {
@@ -305,23 +305,35 @@ for p in flow['flowPlugins']:
       const entry=args.variables.user.quarantine_entry;
       await removeQuarantineCandidate(entry);
       delete args.variables.user.quarantine_entry;
+      delete args.variables.user.source_precheck_entry;
       log(`[Quarantine] Removed validated candidate after successful replacement: ${entry.candidatePath}`);
     } catch (err) {
       log(`[Quarantine] Replacement succeeded, but the stored candidate could not be removed: ${err.message || err}`);
+    }
+  } else if (args.variables?.user?.source_precheck_entry) {
+    try {
+      const precheckEntry=args.variables.user.source_precheck_entry;
+      removeSourcePrecheck(precheckEntry);
+      delete args.variables.user.source_precheck_entry;
+      log(`[Precheck cache] Removed source precheck evidence after successful replacement.`);
+    } catch (err) {
+      log(`[Precheck cache] Replacement succeeded, but source precheck evidence could not be removed: ${err.message || err}`);
     }
   }
 '''
   if code.count('  if (args.variables?.user?.cache_reservation) {')!=1: raise RuntimeError('Unexpected success cleanup reservation block')
   code=code.replace('  if (args.variables?.user?.cache_reservation) {',quarantine_cleanup+'  if (args.variables?.user?.cache_reservation) {',1)
  helper_code=(src/'reservations.js').read_text()+'\n'
- if p['id']=='cleanup_success': helper_code+=(src/'quarantine.js').read_text()+'\n'
+ if p['id']=='cleanup_success': helper_code+=(src/'quarantine.js').read_text()+'\n'+(src/'precheck_cache.js').read_text()+'\n'
  p['inputsDB']['code']=helper_code+code
 
 # V14 preserves the established language selection but stream-copies retained audio,
 # checking source audio before video encoding and validating the candidate afterward.
-one('  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.has(s.index));\n\n  // 6. Subtitle Filtering & Safe Format Normalization (eng, ita, spa, und)', '''  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.has(s.index));
+one('  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.has(s.index));\n\n  // 6. Subtitle Filtering & Safe Format Normalization (eng, ita, spa, und)', '''  // [STAGE:encode:end]
+  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.has(s.index));
   const audioTimestampRepairs = new Map();
 
+  // [STAGE:precheck_audio:start]
   // Full-decode the audio tracks that will actually be kept, before reserving scratch or encoding video.
   const precheckRetainedSourceAudio = async () => {
     if (finalAudioStreams.length === 0) {
@@ -396,6 +408,8 @@ one('  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.
     }
     reportWorkerProgress(args.updateWorker,{percentage:10,fps:0,status:"Precheck: retained audio decode complete"},initialWorkerProgressDetails);
   };
+  // [STAGE:precheck_audio:end]
+  // [STAGE:encode:start]
 
   // 6. Subtitle Filtering & Safe Format Normalization (eng, ita, spa, und)''')
 one('  try {\n  // Cache reservations permit concurrent jobs while coordinating available space.', '  try {\n  const audioPrecheckStartedAt=Date.now();\n  await precheckRetainedSourceAudio();\n  log(`[Audio precheck] Completed in ${((Date.now()-audioPrecheckStartedAt)/1000).toFixed(2)}s.`);\n  reportWorkerProgress(args.updateWorker,{percentage:10,fps:0,status:"Preparing: reserve cache and build output"},initialWorkerProgressDetails);\n  // Cache reservations permit concurrent jobs while coordinating available space.')
