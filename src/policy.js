@@ -138,13 +138,19 @@ const useQsvDecode = (video) => {
   if (codec==='hevc' || codec==='av1') return qsv420_8 || qsv420_10;
   return false;
 };
+const isMissingSampleAspectRatio = value => {
+  const text=String(value || '').trim();
+  return !text || /^(?:n\/a|unknown|unspecified|0:0|0:1)$/i.test(text);
+};
+const isSquareMediaInfoPixelAspectRatio = infoVideo =>
+  /^1(?:\.0+)?$/.test(String(infoVideo?.PixelAspectRatio || '').trim());
 const validateAspect = (source, output, checkOutputFieldOrder = true) => {
   const parse = value => {
     const match=String(value || '').match(/^(\d+):(\d+)$/);
     return match && Number(match[1])>0 && Number(match[2])>0 ? Number(match[1])/Number(match[2]) : null;
   };
   const a=parse(source.sample_aspect_ratio), b=parse(output.sample_aspect_ratio);
-  const sourceSarMissing=!String(source.sample_aspect_ratio || '').trim() || /^(?:n\/a|unknown|unspecified|0:0|0:1)$/i.test(String(source.sample_aspect_ratio).trim());
+  const sourceSarMissing=isMissingSampleAspectRatio(source.sample_aspect_ratio);
   if (b === null) throw Error('Source or output sample aspect ratio is missing or changed');
   if (a === null) {
     const sameGeometry=Number.isSafeInteger(Number(source.width)) && Number(source.width)>0

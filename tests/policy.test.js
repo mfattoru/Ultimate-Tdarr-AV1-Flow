@@ -22,6 +22,13 @@ test('failed verification retains first and last diagnostic lines',async()=>{
   return true;
  });
 });
+test('truncated multi-line process diagnostics preserve complete lines around truncation marker',async()=>{
+ const script="process.stderr.write('libva info: VA-API version 1.24.0\\n');for(let i=1;i<=180;i++)process.stderr.write(`[null @ 0x55a55b5d9200] Application provided invalid, non monotonically increasing dts to muxer in stream 0: ${i*100} >= ${i*100}\\n`);";
+ const diag=await p.testProcess(process.execPath,['-e',script]);
+ const lines=diag.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+ assert.ok(lines.includes('... diagnostics truncated ...'),'expected truncation marker for >8KB stderr');
+ assert.ok(lines.every(l=>/^libva info:/i.test(l) || /^\[null @ 0x[0-9a-f]+\] Application provided invalid, non monotonically increasing dts to muxer\b/i.test(l) || l==='... diagnostics truncated ...'),`unexpected partial line in truncated output: ${lines.filter(l=>!/^libva info:/i.test(l)&&!/^\[null @ 0x[0-9a-f]+\]/i.test(l)&&l!=='... diagnostics truncated ...').join(' | ')}`);
+});
 test('candidate frame timestamps may not introduce a repeated or backward frame',()=>{
  const source={frames:4,timestamps:[0,0.041,0.083,0.125]};
  for(const timestamps of [[1,1.041,1.041,1.125],[1,1.041,1.040,1.125]]) {
@@ -345,6 +352,14 @@ test('ambiguous field order and unknown source aspect ratio are held',()=>{
   assert.throws(()=>p.testVideoGuard({codec_name:'h264',pix_fmt:'yuv420p',field_order:'unknown'}),/field order/i);
   assert.doesNotThrow(()=>p.testVideoGuard({codec_name:'av1',pix_fmt:'yuv420p',field_order:'unknown'}));
   assert.throws(()=>p.testAspect({sample_aspect_ratio:'N/A'},{sample_aspect_ratio:'1:1'}),/aspect/i);
+});
+test('missing SAR and MediaInfo square-pixel helpers classify aspect metadata consistently',()=>{
+  assert.equal(typeof p.testMissingSar,'function');
+  assert.equal(typeof p.testSquareMediaInfoPar,'function');
+  for(const missing of [undefined,null,'','N/A','unknown','unspecified','0:0','0:1']) assert.equal(p.testMissingSar(missing),true);
+  for(const present of ['1:1','4:3','16:9']) assert.equal(p.testMissingSar(present),false);
+  for(const square of ['1','1.0','1.000']) assert.equal(p.testSquareMediaInfoPar({PixelAspectRatio:square}),true);
+  for(const nonsquare of [undefined,'','1.333','0.999']) assert.equal(p.testSquareMediaInfoPar({PixelAspectRatio:nonsquare}),false);
 });
 
 

@@ -19,7 +19,7 @@ child.execFileSync('ffmpeg',['-v','error','-i',source,'-map','0:0','-map','0:1',
 child.execFileSync('ffmpeg',['-v','error','-i',multiAudioSource,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',multiAudioCandidate],{stdio:'ignore'});
 assert.ok(fs.statSync(multiAudioCandidate).size < fs.statSync(multiAudioSource).size);
 function argsFor(file,logs=[]) { const f={_id:file,container:'mkv',file_size:fs.statSync(file).size/1024/1024}; return {inputFileObj:{...f},originalLibraryFile:{...f},workDir:dir,variables:{user:{min_cache_free_mb:1}},ffmpegPath:'ffmpeg',librarySettings:{folder:dir},jobLog:m=>logs.push(String(m))}; }
-function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,matchedVideoDtsTies=false,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,mediaInfoPixelAspectRatio,hdr=false,colorOverride=null,mediaInfoOverride=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate}={}) {
+function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,qsvLongTimestampLines=false,matchedVideoDtsTies=false,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,candidateMissingSar=false,mediaInfoPixelAspectRatio,candidateMediaInfoPixelAspectRatio,hdr=false,colorOverride=null,mediaInfoOverride=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate}={}) {
   const calls=[],commands=[],logs=[],audioDecodeCommands=[]; let initialProbe=true,moverSimulated=false;
   const fakeFs=new Proxy(fs,{get(t,p){if(p==='unlinkSync' && denyIso)return name=>{if(String(name).endsWith('.iso'))throw Error('simulated ISO permission error');return t.unlinkSync(name)};if(p==='accessSync')return (name,...args)=>name==='/dev/dri/renderD129'?undefined:t.accessSync(name,...args);return t[p]}});
   const fakeChild={...child,
@@ -45,8 +45,9 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
       if(candidateVideoDecode&&(((qsvValidationFailure||qsvTimestampFailure)&&args.includes('-hwaccel'))||(cpuValidationFailure&&!args.includes('-hwaccel')))){
         const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
         const process=new EventEmitter();process.stdout=new PassThrough();process.stderr=new PassThrough();process.kill=()=>{};
+        const longTimestampStderr=`libva info: VA-API version 1.24.0\n${Array.from({length:180},(_,i)=>`[null @ 0x55a55b5d9200] Application provided invalid, non monotonically increasing dts to muxer in stream 0: ${(i+1)*100} >= ${(i+1)*100}`).join('\n')}\n`;
         const qsvStderr=qsvTimestampFailure
-          ?(qsvTimestampExitZero?'libva info: VA-API version 1.22.0\n[null @ 0x55cac3600580] Application provided invalid, non monotonically increasing dts to muxer in stream 0: 5 >= 5\n':'[null @ 0x1234] Application provided invalid, non monotonically increasing dts to muxer in stream 0: 5 >= 5')
+          ?(qsvLongTimestampLines?longTimestampStderr:qsvTimestampExitZero?'libva info: VA-API version 1.22.0\n[null @ 0x55cac3600580] Application provided invalid, non monotonically increasing dts to muxer in stream 0: 5 >= 5\n':'[null @ 0x1234] Application provided invalid, non monotonically increasing dts to muxer in stream 0: 5 >= 5')
           :'Device creation failed: unavailable Arc device';
         queueMicrotask(()=>{process.stdout.end();process.stderr.end(args.includes('-hwaccel')?qsvStderr:'Cannot allocate memory');process.emit('close',(qsvTimestampExitZero&&args.includes('-hwaccel'))?0:1,null);});
         return process;
@@ -125,14 +126,16 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
     execFileSync(cmd,args,opts){
       if(cmd==='mediainfo') {
         if(!mediainfo) throw Error('no mediainfo');
-   const video={'@type':'Video',StreamOrder:'0',...(mediaInfoPixelAspectRatio===undefined?{}:{PixelAspectRatio:mediaInfoPixelAspectRatio}),...(mediaInfoOverride?mediaInfoOverride:hdr?{HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10'}:{transfer_characteristics:'BT.709'})};
+   const isInputTarget=args[args.length-1]===inputPath;
+   const par=isInputTarget?mediaInfoPixelAspectRatio:(candidateMediaInfoPixelAspectRatio===undefined?mediaInfoPixelAspectRatio:candidateMediaInfoPixelAspectRatio);
+   const video={'@type':'Video',StreamOrder:'0',...(par===undefined?{}:{PixelAspectRatio:par}),...(mediaInfoOverride?mediaInfoOverride:hdr?{HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10'}:{transfer_characteristics:'BT.709'})};
         const tracks=[video];if(extraVideo)tracks.push({'@type':'Video',StreamOrder:'999',Format:'AV1'});
         return JSON.stringify({media:{track:tracks}});
       }
       const result=child.execFileSync(cmd,args,opts);
       if(cmd==='ffprobe') {
         const probe=JSON.parse(result);
-   if(missingSourceSar && args[args.length-1]===inputPath) for(const stream of probe.streams||[]) if(stream.codec_type==='video') delete stream.sample_aspect_ratio;
+   if((missingSourceSar && args[args.length-1]===inputPath) || (candidateMissingSar && args[args.length-1]!==inputPath)) for(const stream of probe.streams||[]) if(stream.codec_type==='video') delete stream.sample_aspect_ratio;
         for(const stream of probe.streams||[])if(stream.codec_type==='video')Object.assign(stream,colorOverride?colorOverride:hdr?{color_transfer:'smpte2084',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv'}:{color_transfer:'bt709',color_primaries:'bt709',color_space:'bt709',color_range:'tv'});
         if(initialProbe && args.includes('-show_format') && args[args.length-1]===inputPath) {
           initialProbe=false;
@@ -242,6 +245,24 @@ test('matched source/candidate DTS ties with verified frame PTS recover via time
  assert.equal(args.variables.user.validation_report.recoveries[0].code,'timestamp_isolated_decode');
  assert.ok(x.logs.some(line=>line.includes('Non-increasing DTS transitions: source 1, candidate 1; missing DTS: source 0, candidate 0.')));
  assert.ok(x.audioDecodeCommands.some(c=>c.input!==source&&c.args.includes('settb=expr=1/1000000,setpts=N')));
+});
+test('long truncated QSV null-mux DTS diagnostics still recover via timestamp-isolated decode',async()=>{
+ const x=load({qsvTimestampFailure:true,qsvTimestampExitZero:true,qsvLongTimestampLines:true,matchedVideoDtsTies:true}),args=argsFor(source,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+ assert.equal(args.variables.user.validation_report.outcome,'recovered');
+ assert.equal(args.variables.user.validation_report.recoveries[0].code,'timestamp_isolated_decode');
+ assert.ok(x.audioDecodeCommands.some(c=>c.input!==source&&c.args.includes('settb=expr=1/1000000,setpts=N')));
+});
+test('missing FFprobe source SAR with square MediaInfo PAR emits container -aspect on seek-heal remux and validates un-tagged stream-copy candidates',async()=>{
+ const x=load({missingSourceSar:true,candidateMissingSar:true,mediaInfoPixelAspectRatio:'1.000',alwaysLarge:true}),args=argsFor(source,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+ const remux=x.commands.find(c=>c.args.includes('copy')&&!c.args.includes('-crf')&&!c.args.includes('-global_quality'));
+ assert.ok(remux,'expected seek-heal remux command');
+ const aspectIdx=remux.args.indexOf('-aspect:v:0');
+ assert.ok(aspectIdx>=0&&remux.args[aspectIdx+1]==='1920:1080',`expected -aspect:v:0 1920:1080 in remux args: ${remux.args.join(' ')}`);
+ const bad=load({missingSourceSar:true,candidateMissingSar:true,mediaInfoPixelAspectRatio:'1.000',candidateMediaInfoPixelAspectRatio:'1.333',alwaysLarge:true}),badArgs=argsFor(source,bad.logs),badRes=await run(bad,badArgs);
+ assert.equal(badRes.outputNumber,2);
+ assert.match(badArgs.variables.user.failure_reason,/aspect ratio/i);
 });
 test('ASS subtitle fonts are mapped and missing candidate attachments prevent replacement',async()=>{
  const sub=path.join(dir,'attachment-test.ass'),font=path.join(dir,'attachment-test.ttf');

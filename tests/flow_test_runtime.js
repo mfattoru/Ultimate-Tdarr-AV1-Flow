@@ -15,6 +15,8 @@ const engineExports = {
   testVideoGuard: 'guardSourceVideo',
   testQsvDecode: 'useQsvDecode',
   testAspect: 'validateAspect',
+  testMissingSar: 'isMissingSampleAspectRatio',
+  testSquareMediaInfoPar: 'isSquareMediaInfoPixelAspectRatio',
   testHdrRoute: 'determineHdrRoute',
   testHybridPreflight: 'preflightHybridHdr',
   testMergeHdr: 'mergeHdrMetadata',

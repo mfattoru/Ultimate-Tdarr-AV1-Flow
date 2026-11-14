@@ -39,6 +39,12 @@ one('''    // Video Mapping & Encoding / Stream-Copy Arguments
     if (!doCopyVideo) cmdArgs.push("-fps_mode:v", "passthrough");
     if (hdrClass === "untagged") cmdArgs.push(...untaggedColorRangeArgs(hdrClass,sdrSource));
     if (doCopyVideo) {''')
+one('''    if (doCopyVideo) {
+      cmdArgs.push("-c:v", "copy");''', '''    if (doCopyVideo) {
+      cmdArgs.push("-c:v", "copy");
+      if (missingSourceSar && infoSquarePixels && Number.isSafeInteger(Number(mainVideo.width)) && Number(mainVideo.width) > 0 && Number.isSafeInteger(Number(mainVideo.height)) && Number(mainVideo.height) > 0) {
+        cmdArgs.push("-aspect:v:0", `${mainVideo.width}:${mainVideo.height}`);
+      }''')
 e,n=re.subn(r'const webhookUrl\s*=\s*"https://discord\.com/api/webhooks/[^"\n]+"\s*;', 'const webhookUrl = process.env.TDARR_DISCORD_WEBHOOK;', e)
 if n==0 and e.count('const webhookUrl = process.env.TDARR_DISCORD_WEBHOOK;')==1: pass
 elif n!=1: raise RuntimeError('Expected one engine webhook declaration to externalize')
@@ -69,7 +75,14 @@ one('''function runTimelineProcess(bin, argv, onLine) {
     catch (e) { reject(e); return; }
     if (typeof trackReservationChild==='function') trackReservationChild(proc);
     let stderr = '',stderrHead='',stderrLength=0;
-    const fullDiagnostic=()=>stderrLength>8192?`${stderrHead}\n... diagnostics truncated ...\n${stderr}`:stderr;
+    const fullDiagnostic=()=>{
+      if(stderrLength<=8192)return stderr;
+      const headBreak=stderrHead.lastIndexOf('\\n');
+      const safeHead=headBreak>0?stderrHead.slice(0,headBreak):stderrHead;
+      const tailBreak=stderr.indexOf('\\n');
+      const safeTail=tailBreak>=0&&tailBreak<stderr.length-1?stderr.slice(tailBreak+1):stderr;
+      return `${safeHead}\n... diagnostics truncated ...\n${safeTail}`;
+    };
     let pendingDiagnostic='',completeDiagnostics='',firstInfrastructureDiagnostic='';
     let timeoutReason = '';
     let lineError=null;
@@ -484,8 +497,30 @@ one('''    const current = fs.statSync(originalPath, { bigint: true });
     if (fs.realpathSync(originalPath) !== originalSnapshot.realPath || current.dev !== originalSnapshot.dev || current.ino !== originalSnapshot.ino || current.size !== originalSnapshot.size || current.mtimeNs !== originalSnapshot.mtimeNs || current.ctimeNs !== originalSnapshot.ctimeNs) {
       throw new Error("Original library file changed during processing");
     }''', '    assertOriginalUnchanged();')
+one('const validateOutput = async (ffprobeBin, sourcePath, outputPath, expected) => {', '''const readMediaInfoVideoTrack = (filePath, streamIndex) => {
+  const mediaInfo=JSON.parse(execFileSync("mediainfo", ["--Output=JSON", filePath], {encoding:"utf8", timeout:120000, maxBuffer:16*1024*1024}));
+  const infoVideos=(mediaInfo.media?.track || []).filter(t=>String(t["@type"] || "").toLowerCase()==="video");
+  let infoVideo=infoVideos.find(t=>Number.isSafeInteger(Number(t.StreamOrder))&&Number(t.StreamOrder)===Number(streamIndex));
+  if (!infoVideo && infoVideos.length===1) infoVideo=infoVideos[0];
+  if (!infoVideo) throw Error(`MediaInfo could not match selected video stream ${streamIndex}`);
+  return infoVideo;
+};
+
+const validateOutput = async (ffprobeBin, sourcePath, outputPath, expected) => {''')
 one('  const tracks = {};\n  for (const type of ["audio", "subtitle"]) {', '''  if (!expected.hdr10 && !expected.hlg && !expected.untagged) validateSdrColor(expected.sdrSource || sourceVideo, video[0]);
-  validateAspect(sourceVideo, video[0]);
+  let aspectOutput = video[0];
+  if (expected.outputMarker === "ArcAV1_SeekHeal_V15"
+      && isMissingSampleAspectRatio(sourceVideo.sample_aspect_ratio)
+      && isMissingSampleAspectRatio(video[0].sample_aspect_ratio)) {
+    const sourceSquare = typeof expected.sourceSquarePixels === "boolean"
+      ? expected.sourceSquarePixels
+      : isSquareMediaInfoPixelAspectRatio(readMediaInfoVideoTrack(sourcePath, sourceVideo.index));
+    const outputSquare = isSquareMediaInfoPixelAspectRatio(readMediaInfoVideoTrack(outputPath, video[0].index));
+    if (sourceSquare && outputSquare) {
+      aspectOutput = {...video[0], sample_aspect_ratio: "1:1"};
+    }
+  }
+  validateAspect(sourceVideo, aspectOutput);
   if (sourceVideo.width !== video[0].width || sourceVideo.height !== video[0].height) throw new Error("Output video dimensions differ from source");
   if (!expected.sourceFrameScan) {
     const countFrames = (file, index) => {
@@ -508,29 +543,22 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
   const is12Bit = String(mainVideo.pix_fmt || "").toLowerCase().includes("12") || Number(mainVideo.bits_per_raw_sample || 0) === 12;
   let preflightInfoVideo, preflightBasic;
   try {
-    const mediaInfo=JSON.parse(execFileSync("mediainfo", ["--Output=JSON", inputPath], {encoding:"utf8", timeout:120000, maxBuffer:16*1024*1024}));
-    const infoVideos=(mediaInfo.media?.track || []).filter(t=>String(t["@type"] || "").toLowerCase()==="video");
-    preflightInfoVideo=infoVideos.find(t=>Number.isSafeInteger(Number(t.StreamOrder))&&Number(t.StreamOrder)===Number(mainVideo.index));
-    if (!preflightInfoVideo && infoVideos.length===1) preflightInfoVideo=infoVideos[0];
-    if (!preflightInfoVideo) throw Error(`MediaInfo could not match selected video stream ${mainVideo.index}`);
+    preflightInfoVideo=readMediaInfoVideoTrack(inputPath, mainVideo.index);
     preflightBasic=classifyVideo(mainVideo,preflightInfoVideo);
   } catch (err) {
     args.variables.user.failure_reason=`[Video guard] ${err.message || err}; original retained.`;
     log(args.variables.user.failure_reason);
     return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
   }
-  let selectedQuality;
+  let selectedQuality, missingSourceSar=false, infoSquarePixels=false;
   try {
     selectedQuality=selectQualityValue();
     // These checks depend only on the probed stream header. Ignore field_order
     // here because the full decoded-frame scan remains authoritative for it.
     guardSourceVideo({...mainVideo,field_order:"progressive"});
     // FFprobe can omit SAR even when MediaInfo identifies square pixels.
-    // This only permits preflight; candidate validation still requires an
-    // explicit matching 1:1 output SAR and unchanged dimensions.
-    const sourceSar=String(mainVideo.sample_aspect_ratio || "").trim();
-    const missingSourceSar=!sourceSar || /^(?:n[/]a|unknown|unspecified|0:0|0:1)$/i.test(sourceSar);
-    const infoSquarePixels=/^1(?:[.]0+)?$/.test(String(preflightInfoVideo.PixelAspectRatio || "").trim());
+    missingSourceSar=isMissingSampleAspectRatio(mainVideo.sample_aspect_ratio);
+    infoSquarePixels=isSquareMediaInfoPixelAspectRatio(preflightInfoVideo);
     const preflightAspectVideo=missingSourceSar && infoSquarePixels ? {...mainVideo,sample_aspect_ratio:"1:1"} : mainVideo;
     validateAspect(mainVideo,preflightAspectVideo,false);
     if (is12Bit && preflightBasic !== "sdr") throw new Error("12-bit conversion is only verified for tagged SDR sources; HDR, Dolby Vision, and untagged 12-bit video remain held");
@@ -889,7 +917,7 @@ one('''      cmdArgs.push(
 one('encoded_by=ArcAV1_QSV','encoded_by=ArcAV1_QSV_V15')
 one('cmdArgs.push("-metadata:g", "encoded_by=ArcAV1_QSV_V15");', 'cmdArgs.push("-metadata:g", forceStreamCopy ? "encoded_by=ArcAV1_SeekHeal_V15" : useSoftwareFallback ? "encoded_by=ArcAV1_SVTAV1_HDRFallback_V15" : "encoded_by=ArcAV1_QSV_V15");')
 one('      codec: expectedVideoCodec,\n', '      codec: expectedVideoCodec,\n      requireMarker: true,\n      hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10" || hdrClass === "dovi5_hdr10",\n      optionalHdrStatic: hdrClass === "hdr10",\n      hlg: hdrClass === "hlg",\n      untagged: hdrClass === "untagged",\n      sourceClass: hdrClass,\n      sourceHdr: hdrSource,\n      sdrSource,\n      sourceFrameScan: frameScan,\n      outputMarker: isBloat ? \"ArcAV1_SeekHeal_V15\" : softwareHdrFallback ? \"ArcAV1_SVTAV1_HDRFallback_V15\" : \"ArcAV1_QSV_V15\",\n')
-one('      sourceFrameScan: frameScan,\n', '      sourceFrameScan: frameScan,\n      updateWorker: args.updateWorker,\n      log,\n      assertOriginalUnchanged: assertOriginalUnchanged,\n      audioTimestampRepairIndices: Array.from(audioTimestampRepairs.keys()),\n')
+one('      sourceFrameScan: frameScan,\n', '      sourceFrameScan: frameScan,\n      sourceSquarePixels: infoSquarePixels,\n      updateWorker: args.updateWorker,\n      log,\n      assertOriginalUnchanged: assertOriginalUnchanged,\n      audioTimestampRepairIndices: Array.from(audioTimestampRepairs.keys()),\n')
 one('outputMarker: isBloat ? "ArcAV1_SeekHeal_V15" : softwareHdrFallback ? "ArcAV1_SVTAV1_HDRFallback_V15" : "ArcAV1_QSV_V15",', 'outputMarker: quarantinedCandidate?.marker || (isBloat ? "ArcAV1_SeekHeal_V15" : softwareHdrFallback ? "ArcAV1_SVTAV1_HDRFallback_V15" : "ArcAV1_QSV_V15"),')
 a=e.index('  log(`[Arc AV1 Single-Pass] Processing:')
 b=e.index('\n  // Cleanup temporary clamped chapters file',a)
