@@ -314,7 +314,7 @@ one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(upda
       finally {if(typeof assertSourceStable==='function')assertSourceStable();}
     }
   });''')
-one('  return await verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks);', '  return await validationStage(validationReport,"timelines",()=>verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks, expected.updateWorker, {source:resolveProbeDuration(src),output:resolveProbeDuration(dst),log:expected.log,verifiedFrames:outputFrameScan?.frames,strictCandidateFrames:!!expected.sourceFrameScan && !!outputFrameScan && Array.isArray(outputFrameScan.timestamps) && outputFrameScan.timestamps.length===outputFrameScan.frames && outputFrameScan.timestamps.every((value,index,all)=>Number.isFinite(value) && (index===0 || value>all[index-1]))}, expected.assertOriginalUnchanged, expected.audioTimestampRepairIndices || [],validationReport,useQsvDecode(video[0])),"rejected");')
+one('  return await verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks);', '  return await validationStage(validationReport,"timelines",()=>verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks, expected.updateWorker, {source:resolveProbeDuration(src),output:resolveProbeDuration(dst),log:expected.log,verifiedFrames:outputFrameScan?.frames,strictCandidateFrames:hasVerifiedCandidateFrameTimestamps(expected.sourceFrameScan, outputFrameScan)}, expected.assertOriginalUnchanged, expected.audioTimestampRepairIndices || [],validationReport,useQsvDecode(video[0])),"rejected");')
 one('    const specific = lines.filter(l => /error|failed|unsupported|invalid|cannot|only one of them|ratecontrol|qsv|vaapi/i.test(l));\n    const chosen = specific.length > 0 ? specific.slice(-3) : lines.slice(-3);\n    return chosen.join(" | ").substring(0, 240);',
 r'''    const specific = lines.filter(l => /\b(?:error|failed|unsupported|invalid|cannot|could not|only one of them|ratecontrol)\b/i.test(l)
       && !/discarding stream metadata .* because the stream is being re-encoded/i.test(l));
@@ -476,9 +476,23 @@ one('  // 2. Stream Probing', '''  const saveOriginalSnapshot = (stat, realPath,
     try {
       quarantinedCandidate = await findQuarantineCandidate({root:quarantineRootForJob,sourcePath:originalPath,libraryRoots:quarantineLibraryRoots});
       if (quarantinedCandidate) {
-        args.variables.user.quarantine_entry = quarantinedCandidate;
-        assertOriginalUnchanged();
-        log(`[Quarantine] Found a complete candidate for this exact source hash; checking current policy and reusable source evidence.`);
+        let retireInterlaced = quarantinedCandidate.validationReport?.failure?.message === 'Output has interlaced field order';
+        if (!retireInterlaced && quarantinedCandidate.candidatePath) {
+          try {
+            const candProbe = JSON.parse(execFileSync(ffprobeBin, ["-v","error","-select_streams","v","-show_entries","stream=field_order,disposition","-of","json",quarantinedCandidate.candidatePath], {encoding:"utf8",timeout:60000,maxBuffer:16*1024*1024}));
+            const candVideo = (candProbe.streams || []).find(s => !s.disposition?.attached_pic && !s.disposition?.timed_thumbnails);
+            if (candVideo && isInterlacedFieldOrderTag(candVideo)) retireInterlaced = true;
+          } catch (_) {}
+        }
+        if (retireInterlaced) {
+          await removeQuarantineCandidate(quarantinedCandidate);
+          log(`[Quarantine] Retired stored candidate with interlaced field order; proceeding with fresh encode.`);
+          quarantinedCandidate = null;
+        } else {
+          args.variables.user.quarantine_entry = quarantinedCandidate;
+          assertOriginalUnchanged();
+          log(`[Quarantine] Found a complete candidate for this exact source hash; checking current policy and reusable source evidence.`);
+        }
       }
     } catch (err) {
       quarantinedCandidate = null;
@@ -820,7 +834,7 @@ one('  const isTargetRam = typeof targetDir === "string" && targetDir.startsWith
 one('Math.abs((d.first-s.first)-shift)>tolerance || Math.abs((d.last-s.last)-shift)>tolerance', 'Math.abs((d.first-s.first)-shift)>0.1 || Math.abs((d.last-s.last)-shift)>0.1')
 one('        "-look_ahead", "1",\n        "-look_ahead_depth", "40",\n','')
 one('  const isHdr = isHlg || isPq || isBt2020 || isDovi;', '  const isHdr = isHlg || isPq || isDovi;')
-one('  const needsProactiveHybrid = isH26410bit || isVC1 || isNon420Chroma;', '  const needsProactiveHybrid = hdrClass === "dovi5_hdr10" || !useQsvDecode(mainVideo);\n  const qsvHdrClampRetryEligible = isHdr && isQsvHdrMasteringClampRisk(hdrSource);\n  let softwareHdrFallback = quarantinedCandidate?.kind === "svt_av1_encode" || (!quarantinedCandidate && qsvHdrClampRetryEligible);\n  quality = softwareHdrFallback ? 28 : selectedQuality;\n  let qualityLabel = softwareHdrFallback ? "SVT-AV1 CRF" : "ICQ";')
+one('  const needsProactiveHybrid = isH26410bit || isVC1 || isNon420Chroma;', '  const needsProactiveHybrid = hdrClass === "dovi5_hdr10" || !useQsvDecode(mainVideo) || isInterlacedFieldOrderTag(mainVideo);\n  const qsvHdrClampRetryEligible = isHdr && isQsvHdrMasteringClampRisk(hdrSource);\n  let softwareHdrFallback = quarantinedCandidate?.kind === "svt_av1_encode" || (!quarantinedCandidate && qsvHdrClampRetryEligible);\n  quality = softwareHdrFallback ? 28 : selectedQuality;\n  let qualityLabel = softwareHdrFallback ? "SVT-AV1 CRF" : "ICQ";')
 one('''  if (!isAlreadyAV1 && isHdr) {
     pipelineMode += isHlg ? " [HLG]" : " [HDR10]";
   }''', '''  if (!isAlreadyAV1 && isHdr) {
@@ -873,6 +887,7 @@ one('''      if (useHybrid) {
           : useHybrid ? "format=p010le" : is10Bit ? "vpp_qsv" : "vpp_qsv=format=p010";
       const sourceHasContentLight=(hdrSource?.side_data_list || []).some(x=>x.side_data_type==="Content light level metadata");
       const videoFilter=composeVideoFilterChain(baseVideoFilter,{
+        normalizeProgressiveFieldOrder:(useHybrid || useSoftwareFallback) && isInterlacedFieldOrderTag(mainVideo),
         removeHdr10Plus:hdrClass==="hdr10plus_hdr10" || hdrClass==="dovi81_hdr10plus_hdr10" || hdrClass==="dovi7_hdr10plus_hdr10",
         removeContentLight:isHdr && !sourceHasContentLight
       });
@@ -913,7 +928,8 @@ one('''      cmdArgs.push(
           "-b_strategy", "1",
           "-g", "120"
         );
-      }''')
+      }
+      cmdArgs.push("-field_order", "progressive");''')
 one('encoded_by=ArcAV1_QSV','encoded_by=ArcAV1_QSV_V15')
 one('cmdArgs.push("-metadata:g", "encoded_by=ArcAV1_QSV_V15");', 'cmdArgs.push("-metadata:g", forceStreamCopy ? "encoded_by=ArcAV1_SeekHeal_V15" : useSoftwareFallback ? "encoded_by=ArcAV1_SVTAV1_HDRFallback_V15" : "encoded_by=ArcAV1_QSV_V15");')
 one('      codec: expectedVideoCodec,\n', '      codec: expectedVideoCodec,\n      requireMarker: true,\n      hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10" || hdrClass === "dovi5_hdr10",\n      optionalHdrStatic: hdrClass === "hdr10",\n      hlg: hdrClass === "hlg",\n      untagged: hdrClass === "untagged",\n      sourceClass: hdrClass,\n      sourceHdr: hdrSource,\n      sdrSource,\n      sourceFrameScan: frameScan,\n      outputMarker: isBloat ? \"ArcAV1_SeekHeal_V15\" : softwareHdrFallback ? \"ArcAV1_SVTAV1_HDRFallback_V15\" : \"ArcAV1_QSV_V15\",\n')

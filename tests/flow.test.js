@@ -184,7 +184,7 @@ test('source and output timelines are fully scanned with source and output inter
  const sourceAspectValidation=engine.search(/validateAspect\(mainVideo,\s*preflightAspectVideo,\s*false\)/);
  assert.ok(sourceAspectValidation>=0&&sourceAspectValidation<sourceScan,'source aspect metadata must be validated before the full frame scan');
  assert.ok(engine.includes('if (frameScan.interlaced) throw Error("Interlaced video frames are unsupported")'),'decoded interlaced source frames must remain held');
- assert.ok(engine.includes('if (order && ![\'progressive\',\'unknown\'].includes(order)) throw Error(\'Output has interlaced field order\')'),'encoded output field-order guard must remain');
+ assert.ok(engine.includes("if (checkOutputFieldOrder && isInterlacedFieldOrderTag(output)) throw Error('Output has interlaced field order')")&&engine.includes("!['progressive','unknown'].includes(order)"),'encoded output field-order guard must remain');
 });
 
 test('canceled workers leave reclaimable reservations with job-owned scratch paths',()=>{

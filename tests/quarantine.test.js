@@ -266,3 +266,47 @@ test('storeQuarantineCandidate truncates oversized validation reports cleanly', 
   assert.equal(entry.validationReport.truncated,true);
   assert.equal(entry.validationReport.failure.message.length,1200);
 });
+
+test('quarantine manifests persist optional stageSignatures and update them safely while staying compatible with legacy manifests', async t => {
+  const fixture=makeFixture(t);
+  const sigs1={encode:'1'.repeat(64),candidateFrames:'2'.repeat(64),decode:'3'.repeat(64)};
+  const entry=await store(fixture,makeCandidate(fixture,'sigs'),{stageSignatures:sigs1});
+  assert.deepEqual(entry.stageSignatures,sigs1);
+  const found=await findQuarantineCandidate({root:fixture.cache,sourcePath:fixture.sourcePath,libraryRoots:[fixture.library]});
+  assert.deepEqual(found.stageSignatures,sigs1);
+
+  const sigs2={encode:'1'.repeat(64),candidateFrames:'2'.repeat(64),decode:'4'.repeat(64)};
+  const updated=await updateQuarantineFailure(found,{outcome:'rejected',stage:'video_decode'},sigs2);
+  assert.deepEqual(updated.stageSignatures,sigs2);
+
+  // Corrupt stageSignatures field causes findQuarantineCandidate to reject the tampered manifest
+  const raw=JSON.parse(fs.readFileSync(updated.manifestPath,'utf8'));
+  raw.stageSignatures={encode:'not-a-hash'};
+  fs.writeFileSync(updated.manifestPath,JSON.stringify(raw));
+  assert.equal(await findQuarantineCandidate({root:fixture.cache,sourcePath:fixture.sourcePath,libraryRoots:[fixture.library]}),null);
+
+  // Legacy manifest without stageSignatures remains loadable
+  delete raw.stageSignatures;
+  fs.writeFileSync(updated.manifestPath,JSON.stringify(raw));
+  const legacy=await findQuarantineCandidate({root:fixture.cache,sourcePath:fixture.sourcePath,libraryRoots:[fixture.library]});
+  assert.equal(legacy.id,entry.id);
+  assert.equal(legacy.stageSignatures,null);
+});
+
+test('retiring a candidate with keepSourcePrecheck preserves source-scoped prechecks while deleting candidate artifacts', async t => {
+  const fixture=makeFixture(t),entry=await store(fixture,makeCandidate(fixture,'retire'));
+  const sourcePrecheckPath=path.join(entry.quarantineRoot,`${entry.sourceKey}-${entry.sourceHash}.prechecks.gz`);
+  const framesPath=`${entry.candidatePath}.frames.gz`;
+  fs.writeFileSync(sourcePrecheckPath,'source precheck payload');
+  fs.writeFileSync(framesPath,'candidate frames payload');
+
+  await removeQuarantineCandidate(entry,{keepSourcePrecheck:true});
+  assert.equal(fs.existsSync(entry.candidatePath),false);
+  assert.equal(fs.existsSync(entry.manifestPath),false);
+  assert.equal(fs.existsSync(framesPath),false);
+  assert.equal(fs.existsSync(sourcePrecheckPath),true,'source precheck must survive candidate retirement');
+
+  // Force-fresh purge removes orphaned source-scoped .prechecks.gz too
+  assert.equal(await removeQuarantineCandidatesForSource({root:fixture.cache,sourcePath:fixture.sourcePath,libraryRoots:[fixture.library]}),0);
+  assert.equal(fs.existsSync(sourcePrecheckPath),false);
+});

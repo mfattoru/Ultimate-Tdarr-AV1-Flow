@@ -144,6 +144,10 @@ const isMissingSampleAspectRatio = value => {
 };
 const isSquareMediaInfoPixelAspectRatio = infoVideo =>
   /^1(?:\.0+)?$/.test(String(infoVideo?.PixelAspectRatio || '').trim());
+const isInterlacedFieldOrderTag = video => {
+  const order=String(video?.field_order || '').toLowerCase();
+  return !!(order && !['progressive','unknown'].includes(order));
+};
 const validateAspect = (source, output, checkOutputFieldOrder = true) => {
   const parse = value => {
     const match=String(value || '').match(/^(\d+):(\d+)$/);
@@ -158,10 +162,7 @@ const validateAspect = (source, output, checkOutputFieldOrder = true) => {
       && Number(source.width)===Number(output.width) && Number(source.height)===Number(output.height);
     if (!sourceSarMissing || !sameGeometry || Math.abs(b-1)>1e-6) throw Error('Source or output sample aspect ratio is missing or changed');
   } else if (Math.abs(a-b)>1e-6) throw Error('Source or output sample aspect ratio is missing or changed');
-  if (checkOutputFieldOrder) {
-    const order=String(output.field_order || '').toLowerCase();
-    if (order && !['progressive','unknown'].includes(order)) throw Error('Output has interlaced field order');
-  }
+  if (checkOutputFieldOrder && isInterlacedFieldOrderTag(output)) throw Error('Output has interlaced field order');
 };
 
 // HDR10-compatible Dolby Vision Profile 8.1 carries a plain HDR10 base layer.
@@ -772,6 +773,7 @@ const hdrFrameMetadataRequirements = (source, optionalHdrStatic=false) => {
 };
 const composeVideoFilterChain = (baseFilter, options={}) => {
   const filters=[];
+  if (options.normalizeProgressiveFieldOrder) filters.push('setfield=mode=prog');
   if (options.removeHdr10Plus) filters.push('sidedata=mode=delete:type=DYNAMIC_HDR_PLUS');
   if (options.removeContentLight) filters.push('sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL');
   filters.push(String(baseFilter));
@@ -811,6 +813,17 @@ const compareVideoTimestamps = (source, output) => {
     }
     const delta=Math.abs((a[i]-a[0])-(b[i]-b[0]));
     if (delta>0.05) throw Error(`Video presentation timestamp differs at frame ${i} by ${delta.toFixed(3)}s (tolerance 0.050s)`);
+  }
+};
+const hasVerifiedCandidateFrameTimestamps = (sourceScan, outputScan) => {
+  if (!sourceScan || !outputScan) return false;
+  if (!Array.isArray(sourceScan.timestamps) || sourceScan.timestamps.length !== sourceScan.frames) return false;
+  if (!Array.isArray(outputScan.timestamps) || outputScan.timestamps.length !== outputScan.frames) return false;
+  try {
+    compareVideoTimestamps(sourceScan, outputScan);
+    return true;
+  } catch (_) {
+    return false;
   }
 };
 

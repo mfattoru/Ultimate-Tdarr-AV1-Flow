@@ -242,3 +242,115 @@ Fix false-negative `video_decode` (`decode_unverified`) holds when a verified ca
 3. **Refactor & Verify:**
    - Ensure helper predicates are concise, non-duplicated, and handle truncated diagnostic banners cleanly.
    - Run `python3 scripts/build.py`, `npm run test:coverage`, and `git diff --check`.
+
+---
+
+# V15 Quarantined DTS-Tie Verification & MBAFF Progressive Field-Order Plan
+
+## Goal
+Resolve two independent failures observed in [`BvDiJPV-log.txt`](file:///Users/mfattoru/Downloads/BvDiJPV-log.txt) (*How to Train Your Dragon (2025) Bluray-2160p.mkv*) and [`hucUFsn-log.txt`](file:///Users/mfattoru/Downloads/hucUFsn-log.txt) (*Stick Man (2015) Remux-1080p.mkv*):
+1. **`BvDiJPV-log.txt` (`decode_unverified` despite matched DTS & passed `frames` stage):** Align `strictCandidateFrames` in candidate timeline validation with `compareVideoTimestamps` so candidates whose frame PTS passed `compareVideoTimestamps` and whose packet DTS passed `validateVideoPacketDts` (`missingDtsCount === 0`, `outputDtsNonIncreasingCount <= source.outputDtsNonIncreasingCount`) can recover via `timestamp-isolated` decode instead of short-circuiting on strict monotonicity (`value > all[index - 1]`).
+2. **`hucUFsn-log.txt` (`Output has interlaced field order` on progressive MBAFF source):** Route sources with verified-progressive decoded frames (`frameScan.interlaced === 0`) and interlaced stream `field_order` tags (`tt`/`bb`/`tb`/`bt`) through Hybrid CPU decode (`setfield=mode=prog`) + explicit progressive container/encoder signaling (`-field_order progressive`), and retire stale quarantined candidates that previously failed with `Output has interlaced field order`.
+
+## Change Categorization
+- **Bug Fix (Behavior Modification):** Modifies existing in-place behavior in two areas:
+  1. `strictCandidateFrames` in candidate `video_decode` recovery accepts any candidate whose frame timestamps already passed `compareVideoTimestamps` rather than rejecting source-matched ties / 2 ms quantization ties / single recovered glitches.
+  2. Sources carrying interlaced container/stream `field_order` metadata (`tt`/`bb`/`tb`/`bt`) with `frameScan.interlaced === 0` are encoded via Hybrid CPU decode (`setfield=mode=prog`) with `-field_order progressive`, and stale quarantined candidates that failed for `Output has interlaced field order` are retired for fresh encode instead of endlessly revalidating an interlaced-tagged output.
+
+## Affected Files
+1. `src/policy.js`
+   - Extract `isInterlacedFieldOrderTag(video)` (returning `true` when `field_order` is non-empty and not in `['progressive', 'unknown']`) and reuse it inside `validateAspect(..., checkOutputFieldOrder = true)` so validation and encoding share one predicate.
+   - Add `hasVerifiedCandidateFrameTimestamps(sourceScan, outputScan)` wrapping finite-array checks and `compareVideoTimestamps(sourceScan, outputScan)` cleanly without swallowing corrupt/missing scans.
+   - Extend `composeVideoFilterChain(baseFilter, options)` with `options.normalizeProgressiveFieldOrder` to prepend `setfield=mode=prog` before pixel-format / HDR metadata filters in CPU/Hybrid filter chains.
+   - Export `hasVerifiedCandidateFrameTimestamps` and `isInterlacedFieldOrderTag` in the policy test exports.
+2. `scripts/build.py`
+   - Update `strictCandidateFrames` passed from `verifyVideoTimeline` into `verifyCandidateDecodes` to use `hasVerifiedCandidateFrameTimestamps(expected.sourceFrameScan, outputFrameScan)`.
+   - Include `isInterlacedFieldOrderTag(mainVideo)` in `needsProactiveHybrid` so H.264/HEVC MBAFF/PAFF progressive streams tagged `tt`/`bb`/`tb`/`bt` decode on CPU and normalize frames via `setfield=mode=prog`.
+   - Pass `normalizeProgressiveFieldOrder: (useHybrid || useSoftwareFallback) && isInterlacedFieldOrderTag(mainVideo)` to `composeVideoFilterChain(...)` and push `"-field_order", "progressive"` to `cmdArgs` on non-copy encodes (`!doCopyVideo`).
+   - When `findQuarantineCandidate` returns an entry rejected for `'Output has interlaced field order'` (or whose video stream probes as `isInterlacedFieldOrderTag(...)`), call `removeQuarantineCandidate(quarantinedCandidate)`, log retirement, and clear `quarantinedCandidate` prior to the fresh-encode GPU device check so stale interlaced-tagged candidates re-encode cleanly.
+3. `tests/policy.test.js`
+   - Add unit tests for `isInterlacedFieldOrderTag`, `hasVerifiedCandidateFrameTimestamps` (including `compareVideoTimestamps`-permitted source PTS ties, sub-frame quantization ties, single isolated glitches on >=1000 frames, and rejected regressions/missing scans), and `composeVideoFilterChain(..., { normalizeProgressiveFieldOrder: true })`.
+   - Add a real-FFmpeg regression test (skipped cleanly if FFmpeg is unavailable) encoding an interlaced-tagged H.264 stream with `setfield=mode=prog` + `-field_order progressive` and asserting `field_order === 'progressive'`.
+4. `tests/integration.test.js`
+   - Add integration/structural tests verifying:
+     - Candidates with matched non-zero packet DTS (`1560 <= 1560`, `missingDtsCount === 0`) and `compareVideoTimestamps`-verified frame PTS ties satisfy `strictCandidateFrames` / `candidatePacketTimestampsVerified` and recover via `timestamp-isolated` decode.
+     - Generated `flow.json` routes `isInterlacedFieldOrderTag(mainVideo)` sources through Hybrid `setfield=mode=prog` + `-field_order progressive` and retires quarantined candidates rejected for `Output has interlaced field order`.
+5. `flow.json`
+   - Regenerate deterministically via `python3 scripts/build.py`.
+
+## Step-by-Step Execution Path (TDD)
+1. **Red (Failing Tests First):** Add failing unit & integration tests in `tests/policy.test.js` and `tests/integration.test.js` covering both fixes, run `npm test`, and confirm the new tests fail as expected.
+2. **Green (Minimal Implementation):** Implement the helpers/updates in `src/policy.js` and `scripts/build.py`, rebuild `flow.json` via `python3 scripts/build.py`, and run `npm test` to confirm all tests pass.
+3. **Refactor & Verify:** Confirm zero duplicated predicates across validation and encoder pipelines, then run `python3 scripts/build.py`, `npm run test:coverage`, and `git diff --check`.
+
+---
+
+# V15 Stage-Scoped Cache & Partial Invalidation Plan (`precheck`, `encode`, `candidate_frames`, `decode`)
+
+## Goal
+Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candidate-coupled `.prechecks.gz` storage with deterministic **stage-scoped signatures** (`sourceVideoPrecheck`, `sourceAudioPrecheck`, `encode`, `candidateFrames`, `decode`) so each cached stage invalidates only when its own logic, tool version, or inputs change — preventing validation/post-check fixes (like `OMe5KdY` -> `gC0GSzW`) or notification edits from triggering redundant 72-minute source frame scans, 40-minute encodes, or 66-minute candidate frame scans, and allowing encode fixes to retire stale candidates without discarding valid source prechecks.
+
+## Change Categorization
+- **Feature Addition + In-Place Cache/Invalidation Behavior Modification:** Adds stage-scoped build fingerprints, source-scoped precheck caching, and candidate frame-scan caching, and updates quarantine reuse/invalidation behavior in-place while maintaining backward compatibility with existing on-disk `version: 1` quarantine manifests and `precheck_cache.js` helper APIs.
+
+## Architectural Design
+1. **Build-Time Stage Signature Partitioning (`scripts/stage_signatures.py` + `scripts/build.py`)**
+   - Compute 5 independent SHA-256 build hashes injected into the monolithic plugin:
+     - `__PRECHECK_VIDEO_CODE_HASH__`: Source frame/HDR/color precheck helpers in `src/policy.js` (`inspectVideoFrames`, `buildFrameScanArguments`, `recordHdrFrame`, `collectHdrFrameStatic`, `classifyVideo`, `preflightHybridHdr`, `preflightDolbyHdrRoute`, `determineHdrRoute`, `mergeHdrMetadata`, Dolby Level 6/9 extraction, `validateSdrFrameSignaling`, `inferUntaggedColorRange`, corruption/infra diagnostic matchers, etc.), `src/precheck_cache.js` source-evidence schema, and the source-scan invocation block in `scripts/build.py`.
+     - `__PRECHECK_AUDIO_CODE_HASH__`: `src/audio_timing.js` order/repair analysis and retained-audio precheck runner in `scripts/build.py`.
+     - `__ENCODE_CODE_HASH__`: `src/progress.js` (`runSingleQuality`), encoder/filter/quality/HDR-route helpers in `src/policy.js` (`composeVideoFilterChain`, `useQsvDecode`, `isInterlacedFieldOrderTag`, `isQsvHdrMasteringClampRisk`, `untaggedColorRangeArgs`, `selectQualityValue`, `mustRetainOriginalAtQualityFloor`, etc.), ASS normalization & audio repair BSF (`src/subtitle_timing.js`, `src/audio_timing.js`), and the FFmpeg command/route builder (`needsProactiveHybrid`, `runFfmpeg`, seek-heal fallback) in `scripts/build.py` + `scripts/build_additions.py`.
+     - `__CANDIDATE_FRAMES_CODE_HASH__`: `inspectVideoFrames` + frame HDR/color parsing in `src/policy.js` and the candidate frame-scan block inside `validateOutput`.
+     - `__DECODE_CODE_HASH__`: `src/validation.js`, `src/pgs.js`, `validateCopiedSubtitlePackets` (`src/subtitle_timing.js`), output comparison/aspect/HDR/SDR validators in `src/policy.js` (`compareVideoTimestamps`, `hasVerifiedCandidateFrameTimestamps`, `validateAspect`, `validateHdr10`, `validateHlg`, `validateSdrColor`, `validateUntaggedOutput`, `shouldRetrySvtForQsvHdrClamp`, etc.), and `validateOutput` / `verifyVideoTimeline` / `validationStage` wrappers in `scripts/build.py`, `scripts/build_additions.py`, and `scripts/build_validation.py`.
+   - **Completeness Guard:** Parse top-level declarations in `src/policy.js` and `src/subtitle_timing.js` during `build.py` and fail the build if any declaration is unmapped; shared helpers belong to every consumer stage set so edits invalidate all affected stages automatically without manual version bumps.
+
+2. **Stage-Scoped Precheck & Candidate-Frame Evidence (`src/precheck_cache.js` + `src/quarantine.js`)**
+   - **Source Precheck Storage (`<sourceKey>-<sourceHash>.prechecks.gz`):**
+     - Key source evidence by canonical `(quarantineRoot, sourcePath, sourceHash)` rather than binding its filename to `<candidateId>.mkv`, while preserving fallback read/cleanup of legacy `${candidatePath}.prechecks.gz` and preserving existing `savePrecheckCache`/`loadPrecheckCache`/`removePrecheckCache` signatures.
+     - Store `videoSignature` (`{ codeHash, node, ffprobe, video, mediaInfo }`) and `audioSignature` (`{ codeHash, node, ffprobe, ffmpeg, streams }`) independently inside the signed payload so an audio-only change re-runs only `[Audio precheck]` while reusing `frameScan`, and a video-only precheck change re-runs `frameScan` cleanly.
+     - Expose structured miss reasons (`missing`, `corrupt`, `source_hash_changed`, `video_signature_changed`, `audio_signature_changed`) so Tdarr job logs explicitly state why prechecks were reused or re-run.
+     - Keep `.prechecks.gz` tied to quarantined/retired-quarantine lifecycle so non-quarantined one-off failures never leave orphaned cache files, and clean up `<sourceKey>-<sourceHash>.prechecks.gz` on both replacement success (`cleanup_success`) and `arc_force_fresh_path`.
+   - **Candidate Frame Scan Storage (`${candidatePath}.frames.gz`):**
+     - Store verified `outputFrameScan` alongside the candidate `.mkv`, keyed by `(candidateHash, candidateFramesSignature)` (including `__CANDIDATE_FRAMES_CODE_HASH__`, `ffprobe` version, and scan-relevant HDR/untagged/copy flags), guarded by the same SHA-256 + bounded gzip integrity checks.
+     - Reuse `outputFrameScan` when valid so post-check fixes (e.g., `src/validation.js`, `compareVideoTimestamps`, `pgs.js`) skip the 66-minute candidate `ffprobe -show_frames` pass while still running all fast header/metadata/timestamp/HDR assertions live (`stream_probe`, `video_stream`, `hdr_color`, `streams`, `replacement_readiness`).
+
+3. **Quarantine Manifest `stageSignatures` & Action Matrix (`src/quarantine.js`, `scripts/build.py`, `scripts/build_additions.py`)**
+   - Extend quarantine manifest `version: 1` with optional `stageSignatures: { encode, candidateFrames, decode }` (validated if present; legacy manifests without `stageSignatures` remain valid and continue using structural compatibility checks).
+   - Update `updateQuarantineFailure(entry, validationReport, stageSignatures?)` so `stageSignatures` are refreshed after each validation run.
+   - Runtime invalidation behavior on quarantine hit:
+     - **`encode` invalidated (`manifest.stageSignatures?.encode` present and `!== currentEncodeSignature`, or legacy structural incompatibility):**
+       Log the exact reason, retire/remove ONLY the candidate (`.mkv`, `.json`, `.frames.gz`), **preserve** valid `<sourceKey>-<sourceHash>.prechecks.gz` (migrating legacy `${candidatePath}.prechecks.gz` first if needed), reuse valid `frameScan`/audio precheck, and run fresh encode + validation.
+     - **`encode` valid, `precheck` (video and/or audio) invalidated:**
+       Re-run only the invalidated source precheck sub-stage(s), re-check preflight/encode compatibility with the refreshed source scan (`frameScan` / `audioTimestampRepairs`), keep the quarantined `.mkv` if `encodeSignature` still matches, and proceed to candidate validation.
+     - **`encode` valid, `candidateFrames` valid, only `decode`/post-checks or notifications changed:**
+       Reuse source `frameScan` + `audio` precheck, reuse quarantined `.mkv`, reuse `outputFrameScan` (`${candidatePath}.frames.gz`), log the per-stage reuse/invalidation summary, and run fast checks + live `timelines` / `video_decode` / `audio_decode` / `replacement_readiness`.
+     - **`candidateFrames` invalidated:**
+       Reuse source prechecks + quarantined `.mkv`, skip stale `.frames.gz`, run live candidate `inspectVideoFrames` + live downstream validation, and refresh `.frames.gz`.
+
+## Files Affected
+- [`scripts/stage_signatures.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/stage_signatures.py) (new): Stage symbol mapper, completeness verifier, and per-stage code hash builder.
+- [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py): Replace monolithic `__PRECHECK_ENGINE_HASH__` with stage-scoped hashes; compute runtime `sourceVideoSignature`, `sourceAudioSignature`, `encodeSignature`, `candidateFramesSignature`, `decodeSignature`; handle partial quarantine retirement/reuse + clear diagnostic logging.
+- [`scripts/build_additions.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build_additions.py): Wire candidate `.frames.gz` load/save in `validateOutput` (`frames` stage) and clean `<sourceKey>-<sourceHash>.prechecks.gz` + `.frames.gz` in `cleanup_success`.
+- [`scripts/build_validation.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build_validation.py): Preserve stage boundary telemetry and pass `stageSignatures` into quarantine storage/update.
+- [`src/precheck_cache.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/precheck_cache.js): Support split video/audio source precheck signatures, source-scoped `<sourceKey>-<sourceHash>.prechecks.gz` path + legacy fallback/migration, structured miss reasons, and candidate frame-scan cache (`${candidatePath}.frames.gz`).
+- [`src/quarantine.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/quarantine.js): Validate optional `stageSignatures` in manifests, update via `updateQuarantineFailure`, preserve valid source precheck on single-candidate retirement (`removeQuarantineCandidate({ keepSourcePrecheck: true })` or source-scoped file independence), and purge `.prechecks.gz` + `.frames.gz` in `removeQuarantineCandidatesForSource`.
+- [`tests/precheck_cache.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/precheck_cache.test.js): Unit tests for independent video vs audio precheck invalidation, miss reason reporting, source-scoped path reuse across candidate retirement, and candidate `.frames.gz` caching/tamper rejection.
+- [`tests/quarantine.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/quarantine.test.js): Unit tests for optional `stageSignatures` validation, legacy manifest compatibility, `updateQuarantineFailure` signature updates, and `removeQuarantineCandidatesForSource` cleanup of `.prechecks.gz` and `.frames.gz`.
+- [`tests/integration.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/integration.test.js) (plus Python build-hash isolation check): Integration tests simulating:
+  1. Post-check (`src/validation.js`) edit only -> precheck (`video` & `audio`), encode, and candidate `frames` are all reused while `video_decode` runs live.
+  2. Candidate-frames logic edit only -> source precheck & encode reused, candidate `frames` re-runs.
+  3. Encode-only edit (`encodeSignature` changed) -> old candidate retired, source `precheck` preserved & reused, fresh encode + validation run.
+  4. Audio-precheck-only change -> source `frameScan` reused, `[Audio precheck]` re-runs.
+- [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json): Rebuilt deterministically via `python3 scripts/build.py`.
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase (Failing Tests First):**
+   - Add failing tests in `tests/precheck_cache.test.js`, `tests/quarantine.test.js`, and `tests/integration.test.js` covering split video/audio source precheck signatures, source-scoped precheck retention across candidate retirement, candidate `frames` caching, `encodeSignature`-driven candidate retirement, and build-time stage hash isolation.
+   - Run `npm test` and confirm the new tests fail as expected.
+2. **Green Phase (Implementation):**
+   - Implement `scripts/stage_signatures.py` with completeness validation over `src/policy.js` and `src/subtitle_timing.js`.
+   - Extend `src/precheck_cache.js` and `src/quarantine.js` cleanly without duplicating hash/integrity validation helpers.
+   - Update `scripts/build.py`, `scripts/build_additions.py`, and `scripts/build_validation.py` to wire stage signatures, reuse/retire actions, candidate-frame caching, cleanup, and diagnostic logging.
+   - Rebuild `flow.json` via `python3 scripts/build.py` and run `npm test`.
+3. **Refactor & Verify:**
+   - Review shared cache envelope/path helpers for zero duplication and clear docstrings/comments.
+   - Run `make check` (`python3 scripts/build.py && npm run test:coverage && git diff --check`) and confirm 100% pass rate with zero failures or skipped assertions.

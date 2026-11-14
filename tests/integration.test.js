@@ -19,11 +19,24 @@ child.execFileSync('ffmpeg',['-v','error','-i',source,'-map','0:0','-map','0:1',
 child.execFileSync('ffmpeg',['-v','error','-i',multiAudioSource,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',multiAudioCandidate],{stdio:'ignore'});
 assert.ok(fs.statSync(multiAudioCandidate).size < fs.statSync(multiAudioSource).size);
 function argsFor(file,logs=[]) { const f={_id:file,container:'mkv',file_size:fs.statSync(file).size/1024/1024}; return {inputFileObj:{...f},originalLibraryFile:{...f},workDir:dir,variables:{user:{min_cache_free_mb:1}},ffmpegPath:'ffmpeg',librarySettings:{folder:dir},jobLog:m=>logs.push(String(m))}; }
-function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,qsvLongTimestampLines=false,matchedVideoDtsTies=false,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,candidateMissingSar=false,mediaInfoPixelAspectRatio,candidateMediaInfoPixelAspectRatio,hdr=false,colorOverride=null,mediaInfoOverride=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate}={}) {
+function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,qsvLongTimestampLines=false,matchedVideoDtsTies=false,matchedSubFramePtsTie=false,sourceFieldOrder=null,candidateFieldOrder=null,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,candidateMissingSar=false,mediaInfoPixelAspectRatio,candidateMediaInfoPixelAspectRatio,hdr=false,colorOverride=null,mediaInfoOverride=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate,codeOverride=null}={}) {
   const calls=[],commands=[],logs=[],audioDecodeCommands=[]; let initialProbe=true,moverSimulated=false;
   const fakeFs=new Proxy(fs,{get(t,p){if(p==='unlinkSync' && denyIso)return name=>{if(String(name).endsWith('.iso'))throw Error('simulated ISO permission error');return t.unlinkSync(name)};if(p==='accessSync')return (name,...args)=>name==='/dev/dri/renderD129'?undefined:t.accessSync(name,...args);return t[p]}});
   const fakeChild={...child,
     spawn(cmd,args,opts){
+      if(matchedSubFramePtsTie&&cmd==='ffprobe'&&args.includes('-show_frames')&&args.includes('compact=p=1:nk=0')){
+        const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
+        const process=new EventEmitter();process.stdout=new PassThrough();process.stderr=new PassThrough();process.kill=()=>{};
+        const target=args[args.length-1],isSrc=target===inputPath;
+        const lines=[];
+        for(let i=0;i<96;i++){
+          let pts=(i/24).toFixed(6);
+          if(i===20)pts=(isSrc?19/24+0.001:19/24).toFixed(6);
+          lines.push(`frame|best_effort_timestamp_time=${pts}|pkt_pos=${1024+i*512}|interlaced_frame=0|color_range=tv|color_space=bt709|color_primaries=bt709|color_transfer=bt709`);
+        }
+        queueMicrotask(()=>{process.stdout.end(lines.join('\n')+'\n');process.stderr.end();process.emit('close',0,null);});
+        return process;
+      }
       if(matchedVideoDtsTies&&cmd==='ffprobe'&&args.includes('-show_packets')&&args.includes('packet=pts_time,dts_time,duration_time,pos')&&args.includes('-select_streams')&&args[args.indexOf('-select_streams')+1]==='0'){
         const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
         const process=new EventEmitter();process.stdout=new PassThrough();process.stderr=new PassThrough();process.kill=()=>{};
@@ -136,7 +149,11 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
       if(cmd==='ffprobe') {
         const probe=JSON.parse(result);
    if((missingSourceSar && args[args.length-1]===inputPath) || (candidateMissingSar && args[args.length-1]!==inputPath)) for(const stream of probe.streams||[]) if(stream.codec_type==='video') delete stream.sample_aspect_ratio;
-        for(const stream of probe.streams||[])if(stream.codec_type==='video')Object.assign(stream,colorOverride?colorOverride:hdr?{color_transfer:'smpte2084',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv'}:{color_transfer:'bt709',color_primaries:'bt709',color_space:'bt709',color_range:'tv'});
+        for(const stream of probe.streams||[])if(stream.codec_type==='video'){
+          Object.assign(stream,colorOverride?colorOverride:hdr?{color_transfer:'smpte2084',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv'}:{color_transfer:'bt709',color_primaries:'bt709',color_space:'bt709',color_range:'tv'});
+          if(sourceFieldOrder&&args[args.length-1]===inputPath)stream.field_order=sourceFieldOrder;
+          if(candidateFieldOrder&&args[args.length-1]!==inputPath)stream.field_order=candidateFieldOrder;
+        }
         if(initialProbe && args.includes('-show_format') && args[args.length-1]===inputPath) {
           initialProbe=false;
           const video=probe.streams.find(s=>s.codec_type==='video');video.width=uhd?3840:1920;video.height=uhd?2160:1080;
@@ -159,7 +176,7 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
     }
   };
   const m={exports:{}}; const req=n=>n==='fs'?fakeFs:n==='child_process'?fakeChild:require(n);
-  runFlowCode(['require','module','exports'],code,[req,m,m.exports]);
+  runFlowCode(['require','module','exports'],codeOverride || code,[req,m,m.exports]);
   return {fn:m.exports,calls,commands,logs,audioDecodeCommands,moverSimulated:()=>moverSimulated};
 }
 async function run(x,args) {try{return await x.fn(args);}finally{const h=args.variables?.user?.cache_reservation;if(h){await x.fn.releaseForTest(h);delete args.variables.user.cache_reservation;}}}
@@ -678,4 +695,34 @@ test('HDR source with QSV green-y clamp mastering routes proactively to SVT-AV1 
  assert.ok(svt,'expected proactive libsvtav1 encode');
  assert.deepEqual(x.calls,[28]);
  assert.ok(x.logs.some(line=>/proactive.*clamp|green-y/i.test(line)));
+});
+
+test('matched non-zero DTS ties with compareVideoTimestamps-valid frame PTS ties recover via timestamp-isolated decode',async()=>{
+ const x=load({qsvTimestampFailure:true,qsvTimestampExitZero:true,qsvLongTimestampLines:true,matchedVideoDtsTies:true,matchedSubFramePtsTie:true}),args=argsFor(source,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+ assert.equal(args.variables.user.validation_report.outcome,'recovered');
+ assert.equal(args.variables.user.validation_report.recoveries[0].code,'timestamp_isolated_decode');
+ assert.ok(x.audioDecodeCommands.some(c=>c.input!==source&&c.args.includes('settb=expr=1/1000000,setpts=N')));
+});
+
+test('progressive MBAFF-tagged source normalizes field order in Hybrid CPU filter mode and retires interlaced quarantined candidates',async()=>{
+ const library=path.join(dir,'mbaff-library');fs.mkdirSync(library,{recursive:true});
+ const mbaffSource=path.join(library,'stick-man-mbaff.mkv');fs.copyFileSync(source,mbaffSource);
+ // Simulate an older quarantined candidate that previously failed with Output has interlaced field order
+ const first=load({inputPath:mbaffSource,sourceFieldOrder:'tt',candidateFieldOrder:'tt'});
+ const firstArgs=argsFor(mbaffSource,first.logs);firstArgs.librarySettings.folder=library;
+ const stale=await run(first,firstArgs);
+ assert.equal(stale.outputNumber,2);
+ assert.ok(firstArgs.variables.user.quarantine_entry,'test setup expects a stored quarantined candidate');
+ const retry=load({inputPath:mbaffSource,sourceFieldOrder:'tt'});
+ const retryArgs=argsFor(mbaffSource,retry.logs);retryArgs.librarySettings.folder=library;
+ const approved=await run(retry,retryArgs);
+ assert.equal(approved.outputNumber,1,retryArgs.variables.user.failure_reason);
+ assert.ok(retry.logs.some(line=>/\[Quarantine\] Retired stored candidate with interlaced field order/i.test(line)),'stale interlaced-tagged quarantined candidate must be retired');
+ const encode=retry.commands.find(c=>c.args.includes('av1_qsv'));
+ assert.ok(encode,'MBAFF progressive source must still encode with Arc QSV');
+ const ffArgs=encode.args.slice(encode.args.indexOf('--')+2);
+ assert.equal(ffArgs.includes('-hwaccel'),false,'MBAFF progressive source must route through Hybrid CPU decode');
+ assert.equal(ffArgs[ffArgs.indexOf('-vf')+1],'setfield=mode=prog,format=p010le');
+ assert.equal(ffArgs[ffArgs.indexOf('-field_order')+1],'progressive');
 });

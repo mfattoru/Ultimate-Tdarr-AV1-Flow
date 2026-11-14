@@ -1095,3 +1095,42 @@ test('Dolby Vision Profile 8.6 with verified HDR10 compatibility routes cleanly 
  assert.throws(()=>p.testHdrRoute({...pqVideo,side_data_list:[dv86]},{...dv86Info,HDR_Format_Compatibility:'Blu-ray'},{...pqScan,dovi:100}),/Dolby/i);
  assert.throws(()=>p.testHdrRoute({...pqVideo,side_data_list:[{...dv86,dv_bl_signal_compatibility_id:3}]},dv86Info,{...pqScan,dovi:100}),/Dolby/i);
 });
+
+test('hasVerifiedCandidateFrameTimestamps aligns with compareVideoTimestamps including permitted ties and glitches',()=>{
+ assert.equal(typeof p.testHasVerifiedCandidateFrameTimestamps,'function');
+ assert.equal(p.testHasVerifiedCandidateFrameTimestamps({frames:4,timestamps:[0,0.041,0.083,0.125]},{frames:4,timestamps:[0,0.041,0.083,0.125]}),true);
+ // Source-matched PTS tie and 1 ms quantization tie permitted by compareVideoTimestamps
+ assert.equal(p.testHasVerifiedCandidateFrameTimestamps({frames:4,timestamps:[0,0.041,0.041,0.125]},{frames:4,timestamps:[1,1.041,1.041,1.125]}),true);
+ assert.equal(p.testHasVerifiedCandidateFrameTimestamps({frames:4,timestamps:[0,0.041,0.042,0.083]},{frames:4,timestamps:[0,0.042,0.042,0.083]}),true);
+ // Single isolated recovered glitch in >=1000 frames
+ const n=1000;
+ const srcTs=Array.from({length:n},(_,i)=>Math.round(i*1000/24)/1000);
+ const dstTs=srcTs.slice();
+ dstTs[500]=dstTs[499];
+ assert.equal(p.testHasVerifiedCandidateFrameTimestamps({frames:n,timestamps:srcTs},{frames:n,timestamps:dstTs}),true);
+ // Newly introduced tie outside tolerances or missing timestamps still return false
+ assert.equal(p.testHasVerifiedCandidateFrameTimestamps({frames:4,timestamps:[0,0.041,0.083,0.125]},{frames:4,timestamps:[0,0.041,0.041,0.125]}),false);
+ assert.equal(p.testHasVerifiedCandidateFrameTimestamps(null,{frames:4,timestamps:[0,0.041,0.083,0.125]}),false);
+ assert.equal(p.testHasVerifiedCandidateFrameTimestamps({frames:4,timestamps:[0,0.041,0.083,0.125]},{frames:4,timestamps:[0,0.041,0.083]}),false);
+});
+
+test('interlaced field-order classification and progressive CPU filter normalization',async t=>{
+ assert.equal(typeof p.testIsInterlacedFieldOrderTag,'function');
+ for(const tag of ['tt','tb','bt','bb','TT']) assert.equal(p.testIsInterlacedFieldOrderTag({field_order:tag}),true,tag);
+ for(const tag of ['progressive','unknown','',undefined,null]) assert.equal(p.testIsInterlacedFieldOrderTag({field_order:tag}),false,String(tag));
+ assert.equal(p.testVideoFilter('format=p010le',{normalizeProgressiveFieldOrder:true}),'setfield=mode=prog,format=p010le');
+ assert.equal(p.testVideoFilter('format=p010le',{normalizeProgressiveFieldOrder:true,removeHdr10Plus:true}),'setfield=mode=prog,sidedata=mode=delete:type=DYNAMIC_HDR_PLUS,format=p010le');
+
+ const cp=require('node:child_process'),os=require('node:os');
+ if(cp.spawnSync('ffmpeg',['-version'],{stdio:'ignore'}).status!==0) return t.skip('FFmpeg is unavailable');
+ const tmpDir=fs.mkdtempSync(path.join(os.tmpdir(),'tdarr-field-order-'));
+ t.after(()=>fs.rmSync(tmpDir,{recursive:true,force:true}));
+ const interlacedTagged=path.join(tmpDir,'src-tff.mkv');
+ const encoded=path.join(tmpDir,'out-prog.mkv');
+ const mk=cp.spawnSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=64x64:rate=25','-frames:v','12','-c:v','libx264','-flags','+ildct','-x264-params','tff=1','-y',interlacedTagged],{encoding:'utf8'});
+ assert.equal(mk.status,0,mk.stderr);
+ const enc=cp.spawnSync('ffmpeg',['-v','error','-i',interlacedTagged,'-vf',p.testVideoFilter('format=p010le',{normalizeProgressiveFieldOrder:true}),'-field_order','progressive','-c:v','libsvtav1','-preset','12','-svtav1-params','lp=1:log-level=0','-y',encoded],{encoding:'utf8'});
+ assert.equal(enc.status,0,enc.stderr);
+ const probed=JSON.parse(cp.execFileSync('ffprobe',['-v','error','-select_streams','v:0','-show_entries','stream=field_order','-of','json',encoded],{encoding:'utf8'}));
+ assert.equal(probed.streams[0].field_order,'progressive');
+});
