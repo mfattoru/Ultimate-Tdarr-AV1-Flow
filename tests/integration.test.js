@@ -425,7 +425,7 @@ test('4:2:2 input is downsampled with CPU decode while AV1 stays on Arc QSV',asy
  const input=path.join(dir,'source-422.mkv');
  child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24:duration=4','-f','lavfi','-i','sine=frequency=440:duration=4','-vf','format=yuv422p10le','-c:v','ffv1','-pix_fmt','yuv422p10le','-c:a','aac','-y',input],{stdio:'ignore'});
  const x=load(),args=argsFor(input,x.logs),r=await run(x,args);
- assert.equal(r.outputNumber,1);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason||x.logs.slice(-8).join('\n'));
  const transcode=x.commands.find(c=>c.args.includes('av1_qsv'));
  assert.ok(transcode,'expected Arc QSV AV1 encode');
  const ffArgs=transcode.args.slice(transcode.args.indexOf('--')+2);
@@ -438,7 +438,7 @@ test('4:4:4 input is downsampled with CPU decode while AV1 stays on Arc QSV',asy
  const input=path.join(dir,'source-444.mkv');
  child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24:duration=4','-f','lavfi','-i','sine=frequency=440:duration=4','-vf','format=yuv444p10le','-c:v','ffv1','-pix_fmt','yuv444p10le','-c:a','aac','-y',input],{stdio:'ignore'});
  const x=load(),args=argsFor(input,x.logs),r=await run(x,args);
- assert.equal(r.outputNumber,1);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason||x.logs.slice(-8).join('\n'));
  const transcode=x.commands.find(c=>c.args.includes('av1_qsv'));
  assert.ok(transcode,'expected Arc QSV AV1 encode');
  const ffArgs=transcode.args.slice(transcode.args.indexOf('--')+2);
@@ -451,7 +451,7 @@ test('verified SDR 12-bit input uses error-diffused CPU conversion before Arc QS
  const input=path.join(dir,'source-12bit-sdr.mkv');
  child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24:duration=4','-f','lavfi','-i','sine=frequency=440:duration=4','-vf','format=yuv420p12le','-c:v','libx265','-preset','ultrafast','-crf','10','-x265-params','log-level=error:pools=1','-pix_fmt','yuv420p12le','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv','-c:a','aac','-y',input],{stdio:'ignore'});
  const x=load(),args=argsFor(input,x.logs),r=await run(x,args);
- assert.equal(r.outputNumber,1);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason||x.logs.slice(-8).join('\n'));
  const transcode=x.commands.find(c=>c.args.includes('av1_qsv'));
  assert.ok(transcode,'12-bit SDR source should still use Arc QSV encoding');
  const ffArgs=transcode.args.slice(transcode.args.indexOf('--')+2);
@@ -685,11 +685,11 @@ test('BT.2020 bt2020-10 wide-gamut SDR source encodes without forcing PQ transfe
 
 test('HDR source with QSV green-y clamp mastering routes proactively to SVT-AV1 CRF 28 without an initial QSV encode',async()=>{
  const clampInput=path.join(dir,'hdr-clamp-source.mkv'),clampOutput=path.join(dir,'hdr-clamp-candidate.mkv');
- child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24:duration=2','-f','lavfi','-i','sine=frequency=440:duration=2','-map','0:v:0','-map','1:a:0','-c:v','libx265','-preset','ultrafast','-crf','28','-x265-params','log-level=error:pools=1:master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1):max-cll=992,518','-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-c:a','aac','-y',clampInput],{stdio:'ignore'});
- child.execFileSync('ffmpeg',['-v','error','-i',clampInput,'-map','0','-c:v','libsvtav1','-preset','12','-crf','40','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-metadata:g','encoded_by=ArcAV1_SVTAV1_HDRFallback_V15','-y',clampOutput],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24:duration=2','-f','lavfi','-i','sine=frequency=440:duration=2','-map','0:v:0','-map','1:a:0','-c:v','libx265','-preset','ultrafast','-crf','10','-x265-params','log-level=error:pools=1:master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1):max-cll=992,518','-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-c:a','aac','-y',clampInput],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',clampInput,'-map','0','-c:v','libsvtav1','-preset','12','-crf','40','-svtav1-params','lp=1:log-level=0:mastering-display=G(0.17,0.797)B(0.131,0.046)R(0.708,0.292)WP(0.3127,0.329)L(1000,0.0001):content-light=992,518','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-metadata:g','encoded_by=ArcAV1_SVTAV1_HDRFallback_V15','-y',clampOutput],{stdio:'ignore'});
  const x=load({hdr:true,inputPath:clampInput,smallerOutput:clampOutput});
  const args=argsFor(clampInput,x.logs),r=await run(x,args);
- assert.equal(r.outputNumber,1);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason||x.logs.slice(-8).join('\n'));
  assert.equal(x.commands.some(c=>c.args.includes('av1_qsv')),false,'proactive clamp route must not run av1_qsv first');
  const svt=x.commands.find(c=>c.args.includes('libsvtav1'));
  assert.ok(svt,'expected proactive libsvtav1 encode');
