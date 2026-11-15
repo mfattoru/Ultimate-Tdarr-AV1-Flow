@@ -380,3 +380,34 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
 1. **Red Phase**: Add failing tests in `tests/policy.test.js` and `tests/flow.test.js` (and export hook in `tests/flow_test_runtime.js`); run `make test` to observe expected failures.
 2. **Green Phase**: Implement `isVerifiedDolbyProfile5Config` + `verifyDolbyProfile5RpuFullRange` in `src/policy.js`, wire into `scripts/build.py`, register in `scripts/stage_signatures.py`, update docs, and run `make build`.
 3. **Verify**: Run `make check` (`make build` + `coverage` + `git diff --check`) and verify preflight/metadata checks read-only against both Profile 5 MKVs in `tdarr-flow-live-test-20261102`.
+
+## V16 Execution Plan: In-Place Support for Remaining Unsupported Formats (Categories A, B, C, D)
+
+### Scope & Classification
+- **Change type:** In-place behavior expansion (feature additions & bugfixes within existing `precheck_video`, `encode`, and `candidate_frames` stages — approved by user).
+- **Affected files:**
+  - `src/policy.js`
+  - `scripts/stage_signatures.py`
+  - `scripts/build.py`
+  - `flow.json` (generated)
+  - `tests/flow_test_runtime.js`, `tests/policy.test.js`, `tests/flow.test.js`, `tests/integration.test.js`
+  - `docs/architecture/CODEC_COVERAGE.md`, `docs/plans/IMPLEMENTATION_LOG.md`
+
+### 4 Categories Implemented In-Place
+1. **Category A — PAL/NTSC SDR `BT.470 System B/G` & `System M`:**
+   - Normalize `"BT.470 System B/G"`, `"BT.470 System B, G"`, `"BT.470 System M"` in `normalizeColorToken` / `normalizeSdrMatrix` and prevent `/` in `"System B/G"` from splitting in `validateMediaInfoHdrColors`.
+   - Accept `bt470m` primaries (`colour_primaries`) and map `bt470m` matrix coefficients to `smpte170m`.
+2. **Category B — Native HLG without `HDR_Format`:**
+   - In `determineHdrRoute`, admit HLG (`arib-std-b67` + `bt2020` + `bt2020nc` + `tv`) when `mediaInfoHdrText(info)` is empty and MediaInfo `transfer_characteristics` (or `_Original`) normalizes to `hlg` or `aribstdb67`, while continuing to reject HLG streams with conflicting non-HLG `HDR_Format` headers.
+3. **Category C — Full-Range (`pc`) HDR10 / HDR10+ & Absent/`0,0` CLL on `hdr10plus_hdr10`:**
+   - Add `isVerifiedHdrColorRange(video, info, allowFullRange=false)` allowing `'tv'`, or `'pc'` when both `ffprobe` (`color_range: 'pc'`) and MediaInfo (`colour_range`/`color_range: 'Full'`) agree on non-Dolby `hdr10` / `hdr10plus_hdr10`.
+   - In `resolveHdrLight` and `scripts/build.py`, strip `0,0` or absent `Content light level metadata` cleanly on `hdr10plus_hdr10` (matching `hdr10` without invoking Dolby Level 6).
+   - Drive `checkHdrFrameStatic` `requireLight`/`requireMastering` flags via `hdrFrameMetadataRequirements(hdrSource, hdrClass === "hdr10")` (or equivalent) so missing CLL does not fail per-frame static checks, and emit `-color_range pc` when `hdrSource?.color_range === "pc"`.
+4. **Category D — Explicit SDR Streams with Orphan HDR Side Data:**
+   - **D1 (`orphan_dovi_sdr`):** Explicit `bt709`/`bt709`/`bt709`/`tv` (both `ffprobe` & `mediainfo`) carrying a stale Matroska `DOVI configuration record` with 0 frame-level RPU packets (`hasFrameDolbyRpu`). Preflight returns `'orphan_dovi_sdr'`; after full-stream frame scan confirms zero `dovi`, `hdr10plus`, and `otherDynamic` frames, classify as `hdrClass = "sdr"` (`isHdr = false`), strip `DOVI_METADATA` via `composeVideoFilterChain`, and verify output has no Dolby Vision metadata.
+   - **D2 (`isSdrWithOrphanStaticHdr`):** Explicit `bt709`/`bt709`/`bt709`/`tv` carrying leftover `SMPTE ST 2086` / mastering display / content light metadata with `dovi === 0, hdr10plus === 0, otherDynamic === 0`. Classify as `hdrClass = "sdr"` (`isHdr = false`), strip `MASTERING_DISPLAY_METADATA` and `CONTENT_LIGHT_LEVEL`, and verify output has no static HDR or dynamic HDR metadata.
+
+### Verification Plan
+1. TDD Red phase: add exports and failing unit/flow/integration tests; run `npm test` to confirm failures.
+2. TDD Green phase: implement changes across `src/policy.js`, `scripts/stage_signatures.py`, `scripts/build.py`; rebuild `flow.json`; verify `python3 scripts/stage_signatures.py --check-isolation` and `make check` (>=90% coverage).
+3. Live container tests inside `tdarr-flow-live-test-20261102:/test` covering all 4 categories on copied/clipped media samples, verify output streams (`ffprobe` + `mediainfo`), clean up container scratch clips and host `/tmp` files, and re-run `make check`.

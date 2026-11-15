@@ -636,7 +636,11 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
   let preflightDoviRoute=null,preflightHdrSource=null,preflightHdrLightOverride=null,preflightHdrMasterOverride=null,preflightHdrWarning=null,preflightLevel6=null;
   const INTEL_VULKAN_ICD="/usr/share/vulkan/icd.d/intel_icd.json";
   try {
-    preflightDoviRoute=preflightDolbyHdrRoute(mainVideo,preflightInfoVideo,hybridPreflight);
+    const hasDoviConfig = (mainVideo.side_data_list || []).some(item => /dovi configuration/i.test(String(item.side_data_type || "")));
+    const preflightRpuPresent = (hasDoviConfig && isExplicitSdrColorTriplet(mainVideo, preflightInfoVideo))
+      ? hasFrameDolbyRpu(readHdrFrames(ffprobeBin, inputPath, mainVideo.index))
+      : false;
+    preflightDoviRoute=preflightDolbyHdrRoute(mainVideo,preflightInfoVideo,hybridPreflight,preflightRpuPresent);
     if(preflightDoviRoute) {
       initialWorkerProgressDetails.status="Precheck: Dolby Vision metadata";
       if(preflightDoviRoute==="dovi5_hdr10") {
@@ -658,6 +662,8 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
         preflightHdrMasterOverride=dovi5Target.masteringDisplayArg;
         preflightHdrLightOverride=dovi5Target.contentLightArg;
         log(`[HDR preflight] Dolby Vision Profile 5 route dovi5_hdr10 verified Level 6/9 metadata before the full source scan.`);
+      } else if(preflightDoviRoute==="orphan_dovi_sdr") {
+        log("[HDR preflight] Explicit BT.709 SDR stream carries a stale DOVI configuration record with no sampled frame RPUs; verifying full stream before SDR encode.");
       } else {
         initialWorkerProgressDetails.workerLog="Checking Dolby Vision base-layer metadata before the full source scan.";
         reportWorkerProgress(args.updateWorker,{percentage:0.5,fps:0,status:initialWorkerProgressDetails.status},initialWorkerProgressDetails);
@@ -729,7 +735,7 @@ one('  // 2. Audio & Subtitle stream count & codec checks', '''  // [STAGE:decod
       outputFrameScan = cachedCandidateFrames.frameScan;
       if (typeof expected.log === 'function') expected.log(`[Validation frames] Reused ${outputFrameScan.frames} verified candidate frames.`);
     } else {
-      outputFrameScan = await inspectVideoFrames(ffprobeBin,outputPath,video[0].index,{staticMetadata:!!expected.hdr10 || !!expected.hlg || !!expected.untagged,timestamps:!!expected.sourceFrameScan,failFast:true,scanRole:"candidate",rejectDolbyVision:(!!expected.hdr10 || !!expected.hlg || !!expected.untagged) && !allowSourceDovi,rejectHdr10Plus:(!!expected.hdr10 || !!expected.hlg || !!expected.untagged) && !allowSourceHdr10Plus,threads:getDecodeThreadCount(),expectedColor:video[0],expectedFrames,assertUnchanged:expected.assertOriginalUnchanged,onProgress:(frames,total,complete,fps)=>reportWorkerProgress(expected.updateWorker,{percentage:82+8*(complete?1:total>0?Math.min(0.99,frames/total):0),fps,status:"Validation: output frame, color, and HDR scan"})});
+      outputFrameScan = await inspectVideoFrames(ffprobeBin,outputPath,video[0].index,{staticMetadata:!!expected.hdr10 || !!expected.hlg || !!expected.untagged || !!expected.stripOrphanStaticHdr,timestamps:!!expected.sourceFrameScan,failFast:true,scanRole:"candidate",rejectDolbyVision:(!!expected.hdr10 || !!expected.hlg || !!expected.untagged || !!expected.stripOrphanDovi) && !allowSourceDovi,rejectHdr10Plus:(!!expected.hdr10 || !!expected.hlg || !!expected.untagged || !!expected.stripOrphanDovi || !!expected.stripOrphanStaticHdr) && !allowSourceHdr10Plus,threads:getDecodeThreadCount(),expectedColor:video[0],expectedFrames,assertUnchanged:expected.assertOriginalUnchanged,onProgress:(frames,total,complete,fps)=>reportWorkerProgress(expected.updateWorker,{percentage:82+8*(complete?1:total>0?Math.min(0.99,frames/total):0),fps,status:"Validation: output frame, color, and HDR scan"})});
       if (typeof expected.log === 'function') expected.log(`[Validation frames] Scanned ${outputFrameScan.frames} candidate frames.`);
       if (candFramesRef && candFramesSig) {
         saveCandidateFramesCache(candFramesRef, candFramesSig, outputFrameScan);
@@ -790,10 +796,19 @@ one('  // 2. Audio & Subtitle stream count & codec checks', '''  // [STAGE:decod
     validateUntaggedOutput(expected.sdrSource,video[0],outputFrameScan);
     if (outputFrameScan.interlaced || outputFrameScan.dovi || outputFrameScan.hdr10plus || outputFrameScan.otherDynamic || outputFrameScan.staticInfo.mastering || outputFrameScan.staticInfo.light || outputFrameScan.staticInfo.conflict) throw Error("Untagged output contains unexpected HDR metadata");
   }
+  if (!expected.hdr10 && !expected.hlg && !expected.untagged && !isStreamCopyFallback && (expected.stripOrphanDovi || expected.stripOrphanStaticHdr)) {
+    if ((video[0].side_data_list || []).some(s => isDynamicHdrSignal(s.side_data_type) || /dovi configuration/i.test(String(s.side_data_type || '')) || (expected.stripOrphanStaticHdr && /mastering display|content light/i.test(String(s.side_data_type || ''))))) {
+      throw Error("SDR output retains unexpected orphan HDR metadata");
+    }
+    if (outputFrameScan.interlaced || outputFrameScan.dovi || outputFrameScan.hdr10plus || outputFrameScan.otherDynamic || (expected.stripOrphanStaticHdr && (outputFrameScan.staticInfo?.mastering || outputFrameScan.staticInfo?.light || outputFrameScan.staticInfo?.conflict))) {
+      throw Error("SDR output frame scan retains unexpected HDR metadata");
+    }
+  }
 
   // 2. Audio & Subtitle stream count & codec checks''')
 one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedByKey]).includes("ArcAV1_QSV"));','''  const isEncodedByUs = false;
   let hdrClass, hdrSource, sdrSource, hdrLightOverride = null, hdrMasterOverride = null;
+  let stripOrphanDovi = false, stripOrphanStaticHdr = false;
   delete args.variables.user.hdr_conversion;
   try {
     const infoVideos = [preflightInfoVideo];
@@ -811,6 +826,21 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
       if (!effectiveRange) throw new Error("Untagged SDR YUV range could not be inferred safely");
       sdrSource.color_range=effectiveRange;
       log(`[Color] Input transfer, primaries, and matrix are unspecified; using ${effectiveRange==='tv'?'TV limited':'PC full'} range for the untagged SDR YUV encode.`);
+    } else if (preflightDoviRoute === "orphan_dovi_sdr" && isExplicitSdrColorTriplet(mainVideo, infoVideos[0]) && !frameScan.dovi && !frameScan.hdr10plus && !frameScan.otherDynamic && !frameScan.staticInfo?.conflict) {
+      validateEffectiveSdrTransfer(mainVideo, infoVideos[0], frameScan);
+      validateSdrFrameSignaling("sdr", frameScan, mainVideo);
+      sdrSource = effectiveSdrSource(mainVideo, infoVideos[0], frameScan);
+      hdrClass = "sdr";
+      stripOrphanDovi = true;
+      stripOrphanStaticHdr = Boolean(frameScan.staticInfo?.mastering || frameScan.staticInfo?.light || (mainVideo.side_data_list || []).some(s => /mastering display|content light/i.test(String(s.side_data_type || ""))));
+      log("[Color] Verified explicit BT.709 SDR stream with stale DOVI configuration record and 0 RPU frames; encoding as SDR and stripping Dolby metadata.");
+    } else if (isSdrWithOrphanStaticHdr(mainVideo, infoVideos[0], frameScan)) {
+      validateEffectiveSdrTransfer(mainVideo, infoVideos[0], frameScan);
+      validateSdrFrameSignaling("sdr", frameScan, mainVideo);
+      sdrSource = effectiveSdrSource(mainVideo, infoVideos[0], frameScan);
+      hdrClass = "sdr";
+      stripOrphanStaticHdr = true;
+      log("[Color] Verified explicit BT.709 SDR stream with leftover static HDR metadata and 0 dynamic HDR frames; encoding as SDR and stripping static HDR metadata.");
     } else {
       hdrClass = determineHdrRoute(mainVideo,infoVideos[0],frameScan);
       if (hdrClass === "hlg") {
@@ -838,12 +868,13 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
         } else {
           const mediaInfoHdrSeed=hdrClass==="hdr10"?seedHdrMetadataFromMediaInfo(mainVideo,infoVideos[0]):{video:mainVideo,added:[],contentLightOverride:null};
           if(mediaInfoHdrSeed.added.length)log(`[HDR metadata] Filled missing FFprobe side data from stream-sourced MediaInfo fields: ${mediaInfoHdrSeed.added.join(", ")}. Candidate metadata must still match these values.`);
-          hdrSource = mergeHdrMetadata(mediaInfoHdrSeed.video,readHdrFrames(ffprobeBin,inputPath,mainVideo.index),{allowMissingLight:canUseDolbyLevel6,allowMissingAll:hdrClass==="hdr10"});
+          hdrSource = mergeHdrMetadata(mediaInfoHdrSeed.video,readHdrFrames(ffprobeBin,inputPath,mainVideo.index),{allowMissingLight:canUseDolbyLevel6 || hdrClass==="hdr10plus_hdr10",allowMissingAll:hdrClass==="hdr10"});
           const resolved = await resolveHdrLight(hdrSource,hdrClass,() => extractDolbyLevel6(ffmpegBin,inputPath,mainVideo.index,frameScan.frames));
           if (resolved.warning) log(`[HDR warning] ${resolved.warning}`);
           hdrSource = resolved.metadata; hdrLightOverride = resolved.override || mediaInfoHdrSeed.contentLightOverride;
         }
-        checkHdrFrameStatic(hdrSource,frameScan,!canUseDolbyLevel6 && hdrClass!=="hdr10",hdrClass!=="hdr10");
+        const sourceStaticReqs = hdrFrameMetadataRequirements(hdrSource, hdrClass === "hdr10");
+        checkHdrFrameStatic(hdrSource, frameScan, !canUseDolbyLevel6 && sourceStaticReqs.requireLight, sourceStaticReqs.requireMastering);
       }
       if (hdrClass === "hdr10plus_hdr10") {
         args.variables.user.hdr_conversion = "HDR10+ to HDR10 base layer; HDR10+ dynamic metadata removed";
@@ -881,12 +912,13 @@ e=e[:a]+'''  // Every eligible source, including AV1 produced by older flows, is
   const isOversizedAV1 = false;
   const isAlreadyAV1 = false;
   quality = selectedQuality;
+  if (hdrClass === "sdr" || hdrClass === "untagged") isHdr = false;
 '''+e[b:]
 one('  const rawSizeMB = (args.originalLibraryFile?.file_size || args.inputFileObj?.file_size || (fs.statSync(inputPath).size / (1024 * 1024)));','  const rawSizeMB = fs.statSync(inputPath).size / (1024 * 1024);')
 one('  const isTargetRam = typeof targetDir === "string" && targetDir.startsWith("/dev/shm");', '  const isTargetRam = BigInt.asUintN(32,fs.statfsSync(targetDir,{bigint:true}).type) === 16914836n;')
 one('Math.abs((d.first-s.first)-shift)>tolerance || Math.abs((d.last-s.last)-shift)>tolerance', 'Math.abs((d.first-s.first)-shift)>0.1 || Math.abs((d.last-s.last)-shift)>0.1')
 one('        "-look_ahead", "1",\n        "-look_ahead_depth", "40",\n','')
-one('  const isHdr = isHlg || isPq || isBt2020 || isDovi;', '  const isHdr = isHlg || isPq || isDovi;')
+one('  const isHdr = isHlg || isPq || isBt2020 || isDovi;', '  let isHdr = isHlg || isPq || isDovi;')
 one('  const needsProactiveHybrid = isH26410bit || isVC1 || isNon420Chroma;', '  const needsProactiveHybrid = hdrClass === "dovi5_hdr10" || !useQsvDecode(mainVideo) || isInterlacedFieldOrderTag(mainVideo);\n  const qsvHdrClampRetryEligible = isHdr && isQsvHdrMasteringClampRisk(hdrSource);\n  let softwareHdrFallback = quarantinedCandidate?.kind === "svt_av1_encode" || (!quarantinedCandidate && qsvHdrClampRetryEligible);\n  quality = softwareHdrFallback ? 28 : selectedQuality;\n  let qualityLabel = softwareHdrFallback ? "SVT-AV1 CRF" : "ICQ";')
 one('''  if (!isAlreadyAV1 && isHdr) {
     pipelineMode += isHlg ? " [HLG]" : " [HDR10]";
@@ -942,7 +974,9 @@ one('''      if (useHybrid) {
       const videoFilter=composeVideoFilterChain(baseVideoFilter,{
         normalizeProgressiveFieldOrder:(useHybrid || useSoftwareFallback) && isInterlacedFieldOrderTag(mainVideo),
         removeHdr10Plus:hdrClass==="hdr10plus_hdr10" || hdrClass==="dovi81_hdr10plus_hdr10" || hdrClass==="dovi7_hdr10plus_hdr10",
-        removeContentLight:isHdr && !sourceHasContentLight
+        removeContentLight:(isHdr && !sourceHasContentLight) || stripOrphanStaticHdr,
+        removeMasteringDisplay:stripOrphanStaticHdr,
+        removeDoviMetadata:stripOrphanDovi
       });
       cmdArgs.push("-vf",videoFilter);''')
 one('''        } else {
@@ -951,6 +985,7 @@ one('''        } else {
       }''', '''        } else {
           cmdArgs.push("-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc");
           if (hdrClass === "dovi5_hdr10") cmdArgs.push("-color_range", "tv");
+          else if (hdrSource?.color_range === "pc") cmdArgs.push("-color_range", "pc");
         }
       } else if (!isHdr && hdrClass === "sdr" && sdrSource) {
         if (!isUnknownColorValue(sdrSource.color_primaries)) cmdArgs.push("-color_primaries", sdrSource.color_primaries);
@@ -985,7 +1020,7 @@ one('''      cmdArgs.push(
       cmdArgs.push("-field_order", "progressive");''')
 one('encoded_by=ArcAV1_QSV','encoded_by=ArcAV1_QSV_V15')
 one('cmdArgs.push("-metadata:g", "encoded_by=ArcAV1_QSV_V15");', 'cmdArgs.push("-metadata:g", forceStreamCopy ? "encoded_by=ArcAV1_SeekHeal_V15" : useSoftwareFallback ? "encoded_by=ArcAV1_SVTAV1_HDRFallback_V15" : "encoded_by=ArcAV1_QSV_V15");')
-one('      codec: expectedVideoCodec,\n', '      codec: expectedVideoCodec,\n      requireMarker: true,\n      hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10" || hdrClass === "dovi5_hdr10",\n      optionalHdrStatic: hdrClass === "hdr10",\n      hlg: hdrClass === "hlg",\n      untagged: hdrClass === "untagged",\n      sourceClass: hdrClass,\n      sourceHdr: hdrSource,\n      sdrSource,\n      sourceFrameScan: frameScan,\n      outputMarker: isBloat ? \"ArcAV1_SeekHeal_V15\" : softwareHdrFallback ? \"ArcAV1_SVTAV1_HDRFallback_V15\" : \"ArcAV1_QSV_V15\",\n')
+one('      codec: expectedVideoCodec,\n', '      codec: expectedVideoCodec,\n      requireMarker: true,\n      hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10" || hdrClass === "dovi5_hdr10",\n      optionalHdrStatic: hdrClass === "hdr10",\n      hlg: hdrClass === "hlg",\n      untagged: hdrClass === "untagged",\n      stripOrphanDovi,\n      stripOrphanStaticHdr,\n      sourceClass: hdrClass,\n      sourceHdr: hdrSource,\n      sdrSource,\n      sourceFrameScan: frameScan,\n      outputMarker: isBloat ? \"ArcAV1_SeekHeal_V15\" : softwareHdrFallback ? \"ArcAV1_SVTAV1_HDRFallback_V15\" : \"ArcAV1_QSV_V15\",\n')
 one('      sourceFrameScan: frameScan,\n', '      sourceFrameScan: frameScan,\n      sourceSquarePixels: infoSquarePixels,\n      updateWorker: args.updateWorker,\n      log,\n      assertOriginalUnchanged: assertOriginalUnchanged,\n      audioTimestampRepairIndices: Array.from(audioTimestampRepairs.keys()),\n      quarantineEntry: quarantinedCandidate,\n      candidateFramesSignature: effectiveCandidateFramesSignature,\n')
 one('    const valResult = await validateOutput(ffprobeBin, inputPath, outputPath, {', '''    effectiveCandidateFramesSignature = buildCandidateFramesSignature(quarantinedCandidate ? quarantinedCandidate.marker === "ArcAV1_SeekHeal_V15" : isBloat);
     currentStageSignatures = (currentEncodeSignature && effectiveCandidateFramesSignature && currentDecodeSignature)
@@ -1331,6 +1366,8 @@ one('await precheckRetainedSourceAudio();', '''await precheckRetainedSourceAudio
     ffmpeg: toolVersions.ffmpeg,
     selectedQuality,
     hdrClass,
+    stripOrphanDovi,
+    stripOrphanStaticHdr,
     hdrMasterOverride,
     hdrLightOverride,
     color: {p: mainVideo.color_primaries, t: mainVideo.color_transfer, s: mainVideo.color_space, r: mainVideo.color_range},
@@ -1346,6 +1383,8 @@ one('await precheckRetainedSourceAudio();', '''await precheckRetainedSourceAudio
     hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10" || hdrClass === "dovi5_hdr10",
     hlg: hdrClass === "hlg",
     untagged: hdrClass === "untagged",
+    stripOrphanDovi,
+    stripOrphanStaticHdr,
     isSeekHeal: Boolean(isSeekHeal),
     sourceFrames: frameScan?.frames || null,
     sourceDovi: frameScan?.dovi || 0,

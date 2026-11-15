@@ -99,12 +99,20 @@ test('runSingleQuality classifies encoder failure, invalid size, quality floor, 
 test('remux progress falls back to prlimit when updateLimit is not provided and handles prlimit failure',async t=>{
  const outputPath=fixture(t);
  const script=`const fs=require('fs'),p=process.argv[1];fs.writeFileSync(p,Buffer.alloc(900));setInterval(()=>{},1000)`;
- const result=await runLimitedFfmpeg({
-  command:process.execPath,
-  argv:['-e',script,outputPath],
-  durationSec:1,
-  capacity:{outputPath,initialBytes:1000n,headroomBytes:500n,chunkBytes:1000n,pollMs:10,grow:async required=>required}
- });
+ const prevPath=process.env.PATH;
+ process.env.PATH='/nonexistent';
+ let result;
+ try{
+  result=await runLimitedFfmpeg({
+   command:process.execPath,
+   argv:['-e',script,outputPath],
+   durationSec:1,
+   capacity:{outputPath,initialBytes:1000n,headroomBytes:500n,chunkBytes:1000n,pollMs:10,grow:async required=>required}
+  });
+ }finally{
+  if(prevPath===undefined)delete process.env.PATH;
+  else process.env.PATH=prevPath;
+ }
  assert.ok(result.capacityError instanceof Error);
  assert.ok(result.signal==='SIGTERM'||result.signal==='SIGKILL');
 });

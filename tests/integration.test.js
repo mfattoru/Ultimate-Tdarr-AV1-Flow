@@ -794,3 +794,82 @@ test('post-check-only rebuild reuses source precheck, candidate mkv, and candida
  await cleanupMod.exports({...encodeArgs,jobLog:m=>cleanupLogs.push(String(m))});
  assert.equal(fs.existsSync(sourcePrecheckFile),false,'cleanup_success must remove source precheck after replacement succeeds');
 });
+
+test('Category A: PAL BT.470 System B/G source with BT.470 System B/G MediaInfo labels encodes cleanly as SDR',async()=>{
+ const input=path.join(dir,'cat-a-pal-bt470bg-source.mkv'),output=path.join(dir,'cat-a-pal-bt470bg-candidate.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=25:duration=4','-f','lavfi','-i','sine=frequency=440:duration=4','-c:v','libx264','-preset','ultrafast','-crf','18','-pix_fmt','yuv420p','-colorspace','bt470bg','-color_range','tv','-c:a','aac','-y',input],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',input,'-map','0','-c:v','libsvtav1','-preset','12','-crf','42','-svtav1-params','lp=1:log-level=0','-c:a','copy','-colorspace','bt470bg','-color_range','tv','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',output],{stdio:'ignore'});
+ const x=load({
+  inputPath:input,
+  smallerOutput:output,
+  colorOverride:{color_space:'bt470bg',color_transfer:'unknown',color_primaries:'unknown',color_range:'tv'},
+  mediaInfoOverride:{HDR_Format:'',HDR_Format_Compatibility:'',matrix_coefficients:'BT.470 System B/G',colour_range:'Limited'}
+ });
+ const args=argsFor(input,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+ assert.deepEqual(x.calls,[22]);
+});
+
+test('Category B: native HLG source without HDR_Format routes via MediaInfo transfer_characteristics and preserves HLG',async()=>{
+ const input=path.join(dir,'cat-b-hlg-source.mkv'),output=path.join(dir,'cat-b-hlg-candidate.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24:duration=4','-f','lavfi','-i','sine=frequency=440:duration=4','-c:v','libsvtav1','-preset','12','-crf','10','-svtav1-params','lp=1:log-level=0','-c:a','aac','-color_primaries','bt2020','-color_trc','arib-std-b67','-colorspace','bt2020nc','-color_range','tv','-bsf:v','av1_metadata=color_primaries=9:transfer_characteristics=18:matrix_coefficients=9','-y',input],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',input,'-map','0','-c:v','libsvtav1','-preset','12','-crf','40','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt2020','-color_trc','arib-std-b67','-colorspace','bt2020nc','-color_range','tv','-bsf:v','av1_metadata=color_primaries=9:transfer_characteristics=18:matrix_coefficients=9','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',output],{stdio:'ignore'});
+ const x=load({
+  inputPath:input,
+  smallerOutput:output,
+  colorOverride:{color_primaries:'bt2020',color_transfer:'arib-std-b67',color_space:'bt2020nc',color_range:'tv'},
+  mediaInfoOverride:{HDR_Format:'',HDR_Format_Compatibility:'',transfer_characteristics:'HLG',colour_primaries:'BT.2020',matrix_coefficients:'BT.2020 non-constant',colour_range:'Limited'}
+ });
+ const args=argsFor(input,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+ assert.deepEqual(x.calls,[22]);
+});
+
+test('Category C: full-range pc HDR10 source passes verified range checks and emits -color_range pc',async()=>{
+ const input=path.join(dir,'cat-c-pc-hdr10-source.mkv'),output=path.join(dir,'cat-c-pc-hdr10-candidate.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24:duration=4','-f','lavfi','-i','sine=frequency=440:duration=4','-c:v','libx265','-preset','ultrafast','-crf','12','-x265-params','log-level=error:pools=1','-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','pc','-c:a','aac','-y',input],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',input,'-map','0','-c:v','libsvtav1','-preset','12','-crf','40','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','pc','-bsf:v','av1_metadata=color_primaries=9:transfer_characteristics=16:matrix_coefficients=9','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',output],{stdio:'ignore'});
+ const x=load({
+  hdr:true,
+  inputPath:input,
+  smallerOutput:output,
+  colorOverride:{color_primaries:'bt2020',color_transfer:'smpte2084',color_space:'bt2020nc',color_range:'pc'},
+  mediaInfoOverride:{HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10',transfer_characteristics:'PQ',colour_primaries:'BT.2020',matrix_coefficients:'BT.2020 non-constant',colour_range:'Full'}
+ });
+ const args=argsFor(input,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+ const encode=x.commands.find(c=>c.args.includes('av1_qsv'));
+ assert.ok(encode,'expected av1_qsv encode');
+ const idx=encode.args.indexOf('-color_range');
+ assert.ok(idx>=0 && encode.args[idx+1]==='pc',`expected -color_range pc in encode args: ${encode.args.join(' ')}`);
+});
+
+test('Category D2: explicit BT.709 SDR source with orphan ST 2086 metadata encodes cleanly as SDR and strips static HDR side data',async()=>{
+ const input=path.join(dir,'cat-d2-orphan-st2086-source.mkv'),output=path.join(dir,'cat-d2-orphan-st2086-candidate.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24:duration=4','-f','lavfi','-i','sine=frequency=440:duration=4','-c:v','libx265','-preset','ultrafast','-crf','12','-x265-params','log-level=error:pools=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=992,523','-pix_fmt','yuv420p10le','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv','-c:a','aac','-y',input],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',input,'-map','0','-vf','sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL','-c:v','libsvtav1','-preset','12','-crf','40','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',output],{stdio:'ignore'});
+ const x=load({
+  inputPath:input,
+  smallerOutput:output,
+  colorOverride:{color_primaries:'bt709',color_transfer:'bt709',color_space:'bt709',color_range:'tv'},
+  mediaInfoOverride:{HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10',transfer_characteristics:'BT.709',colour_primaries:'BT.709',matrix_coefficients:'BT.709',colour_range:'Limited'}
+ });
+ const args=argsFor(input,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+ const encode=x.commands.find(c=>c.args.includes('av1_qsv'));
+ assert.ok(encode,'expected av1_qsv encode');
+ const vf=encode.args[encode.args.indexOf('-vf')+1];
+ assert.match(vf,/sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA/);
+ assert.match(vf,/sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL/);
+ // Output retains no static HDR metadata even if candidate had it: reject bad candidate retaining static HDR
+ const badOut=path.join(dir,'cat-d2-bad-candidate.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24:duration=4','-f','lavfi','-i','sine=frequency=440:duration=4','-c:v','libsvtav1','-preset','12','-crf','40','-svtav1-params','lp=1:log-level=0:mastering-display=G(0.265,0.69)B(0.15,0.06)R(0.68,0.32)WP(0.3127,0.329)L(1000,0.0001):content-light=992,523','-c:a','aac','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-color_range','tv','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',badOut],{stdio:'ignore'});
+ const bad=load({
+  inputPath:input,
+  smallerOutput:badOut,
+  colorOverride:{color_primaries:'bt709',color_transfer:'bt709',color_space:'bt709',color_range:'tv'},
+  mediaInfoOverride:{HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10',transfer_characteristics:'BT.709',colour_primaries:'BT.709',matrix_coefficients:'BT.709',colour_range:'Limited'}
+ });
+ const badRes=await run(bad,argsFor(input,bad.logs));
+ assert.equal(badRes.outputNumber,2,'candidate retaining static HDR on BT.709 SDR must be rejected');
+});

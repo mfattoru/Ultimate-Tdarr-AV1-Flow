@@ -1149,3 +1149,99 @@ test('interlaced field-order classification and progressive CPU filter normaliza
  const probed=JSON.parse(cp.execFileSync('ffprobe',['-v','error','-select_streams','v:0','-show_entries','stream=field_order','-of','json',encoded],{encoding:'utf8'}));
  assert.equal(probed.streams[0].field_order,'progressive');
 });
+
+test('Category A: MediaInfo BT.470 System B/G and System M labels normalize cleanly without slash splitting',()=>{
+ const palVideo={codec_name:'h264',pix_fmt:'yuv420p10le',color_space:'bt470bg',color_range:'tv',side_data_list:[]};
+ assert.equal(p.testClassify(palVideo,{matrix_coefficients:'BT.470 System B/G',colour_range:'Limited'}),'sdr');
+ assert.equal(p.testClassify(palVideo,{matrix_coefficients:'BT.470 System B, G',colour_range:'Limited'}),'sdr');
+ assert.equal(p.testClassify({codec_name:'mpeg2video',color_space:'smpte170m',color_range:'tv',side_data_list:[]},{matrix_coefficients:'BT.470 System M',colour_range:'Limited'}),'sdr');
+ assert.doesNotThrow(()=>p.testMediaInfoColors(
+  {color_primaries:'bt470bg',color_transfer:'bt470bg',color_space:'bt470bg',color_range:'tv'},
+  {colour_primaries:'BT.470 System B/G',transfer_characteristics:'BT.470 System B/G',matrix_coefficients:'BT.470 System B/G / BT.470 System B/G',colour_range:'Limited'}
+ ));
+ assert.doesNotThrow(()=>p.testMediaInfoColors(
+  {color_primaries:'bt470m',color_transfer:'bt470m',color_space:'smpte170m',color_range:'tv'},
+  {colour_primaries:'BT.470 System M',transfer_characteristics:'BT.470 System M',matrix_coefficients:'BT.470 System M',colour_range:'Limited'}
+ ));
+});
+
+test('Category B: native HLG routes cleanly via MediaInfo transfer_characteristics without HDR_Format while rejecting conflicting HDR_Format',()=>{
+ const hlgVideo={codec_name:'av1',color_transfer:'arib-std-b67',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv',side_data_list:[]};
+ const hlgScan={frames:24,interlaced:0,dovi:0,hdr10plus:0,otherDynamic:0,staticInfo:{mastering:null,light:null,conflict:false},colorInfo:{conflict:false,observed:{color_transfer:'arib-std-b67',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv'}}};
+ assert.equal(p.testHdrRoute(hlgVideo,{transfer_characteristics:'HLG',colour_primaries:'BT.2020',matrix_coefficients:'BT.2020 non-constant',colour_range:'Limited'},hlgScan),'hlg');
+ assert.equal(p.testHdrRoute(hlgVideo,{HDR_Format:'',HDR_Format_Compatibility:'None',transfer_characteristics:'HLG',colour_primaries:'BT.2020',matrix_coefficients:'BT.2020 non-constant',colour_range:'Limited'},hlgScan),'hlg');
+ assert.equal(p.testHdrRoute(hlgVideo,{transfer_characteristics_Original:'arib-std-b67',colour_primaries:'BT.2020',matrix_coefficients:'BT.2020 non-constant',colour_range:'Limited'},hlgScan),'hlg');
+ assert.throws(()=>p.testHdrRoute(hlgVideo,{HDR_Format:'SMPTE ST 2086',transfer_characteristics:'HLG',colour_primaries:'BT.2020',matrix_coefficients:'BT.2020 non-constant',colour_range:'Limited'},hlgScan),/unsupported or ambiguous/i);
+});
+
+test('Category C: verified full-range pc HDR10 and HDR10+ routes succeed and hdr10plus_hdr10 strips absent or 0,0 CLL cleanly',async()=>{
+ assert.equal(typeof p.testIsVerifiedHdrColorRange,'function');
+ assert.equal(p.testIsVerifiedHdrColorRange({color_range:'tv'},{},false),true);
+ assert.equal(p.testIsVerifiedHdrColorRange({color_range:'pc'},{colour_range:'Full'},false),false);
+ assert.equal(p.testIsVerifiedHdrColorRange({color_range:'pc'},{},true),false);
+ assert.equal(p.testIsVerifiedHdrColorRange({color_range:'pc'},{colour_range:'Limited'},true),false);
+ assert.equal(p.testIsVerifiedHdrColorRange({color_range:'pc'},{colour_range:'Full'},true),true);
+
+ const mastering={side_data_type:'Mastering display metadata',red_x:'0.6800',red_y:'0.3200',green_x:'0.2650',green_y:'0.6900',blue_x:'0.1500',blue_y:'0.0600',white_point_x:'0.3127',white_point_y:'0.3290',min_luminance:'0.0001',max_luminance:'1000'};
+ const pcPlusVideo={codec_name:'hevc',color_transfer:'smpte2084',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'pc',side_data_list:[mastering,{side_data_type:'Content light level metadata',max_content:0,max_average:0}]};
+ const pcPlusInfo={HDR_Format:'SMPTE ST 2094 App 4',transfer_characteristics:'PQ',colour_primaries:'BT.2020',matrix_coefficients:'BT.2020 non-constant',colour_range:'Full'};
+ const pcPlusScan={frames:24,interlaced:0,dovi:0,hdr10plus:24,otherDynamic:0,staticInfo:{mastering,light:null,conflict:false},colorInfo:{conflict:false}};
+ assert.equal(p.testHdrRoute(pcPlusVideo,pcPlusInfo,pcPlusScan),'hdr10plus_hdr10');
+ assert.equal(p.testHdrRoute({...pcPlusVideo,side_data_list:[mastering]},{HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10',transfer_characteristics:'PQ',colour_primaries:'BT.2020',matrix_coefficients:'BT.2020 non-constant',colour_range:'Full'},{...pcPlusScan,hdr10plus:0}),'hdr10');
+
+ // Reject pc when MediaInfo disagrees or on HLG / Dolby Vision
+ assert.throws(()=>p.testHdrRoute(pcPlusVideo,{...pcPlusInfo,colour_range:'Limited'},pcPlusScan),/range|conflicts/i);
+ assert.throws(()=>p.testHdrRoute(pcPlusVideo,{HDR_Format:'SMPTE ST 2094 App 4',transfer_characteristics:'PQ',colour_primaries:'BT.2020',matrix_coefficients:'BT.2020 non-constant'},pcPlusScan),/color range/i);
+ assert.throws(()=>p.testHdrRoute({codec_name:'av1',color_transfer:'arib-std-b67',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'pc',side_data_list:[]},{transfer_characteristics:'HLG',colour_primaries:'BT.2020',matrix_coefficients:'BT.2020 non-constant',colour_range:'Full'},{...pcPlusScan,hdr10plus:0}),/color range/i);
+ const dv86={side_data_type:'DOVI configuration record',dv_version_major:1,dv_version_minor:0,dv_profile:8,dv_level:6,rpu_present_flag:1,el_present_flag:0,bl_present_flag:1,dv_bl_signal_compatibility_id:1};
+ assert.throws(()=>p.testDolbyPreflight({...pcPlusVideo,side_data_list:[dv86,mastering]},{HDR_Format:'Dolby Vision',HDR_Format_Compatibility:'HDR10',colour_range:'Full'},'not_hybrid'),/limited|not verified/i);
+
+ // resolveHdrLight must drop 0,0 / absent CLL on hdr10plus_hdr10 without calling getLevel6
+ let level6Calls=0;
+ const droppedZero=await p.testResolveLight(pcPlusVideo,'hdr10plus_hdr10',()=>{level6Calls++;throw Error('should not call getLevel6');});
+ assert.equal(level6Calls,0);
+ assert.equal(droppedZero.override,null);
+ assert.deepEqual(droppedZero.metadata.side_data_list,[mastering]);
+ const droppedAbsent=await p.testResolveLight({...pcPlusVideo,side_data_list:[mastering]},'hdr10plus_hdr10',()=>{level6Calls++;throw Error('should not call getLevel6');});
+ assert.equal(level6Calls,0);
+ assert.equal(droppedAbsent.override,null);
+ assert.deepEqual(droppedAbsent.metadata.side_data_list,[mastering]);
+});
+
+test('Category D: explicit BT.709 SDR with orphan DOVI config (0 RPUs) or orphan ST 2086 static metadata classifies safely and builds cleanup filters',()=>{
+ assert.equal(typeof p.testIsExplicitSdrColorTriplet,'function');
+ assert.equal(typeof p.testIsSdrWithOrphanStaticHdr,'function');
+ assert.equal(typeof p.testHasFrameDolbyRpu,'function');
+
+ const sdrBt709Info={transfer_characteristics:'BT.709',colour_primaries:'BT.709',matrix_coefficients:'BT.709',colour_range:'Limited'};
+ const dvConf={side_data_type:'DOVI configuration record',dv_version_major:1,dv_version_minor:0,dv_profile:8,dv_level:6,rpu_present_flag:1,el_present_flag:0,bl_present_flag:1,dv_bl_signal_compatibility_id:1};
+ const d1Video={codec_name:'hevc',color_transfer:'bt709',color_primaries:'bt709',color_space:'bt709',color_range:'tv',side_data_list:[dvConf]};
+ assert.equal(p.testIsExplicitSdrColorTriplet(d1Video,sdrBt709Info),true);
+ assert.equal(p.testIsExplicitSdrColorTriplet({...d1Video,color_transfer:'smpte2084'},sdrBt709Info),false);
+ assert.equal(p.testIsExplicitSdrColorTriplet(d1Video,{...sdrBt709Info,colour_range:'Full'}),false);
+
+ assert.equal(p.testHasFrameDolbyRpu([{side_data_list:[]}]),false);
+ assert.equal(p.testHasFrameDolbyRpu([{side_data_list:[{side_data_type:'Dolby Vision RPU Data'}]}]),true);
+ assert.equal(p.testHasFrameDolbyRpu([{side_data_list:[{side_data_type:'Dolby Vision Metadata'}]}]),true);
+
+ assert.equal(p.testDolbyPreflight(d1Video,{...sdrBt709Info,HDR_Format:'Dolby Vision'},'not_hybrid',false),'orphan_dovi_sdr');
+ assert.throws(()=>p.testDolbyPreflight(d1Video,{...sdrBt709Info,HDR_Format:'Dolby Vision'},'not_hybrid',true),/RPU/i);
+ // Hybrid signaling or PQ base must NOT take orphan_dovi_sdr
+ assert.throws(()=>p.testDolbyPreflight(d1Video,{...sdrBt709Info,HDR_Format:'Dolby Vision / HDR10+'},'dovi81_hdr10plus_candidate',false),/base-layer|conflicts/i);
+
+ const mastering={side_data_type:'Mastering display metadata',red_x:'0.6800',red_y:'0.3200',green_x:'0.2650',green_y:'0.6900',blue_x:'0.1500',blue_y:'0.0600',white_point_x:'0.3127',white_point_y:'0.3290',min_luminance:'0.0050',max_luminance:'1000'};
+ const light={side_data_type:'Content light level metadata',max_content:992,max_average:523};
+ const d2Video={codec_name:'av1',color_transfer:'bt709',color_primaries:'bt709',color_space:'bt709',color_range:'tv',side_data_list:[mastering,light]};
+ const d2Info={...sdrBt709Info,HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10'};
+ const d2Scan={frames:24,interlaced:0,dovi:0,hdr10plus:0,otherDynamic:0,staticInfo:{mastering,light,conflict:false},colorInfo:{conflict:false}};
+ assert.equal(p.testIsSdrWithOrphanStaticHdr(d2Video,d2Info,d2Scan),true);
+ assert.equal(p.testIsSdrWithOrphanStaticHdr(d2Video,d2Info,{...d2Scan,dovi:1}),false);
+ assert.equal(p.testIsSdrWithOrphanStaticHdr(d2Video,d2Info,{...d2Scan,hdr10plus:1}),false);
+ assert.equal(p.testIsSdrWithOrphanStaticHdr({...d2Video,color_transfer:'smpte2084'},d2Info,d2Scan),false);
+ assert.equal(p.testIsSdrWithOrphanStaticHdr({...d2Video,side_data_list:[]},{...sdrBt709Info}, {frames:24,interlaced:0,dovi:0,hdr10plus:0,otherDynamic:0,staticInfo:{mastering:null,light:null,conflict:false}}),false);
+
+ assert.equal(
+  p.testVideoFilter('vpp_qsv=format=p010',{removeDoviMetadata:true,removeMasteringDisplay:true,removeContentLight:true}),
+  'sidedata=mode=delete:type=DOVI_METADATA,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL,vpp_qsv=format=p010'
+ );
+});

@@ -73,7 +73,7 @@ test('known Intel QSV HDR mastering clamp routes proactively to SVT-AV1 while re
 });
 
 test('WCG-SDR is not treated as HDR or forced to PQ transfer in FFmpeg args',()=>{
- assert.ok(engine.includes('const isHdr = isHlg || isPq || isDovi;'), 'isHdr must not include raw isBt2020 without HDR transfer or Dolby signaling');
+ assert.match(engine,/(?:const|let) isHdr = isHlg \|\| isPq \|\| isDovi;/, 'isHdr must not include raw isBt2020 without HDR transfer or Dolby signaling');
  assert.ok(engine.includes('validateMediaInfoHdrColors(mainVideo,preflightInfoVideo)'), 'MediaInfo color checks must remain active');
  assert.ok(engine.includes('if (!isHdr && hdrClass === "sdr" && sdrSource)'), 'SDR output color signaling must be emitted explicitly from sdrSource');
 });
@@ -266,4 +266,13 @@ test('all exported Discord and Arr nodes share hardened response-error and timeo
   const code=flow.flowPlugins.find(p=>p.id===id).inputsDB.code;
   assert.match(code,/res\.on\(['"]error['"]/,`${id} must guard Arr response stream errors`);
  }
+});
+
+test('V16 engine wires full-range pc HDR10+, orphan DOVI SDR, and orphan static HDR SDR cleanup',()=>{
+ assert.ok(engine.includes('preflightDoviRoute === "orphan_dovi_sdr"'),'engine must handle orphan_dovi_sdr before HDR metadata extraction');
+ assert.ok(engine.includes('isSdrWithOrphanStaticHdr('),'engine must detect explicit SDR streams with leftover static HDR metadata');
+ assert.ok(engine.includes('if (hdrClass === "sdr" || hdrClass === "untagged") isHdr = false;'),'Category D routes must clear isHdr before filter and color args');
+ assert.ok(engine.includes('hdrSource?.color_range === "pc"'),'full-range PQ HDR routes must emit -color_range pc explicitly');
+ assert.ok(engine.includes('removeMasteringDisplay:stripOrphanStaticHdr'),'orphan static HDR SDR cleanup must strip mastering display metadata');
+ assert.ok(engine.includes('removeDoviMetadata:stripOrphanDovi'),'orphan DOVI SDR cleanup must strip DOVI metadata');
 });
