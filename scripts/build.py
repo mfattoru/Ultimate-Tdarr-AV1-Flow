@@ -651,6 +651,7 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
         }
         initialWorkerProgressDetails.workerLog="Checking Dolby Vision Profile 5 RPU Level 6 and Level 9 metadata before the full source scan.";
         reportWorkerProgress(args.updateWorker,{percentage:0.5,fps:0,status:initialWorkerProgressDetails.status},initialWorkerProgressDetails);
+        verifyDolbyProfile5RpuFullRange(readHdrFrames(ffprobeBin,inputPath,mainVideo.index));
         preflightLevel6=await extractDolbyProfile5HdrMetadata(ffmpegBin,inputPath,mainVideo.index);
         const dovi5Target=buildDovi5HdrTarget(preflightLevel6.level6,preflightLevel6.level9);
         preflightHdrSource=dovi5Target.targetVideo;

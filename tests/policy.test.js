@@ -961,6 +961,21 @@ test('Dolby Vision Profile 5 is verified only with full-range 10-bit HEVC IPT-PQ
  assert.throws(()=>p.testHdrRoute(p5Video,p5Info,{...p5Scan,dovi:0}),/Dolby/i);
  assert.throws(()=>p.testHdrRoute(p5Video,p5Info,{...p5Scan,hdr10plus:1}),/Dolby|hybrid|HDR/i);
  assert.throws(()=>p.testHdrRoute(p5Video,p5Info,{...p5Scan,interlaced:1}),/interlac/i);
+
+ const p5NoVuiInfo={HDR_Format:'Dolby Vision',HDR_Format_Profile:'dvhe.05',HDR_Format_Level:'06',HDR_Format_Settings:'BL+RPU'};
+ const p5NoVuiVideo={codec_name:'hevc',pix_fmt:'yuv420p10le',color_range:'tv',side_data_list:[p5Config]};
+ assert.equal(p.testDolbyPreflight(p5NoVuiVideo,p5NoVuiInfo,'not_hybrid'),'dovi5_hdr10');
+ assert.equal(p.testHdrRoute(p5NoVuiVideo,p5NoVuiInfo,p5Scan),'dovi5_hdr10');
+ assert.throws(()=>p.testDolbyPreflight(p5NoVuiVideo,{...p5NoVuiInfo,colour_range:'Limited'},'not_hybrid'),/Dolby/i);
+ assert.throws(()=>p.testDolbyPreflight(p5Video,{...p5NoVuiInfo,colour_range:'Limited'},'not_hybrid'),/Dolby/i);
+
+ assert.equal(typeof p.testVerifyP5RpuRange,'function');
+ const p5RpuFrame={side_data_list:[{side_data_type:'Dolby Vision Metadata',vdr_rpu_profile:0,bl_video_full_range_flag:1}]};
+ assert.equal(p.testVerifyP5RpuRange([p5RpuFrame,p5RpuFrame]),true);
+ assert.throws(()=>p.testVerifyP5RpuRange([]),/Dolby Vision Profile 5 RPU full-range/i);
+ assert.throws(()=>p.testVerifyP5RpuRange([{side_data_list:[]}]),/Dolby Vision Profile 5 RPU full-range/i);
+ assert.throws(()=>p.testVerifyP5RpuRange([{side_data_list:[{side_data_type:'Dolby Vision Metadata',vdr_rpu_profile:0,bl_video_full_range_flag:0}]}]),/Dolby Vision Profile 5 RPU full-range/i);
+ assert.throws(()=>p.testVerifyP5RpuRange([{side_data_list:[{side_data_type:'Dolby Vision Metadata',vdr_rpu_profile:1,bl_video_full_range_flag:1}]}]),/Dolby Vision Profile 5 RPU full-range/i);
 });
 
 test('Dolby Vision Profile 5 Level 6 and Level 9 RPU metadata synthesize validated HDR10 output targets',()=>{

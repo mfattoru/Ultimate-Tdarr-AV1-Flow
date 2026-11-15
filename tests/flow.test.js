@@ -253,6 +253,7 @@ test('Dolby Vision Profile 5 converts via libplacebo with Intel Vulkan override 
  assert.ok(engine.includes('resolved.warning'),'engine must log Option 1A Level 6 fallback warnings');
  assert.ok(engine.includes('expected.sourceClass === "dovi5_hdr10"'),'stream-copy seek-heal fallback must validate Profile 5 source preservation separately from HDR10 encodes');
  assert.ok(engine.includes('stopOnLimit: true'),'dovi5_hdr10 Vulkan encodes must enforce a fixed output cap cleanly without finite RLIMIT_FSIZE tripping Intel ANV');
+ assert.ok(engine.includes('verifyDolbyProfile5RpuFullRange(readHdrFrames('),'dovi5_hdr10 preflight must verify RPU bl_video_full_range_flag=1 via opening decoded frames before scanning the full movie');
 });
 
 test('all exported Discord and Arr nodes share hardened response-error and timeout guards',()=>{

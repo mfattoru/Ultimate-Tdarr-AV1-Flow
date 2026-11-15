@@ -35,6 +35,7 @@ const engineExports = {
   testL6Rows: 'summarizeLevel6Rows',
   testResolveLight: 'resolveHdrLight',
   testDolbyPreflight: 'preflightDolbyHdrRoute',
+  testVerifyP5RpuRange: 'verifyDolbyProfile5RpuFullRange',
   testL9: 'parseDolbyLevel9',
   testL9Rows: 'summarizeLevel9Rows',
   testBuildDovi5Target: 'buildDovi5HdrTarget',

@@ -227,11 +227,33 @@ const isVerifiedDolbyProfile5Config = (video, info, config) => {
   if (video?.codec_name!=='hevc') return false;
   const pixFmt=String(video?.pix_fmt || '').toLowerCase().split('(')[0].trim();
   if (!['yuv420p10le','p010','p010le'].includes(pixFmt)) return false;
-  if (normalizeColorRange(video?.color_range)!=='pc') return false;
+  const videoRange=normalizeColorRange(video?.color_range);
   const infoRange=info?.colour_range ?? info?.color_range;
-  if (!isUnknownColorValue(infoRange) && normalizeColorRange(infoRange)!=='pc') return false;
+  const infoRangeUnknown=isUnknownColorValue(infoRange);
+  if (videoRange==='pc') {
+    if (!infoRangeUnknown && normalizeColorRange(infoRange)!=='pc') return false;
+  } else if (videoRange==='tv') {
+    // HEVC decoders default unflagged VUI streams (video_signal_type_present_flag=0) to tv
+    // while MediaInfo leaves colour_range unset; explicit MediaInfo ranges remain rejected here.
+    if (!infoRangeUnknown) return false;
+  } else {
+    return false;
+  }
   for (const field of ['color_transfer','color_primaries','color_space']) {
     if (!isUnknownColorValue(video?.[field])) return false;
+  }
+  return true;
+};
+// Verify opening decoded frames carry Profile 5 full-range RPU signaling (bl_video_full_range_flag=1).
+const verifyDolbyProfile5RpuFullRange = (frames) => {
+  if (!Array.isArray(frames) || !frames.length) {
+    throw Error('Dolby Vision Profile 5 RPU full-range signaling is unavailable');
+  }
+  for (const frame of frames) {
+    const meta=(frame?.side_data_list || []).find(item=>item?.side_data_type==='Dolby Vision Metadata');
+    if (!meta || Number(meta.vdr_rpu_profile)!==0 || Number(meta.bl_video_full_range_flag)!==1) {
+      throw Error('Dolby Vision Profile 5 RPU full-range signaling is missing or unverified');
+    }
   }
   return true;
 };

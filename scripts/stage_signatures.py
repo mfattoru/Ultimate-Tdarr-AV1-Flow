@@ -46,6 +46,7 @@ SYMBOL_STAGE_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         "validateMediaInfoHdrColors": ("precheck_video", "decode"),
         "preflightHybridHdr": ("precheck_video",),
         "isVerifiedDolbyProfile5Config": ("precheck_video",),
+        "verifyDolbyProfile5RpuFullRange": ("precheck_video",),
         "preflightDolbyHdrRoute": ("precheck_video",),
         "determineHdrRoute": ("precheck_video", "encode"),
         "mergeHdrMetadata": ("precheck_video", "encode", "candidate_frames"),

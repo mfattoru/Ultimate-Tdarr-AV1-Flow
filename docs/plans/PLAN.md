@@ -354,3 +354,29 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
 3. **Refactor & Verify:**
    - Review shared cache envelope/path helpers for zero duplication and clear docstrings/comments.
    - Run `make check` (`python3 scripts/build.py && npm run test:coverage && git diff --check`) and confirm 100% pass rate with zero failures or skipped assertions.
+
+---
+
+# V15 Dolby Vision Profile 5 VUI-Omitted Full-Range (`tv` Fallback + RPU Range Guard)
+
+## Change Categorization
+- **In-Place Behavioral Fix (`isVerifiedDolbyProfile5Config` + RPU Range Preflight):**
+  - Previously, `isVerifiedDolbyProfile5Config` required FFprobe `video.color_range === 'pc'`. However, real-world Dolby Vision Profile 5 MKVs whose HEVC SPS omits VUI signal flags (`video_signal_type_present_flag = 0`, observed in *Avengers: Infinity War (2018)* and *Supergirl (2026)*) cause FFmpeg's HEVC decoder (`export_stream_params`) to default `color_range` to `'tv'` while MediaInfo omits `colour_range`, even though the Dolby RPU confirms full-range IPT-PQ-c2 (`bl_video_full_range_flag = 1`).
+  - Testing with `framemd5` inside `tdarr-flow-live-test-20261102` confirmed `libplacebo=apply_dolbyvision=true` uses the Dolby RPU's `bl_video_full_range_flag = 1` identically regardless of whether FFprobe/AVFrame carries `tv` or `setparams=range=pc`.
+  - Keep strict rejection whenever MediaInfo explicitly tags `colour_range`/`color_range` as non-unknown when `video.color_range === 'tv'` (both `'Full'` conflicts and `'Limited'` genuine limited-range bitstreams), and verify opening-frame RPU metadata carries `vdr_rpu_profile === 0` and `bl_video_full_range_flag === 1` before admitting `dovi5_hdr10`.
+
+## Files Affected
+- [`src/policy.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/policy.js):
+  - Update `isVerifiedDolbyProfile5Config` to admit `video.color_range === 'tv'` only when MediaInfo `colour_range`/`color_range` is unknown/absent (`isUnknownColorValue`).
+  - Add `verifyDolbyProfile5RpuFullRange(frames)` to assert opening decoded frames carry `Dolby Vision Metadata` with `vdr_rpu_profile === 0` and `bl_video_full_range_flag === 1`.
+- [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py):
+  - Call `verifyDolbyProfile5RpuFullRange(readHdrFrames(ffprobeBin,inputPath,mainVideo.index))` inside the `dovi5_hdr10` preflight branch before `extractDolbyProfile5HdrMetadata`.
+- [`scripts/stage_signatures.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/stage_signatures.py):
+  - Map `verifyDolbyProfile5RpuFullRange` to `("precheck_video",)`.
+- [`tests/flow_test_runtime.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/flow_test_runtime.js), [`tests/policy.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/policy.test.js), [`tests/flow.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/flow.test.js): TDD unit and flow-wiring tests.
+- [`docs/architecture/FAILURE_DIAGNOSTICS.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/architecture/FAILURE_DIAGNOSTICS.md) & [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json): update documented Profile 5 range rule and rebuild flow export.
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase**: Add failing tests in `tests/policy.test.js` and `tests/flow.test.js` (and export hook in `tests/flow_test_runtime.js`); run `make test` to observe expected failures.
+2. **Green Phase**: Implement `isVerifiedDolbyProfile5Config` + `verifyDolbyProfile5RpuFullRange` in `src/policy.js`, wire into `scripts/build.py`, register in `scripts/stage_signatures.py`, update docs, and run `make build`.
+3. **Verify**: Run `make check` (`make build` + `coverage` + `git diff --check`) and verify preflight/metadata checks read-only against both Profile 5 MKVs in `tdarr-flow-live-test-20261102`.
