@@ -19,7 +19,7 @@ child.execFileSync('ffmpeg',['-v','error','-i',source,'-map','0:0','-map','0:1',
 child.execFileSync('ffmpeg',['-v','error','-i',multiAudioSource,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',multiAudioCandidate],{stdio:'ignore'});
 assert.ok(fs.statSync(multiAudioCandidate).size < fs.statSync(multiAudioSource).size);
 function argsFor(file,logs=[]) { const f={_id:file,container:'mkv',file_size:fs.statSync(file).size/1024/1024}; return {inputFileObj:{...f},originalLibraryFile:{...f},workDir:dir,variables:{user:{min_cache_free_mb:1}},ffmpegPath:'ffmpeg',librarySettings:{folder:dir},jobLog:m=>logs.push(String(m))}; }
-function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,qsvLongTimestampLines=false,matchedVideoDtsTies=false,matchedSubFramePtsTie=false,sourceFieldOrder=null,candidateFieldOrder=null,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,candidateMissingSar=false,mediaInfoPixelAspectRatio,candidateMediaInfoPixelAspectRatio,hdr=false,colorOverride=null,mediaInfoOverride=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate,codeOverride=null}={}) {
+function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,qsvLongTimestampLines=false,matchedVideoDtsTies=false,matchedSubFramePtsTie=false,sourceFieldOrder=null,candidateFieldOrder=null,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,candidateMissingSar=false,mediaInfoPixelAspectRatio,candidateMediaInfoPixelAspectRatio,hdr=false,colorOverride=null,mediaInfoOverride=null,candidateSideData=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate,codeOverride=null}={}) {
   const calls=[],commands=[],logs=[],audioDecodeCommands=[]; let initialProbe=true,moverSimulated=false;
   const fakeFs=new Proxy(fs,{get(t,p){if(p==='unlinkSync' && denyIso)return name=>{if(String(name).endsWith('.iso'))throw Error('simulated ISO permission error');return t.unlinkSync(name)};if(p==='accessSync')return (name,...args)=>name==='/dev/dri/renderD129'?undefined:t.accessSync(name,...args);return t[p]}});
   const fakeChild={...child,
@@ -153,6 +153,11 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
           Object.assign(stream,colorOverride?colorOverride:hdr?{color_transfer:'smpte2084',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv'}:{color_transfer:'bt709',color_primaries:'bt709',color_space:'bt709',color_range:'tv'});
           if(sourceFieldOrder&&args[args.length-1]===inputPath)stream.field_order=sourceFieldOrder;
           if(candidateFieldOrder&&args[args.length-1]!==inputPath)stream.field_order=candidateFieldOrder;
+          if(Array.isArray(candidateSideData)&&args[args.length-1]!==inputPath){
+            const existing=stream.side_data_list||[];
+            const missing=candidateSideData.filter(item=>!existing.some(e=>e.side_data_type===item.side_data_type));
+            if(missing.length)stream.side_data_list=[...existing,...missing];
+          }
         }
         if(initialProbe && args.includes('-show_format') && args[args.length-1]===inputPath) {
           initialProbe=false;
@@ -435,9 +440,10 @@ test('4:2:2 input is downsampled with CPU decode while AV1 stays on Arc QSV',asy
 });
 
 test('4:4:4 input is downsampled with CPU decode while AV1 stays on Arc QSV',async()=>{
- const input=path.join(dir,'source-444.mkv');
+ const input=path.join(dir,'source-444.mkv'),output=path.join(dir,'candidate-444.mkv');
  child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24:duration=4','-f','lavfi','-i','sine=frequency=440:duration=4','-vf','format=yuv444p10le','-c:v','ffv1','-pix_fmt','yuv444p10le','-c:a','aac','-y',input],{stdio:'ignore'});
- const x=load(),args=argsFor(input,x.logs),r=await run(x,args);
+ child.execFileSync('ffmpeg',['-v','error','-i',input,'-map','0','-vf','format=yuv420p10le','-c:v','libsvtav1','-preset','12','-crf','20','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-bsf:v','av1_metadata=color_primaries=1:transfer_characteristics=1:matrix_coefficients=1','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',output],{stdio:'ignore'});
+ const x=load({inputPath:input,smallerOutput:output}),args=argsFor(input,x.logs),r=await run(x,args);
  assert.equal(r.outputNumber,1,args.variables.user.failure_reason||x.logs.slice(-8).join('\n'));
  const transcode=x.commands.find(c=>c.args.includes('av1_qsv'));
  assert.ok(transcode,'expected Arc QSV AV1 encode');
@@ -687,7 +693,7 @@ test('HDR source with QSV green-y clamp mastering routes proactively to SVT-AV1 
  const clampInput=path.join(dir,'hdr-clamp-source.mkv'),clampOutput=path.join(dir,'hdr-clamp-candidate.mkv');
  child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24:duration=2','-f','lavfi','-i','sine=frequency=440:duration=2','-map','0:v:0','-map','1:a:0','-c:v','libx265','-preset','ultrafast','-crf','10','-x265-params','log-level=error:pools=1:master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1):max-cll=992,518','-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-c:a','aac','-y',clampInput],{stdio:'ignore'});
  child.execFileSync('ffmpeg',['-v','error','-i',clampInput,'-map','0','-c:v','libsvtav1','-preset','12','-crf','40','-svtav1-params','lp=1:log-level=0:mastering-display=G(0.17,0.797)B(0.131,0.046)R(0.708,0.292)WP(0.3127,0.329)L(1000,0.0001):content-light=992,518','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-metadata:g','encoded_by=ArcAV1_SVTAV1_HDRFallback_V15','-y',clampOutput],{stdio:'ignore'});
- const x=load({hdr:true,inputPath:clampInput,smallerOutput:clampOutput});
+ const x=load({hdr:true,inputPath:clampInput,smallerOutput:clampOutput,candidateSideData:[{side_data_type:'Mastering display metadata',red_x:'177/250',red_y:'73/250',green_x:'17/100',green_y:'797/1000',blue_x:'131/1000',blue_y:'23/500',white_point_x:'3127/10000',white_point_y:'329/1000',min_luminance:'1/10000',max_luminance:'1000/1'},{side_data_type:'Content light level metadata',max_content:992,max_average:518}]});
  const args=argsFor(clampInput,x.logs),r=await run(x,args);
  assert.equal(r.outputNumber,1,args.variables.user.failure_reason||x.logs.slice(-8).join('\n'));
  assert.equal(x.commands.some(c=>c.args.includes('av1_qsv')),false,'proactive clamp route must not run av1_qsv first');
