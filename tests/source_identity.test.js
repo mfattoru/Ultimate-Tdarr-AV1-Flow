@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { compareOpenFileToPath, hashFilePath } = require('../src/source_identity');
+const { compareOpenFileToPath, hashFilePath, diffOriginalSnapshot } = require('../src/source_identity');
 
 function withFiles(t, sourceBytes, currentBytes = sourceBytes) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tdarr-source-identity-'));
@@ -61,5 +61,37 @@ test('byte comparison rejects a changed file size without reading it as a match'
   t.after(() => fs.closeSync(fd));
 
   assert.deepEqual(compareOpenFileToPath(fd, current), { identical: false });
+});
+
+test('diffOriginalSnapshot classifies unchanged, ctime-only, mover relocation, and drift cases', () => {
+  const base = { realPath: '/media/movie.mkv', dev: 49n, ino: 100n, size: 500n, mtimeNs: 1000n, ctimeNs: 2000n };
+  assert.deepEqual(diffOriginalSnapshot(base, base, base.realPath), {
+    changed: [],
+    sameStableMetadata: true,
+    identityMoved: false,
+    ctimeOnly: false
+  });
+  assert.deepEqual(diffOriginalSnapshot(base, { ...base, ctimeNs: 3000n }, base.realPath), {
+    changed: ['ctime'],
+    sameStableMetadata: true,
+    identityMoved: false,
+    ctimeOnly: true
+  });
+  assert.deepEqual(diffOriginalSnapshot(
+    { ...base, dev: String(base.dev), ino: String(base.ino), size: String(base.size), mtimeNs: String(base.mtimeNs), ctimeNs: String(base.ctimeNs) },
+    { ...base, ino: 200n, ctimeNs: 3000n },
+    base.realPath
+  ), {
+    changed: ['inode', 'ctime'],
+    sameStableMetadata: true,
+    identityMoved: true,
+    ctimeOnly: false
+  });
+  assert.deepEqual(diffOriginalSnapshot(base, { ...base, mtimeNs: 1001n, ctimeNs: 3000n }, base.realPath), {
+    changed: ['mtime', 'ctime'],
+    sameStableMetadata: false,
+    identityMoved: false,
+    ctimeOnly: false
+  });
 });
 

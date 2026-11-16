@@ -411,3 +411,41 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
 1. TDD Red phase: add exports and failing unit/flow/integration tests; run `npm test` to confirm failures.
 2. TDD Green phase: implement changes across `src/policy.js`, `scripts/stage_signatures.py`, `scripts/build.py`; rebuild `flow.json`; verify `python3 scripts/stage_signatures.py --check-isolation` and `make check` (>=90% coverage).
 3. Live container tests inside `tdarr-flow-live-test-20261102:/test` covering all 4 categories on copied/clipped media samples, verify output streams (`ffprobe` + `mediainfo`), clean up container scratch clips and host `/tmp` files, and re-run `make check`.
+
+---
+
+# V16.1 Execution Plan: Original Guard Handling for `ctime`-Only Inode Changes (Hardlink Unlink / Metadata Updates)
+
+## Change Categorization
+- **In-Place Behavioral Fix (Existing Guard Contract Update):**
+  - Currently, `assertOriginalUnchanged()` inside `arc_av1_monolithic` and `original_recheck` treat any `ctimeNs` change identically to file replacement unless `dev` or `ino` also changed (`identityMoved` for Unraid Mover).
+  - As observed on *Watchmen (2009) WEBDL-2160p.mkv* (83.88 GB, `dev: 49`, `ino: 13229323913204474`), removing a sibling hardlink (`nlink: 2 -> 1`, e.g., torrent seeding cleanup) updates `ctime` on the inode without modifying `realPath`, `dev`, `ino`, `size`, `mtime`, or any media bytes, causing a false-positive `[Original guard]` failure after a 46-minute scan.
+  - Because existing guard behavior changes (previously aborted on `ctime`-only changes; proposed behavior allows `ctime`-only metadata changes when the inode and stable metadata are unchanged), confirm whether to update in-place or gate behind a variable/flag.
+
+## Architectural Review
+- **Files Affected:**
+  - [`src/source_identity.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/source_identity.js): add shared `diffOriginalSnapshot(saved, currentStat, currentRealPath)` helper returning `{ changed, sameStableMetadata, identityMoved, ctimeOnly }` (handling both `bigint` in-engine snapshots and stringified `args.variables.user.original_snapshot` fields) so snapshot diff logic is not duplicated across engine and `original_recheck`.
+  - [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py):
+    - Update `assertOriginalUnchanged()` to call `diffOriginalSnapshot(...)`. When `ctimeOnly` holds (`realPath`, `dev`, `ino`, `size`, `mtimeNs` unchanged; only `ctimeNs` changed), verify `originalGuardFd` (`fstatSync`) still matches `(dev, ino, size, mtimeNs)` when open, refresh `originalSnapshot` and `args.variables.user.original_snapshot.ctimeNs` via `saveOriginalSnapshot(current, realPath)` (preserving any prior `contentHash`), log the metadata-only `ctime` event, and return without aborting. Keep byte-for-byte verification (`compareOpenFileToPath`) for `identityMoved && sameStableMetadata` and fail closed on any `path`, `size`, `mtime`, FD mismatch, or byte mismatch.
+    - Update `original_recheck` to call `diffOriginalSnapshot(...)`. When `ctimeOnly` holds, update `saved.ctimeNs` in `args.variables.user.original_snapshot`, log the metadata-only `ctime` event, and proceed with `outputNumber: 1`. When `identityMoved && sameStableMetadata`, continue requiring an existing `saved.contentHash` and matching `hashFilePath(original)`.
+  - [`docs/architecture/FAILURE_DIAGNOSTICS.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/architecture/FAILURE_DIAGNOSTICS.md): document that `ctime`-only inode changes with identical `realPath`/`dev`/`ino`/`size`/`mtime` are tolerated while content/size/mtime/unhashed-inode changes remain rejected.
+  - [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json): rebuilt output via `python3 scripts/build.py`.
+  - Tests: [`tests/source_identity.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/source_identity.test.js), [`tests/source_identity_flow.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/source_identity_flow.test.js), [`tests/integration.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/integration.test.js).
+- **API / Data Model Updates:**
+  - `src/source_identity.js` exports `diffOriginalSnapshot` alongside `compareOpenFileToPath` and `hashFilePath`.
+  - `args.variables.user.original_snapshot.ctimeNs` is updated in-place when a `ctime`-only change is accepted (schema unchanged).
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase (Failing Tests First):**
+   - Add unit tests in `tests/source_identity.test.js` covering `diffOriginalSnapshot` for unchanged, `ctimeOnly`, `identityMoved`, and `size`/`mtime`/`path` drift.
+   - Add `original_recheck` flow test in `tests/source_identity_flow.test.js` verifying a `ctime`-only change (`chmod`/sibling hardlink unlink with identical `dev`, `ino`, `size`, `mtime`) passes without needing `contentHash`, while `size`/`mtime`/unhashed-inode changes still fail.
+   - Add integration test in `tests/integration.test.js` simulating a sibling hardlink unlink (`nlink: 2 -> 1`, `ctime` bump, same `dev`/`ino`/`size`/`mtime`) during source scan and confirming the job completes (`outputNumber: 1`) and refreshes `ctimeNs`.
+   - Run `npm test` to observe expected failures before modifying `src/` or `scripts/`.
+2. **Green Phase (Implementation & Build):**
+   - Implement `diffOriginalSnapshot` in `src/source_identity.js`.
+   - Update `assertOriginalUnchanged()` and `original_recheck` in `scripts/build.py` to use `diffOriginalSnapshot`.
+   - Update `docs/architecture/FAILURE_DIAGNOSTICS.md`.
+   - Run `python3 scripts/build.py` to regenerate `flow.json`.
+3. **Refactor & Verification:**
+   - Review `src/source_identity.js` and `scripts/build.py` for zero duplicated diff logic, concise docstrings, and edge-case FD checks.
+   - Run `make check` (`python3 scripts/build.py && npm run test:coverage && git diff --check`) and verify all tests pass with >= 90% coverage.

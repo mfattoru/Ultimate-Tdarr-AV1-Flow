@@ -19,7 +19,7 @@ child.execFileSync('ffmpeg',['-v','error','-i',source,'-map','0:0','-map','0:1',
 child.execFileSync('ffmpeg',['-v','error','-i',multiAudioSource,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',multiAudioCandidate],{stdio:'ignore'});
 assert.ok(fs.statSync(multiAudioCandidate).size < fs.statSync(multiAudioSource).size);
 function argsFor(file,logs=[]) { const f={_id:file,container:'mkv',file_size:fs.statSync(file).size/1024/1024}; return {inputFileObj:{...f},originalLibraryFile:{...f},workDir:dir,variables:{user:{min_cache_free_mb:1}},ffmpegPath:'ffmpeg',librarySettings:{folder:dir},jobLog:m=>logs.push(String(m))}; }
-function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,qsvLongTimestampLines=false,matchedVideoDtsTies=false,matchedSubFramePtsTie=false,sourceFieldOrder=null,candidateFieldOrder=null,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,candidateMissingSar=false,mediaInfoPixelAspectRatio,candidateMediaInfoPixelAspectRatio,hdr=false,colorOverride=null,mediaInfoOverride=null,candidateSideData=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate,codeOverride=null}={}) {
+function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,qsvLongTimestampLines=false,matchedVideoDtsTies=false,matchedSubFramePtsTie=false,sourceFieldOrder=null,candidateFieldOrder=null,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,candidateMissingSar=false,mediaInfoPixelAspectRatio,candidateMediaInfoPixelAspectRatio,hdr=false,colorOverride=null,mediaInfoOverride=null,candidateSideData=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,unlinkHardlinkDuringSourceScan=null,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate,codeOverride=null}={}) {
   const calls=[],commands=[],logs=[],audioDecodeCommands=[]; let initialProbe=true,moverSimulated=false;
   const fakeFs=new Proxy(fs,{get(t,p){if(p==='unlinkSync' && denyIso)return name=>{if(String(name).endsWith('.iso'))throw Error('simulated ISO permission error');return t.unlinkSync(name)};if(p==='accessSync')return (name,...args)=>name==='/dev/dri/renderD129'?undefined:t.accessSync(name,...args);return t[p]}});
   const fakeChild={...child,
@@ -74,11 +74,16 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
           return process;
         }
       }
-      if(cmd==='ffprobe'&&moveDuringSourceScan&&args.includes('-show_frames')&&args.includes(inputPath)){
+      if(cmd==='ffprobe'&&(moveDuringSourceScan||unlinkHardlinkDuringSourceScan)&&args.includes('-show_frames')&&args.includes(inputPath)){
         const process=child.spawn(cmd,args,opts);
         process.once('close',()=>{
           if(moverSimulated)return;
           moverSimulated=true;
+          if(unlinkHardlinkDuringSourceScan){
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,15);
+            fs.unlinkSync(unlinkHardlinkDuringSourceScan);
+            return;
+          }
           const movedCopy=`${inputPath}.mover-copy`;
           child.execFileSync('cp',['-p',inputPath,movedCopy]);
           if(changeMovedContent){const bytes=fs.readFileSync(movedCopy);bytes[bytes.length-1]^=1;fs.writeFileSync(movedCopy,bytes);child.execFileSync('touch',['-r',inputPath,movedCopy]);}
@@ -355,6 +360,21 @@ test('same-size and same-mtime replacement during source scan remains rejected',
  assert.equal(r.outputNumber,2);
  assert.equal(x.calls.length,0,'a mismatched source must be rejected before encoding');
  assert.match(args.variables.user.failure_reason,/relocation verification failed: byte comparison found different contents/);
+});
+
+test('hardlink unlink causing ctime-only change during source scan does not fail the engine guard',async()=>{
+ const hardlinked=path.join(dir,'hardlink-source.mkv'),sibling=path.join(dir,'hardlink-seed.mkv');
+ fs.copyFileSync(source,hardlinked);
+ fs.linkSync(hardlinked,sibling);
+ const before=fs.statSync(hardlinked,{bigint:true});
+ const x=load({inputPath:hardlinked,unlinkHardlinkDuringSourceScan:sibling}),args=argsFor(hardlinked,x.logs),r=await run(x,args);
+ const after=fs.statSync(hardlinked,{bigint:true});
+ assert.equal(x.moverSimulated(),true);
+ assert.equal(after.ino,before.ino);
+ assert.notEqual(after.ctimeNs,before.ctimeNs);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+ assert.equal(args.variables.user.original_snapshot.ctimeNs,String(after.ctimeNs));
+ assert.ok(x.logs.some(line=>/ctime only/i.test(line)));
 });
 
 test('batched source audio failure isolates streams before classifying corruption',async()=>{

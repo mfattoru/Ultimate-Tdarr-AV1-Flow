@@ -55,3 +55,14 @@
   - `python3 scripts/stage_signatures.py --check-isolation`: passed all 4 stage isolation checks (`decodeEditChangedOnlyDecode`, `audioTimingEditChangedOnlyPrecheckAudio`, `encodeEditChangedOnlyEncode`, `frameScanEditLeftEncodeAndAudioUntouched`).
   - `make check`: passed 368/368 unit, flow, and integration tests (`96.92%` line coverage, `94.25%` function coverage across `src/*.js`), `git diff --check` clean.
   - Isolated Arc QSV test container (`tdarr-flow-live-test-20261102`): all 5 real clips (`Fist of the North Star - S02E12` clip, `Steps 3 Saturday 9AM.mkv` full file, `Queenpins (2021)` clip, `Night at the Museum Kahmunrah Rises Again (2022)` clip, `Terminator Salvation (2009)` clip) returned `outputNumber: 1` with expected AV1 `yuv420p10le` color signaling and zero unintended HDR side data.
+
+## 2026-11-16 — Original Guard `ctime`-Only Tolerance for Hardlink / Inode Metadata Updates (V16.1)
+
+- **Scope:** In-place fix across [`src/source_identity.js`](src/source_identity.js), [`scripts/build.py`](scripts/build.py), [`docs/architecture/FAILURE_DIAGNOSTICS.md`](docs/architecture/FAILURE_DIAGNOSTICS.md), and [`flow.json`](flow.json) (plan in [`docs/plans/PLAN.md`](docs/plans/PLAN.md)).
+- **Changes implemented:**
+  - Added shared `diffOriginalSnapshot(saved, currentStat, currentRealPath)` helper in `src/source_identity.js` to classify `changed`, `sameStableMetadata`, `identityMoved`, and `ctimeOnly`.
+  - Updated `assertOriginalUnchanged()` inside `arc_av1_monolithic` and `original_recheck` in `scripts/build.py` to refresh `ctimeNs` and continue when only `ctime` changed while `realPath`, `dev`, `ino`, `size`, and `mtimeNs` remain identical (verifying the open descriptor `fstatSync` still matches `(dev, ino, size, mtimeNs)` inside the engine).
+  - Preserved strict byte-for-byte verification for Mover relocations (`identityMoved`) and fail-closed rejection for `path`, `size`, `mtime`, descriptor divergence, or unhashed inode changes.
+- **Verification:**
+  - TDD Red -> Green across [`tests/source_identity.test.js`](tests/source_identity.test.js), [`tests/source_identity_flow.test.js`](tests/source_identity_flow.test.js), and [`tests/integration.test.js`](tests/integration.test.js).
+  - `make check`: `371/371` tests passed (`96.94%` line coverage, `94.30%` function coverage), `git diff --check` clean.

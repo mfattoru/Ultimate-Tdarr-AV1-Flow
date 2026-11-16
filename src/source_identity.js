@@ -70,4 +70,23 @@ function hashFilePath(filePath) {
   }
 }
 
-module.exports = { compareOpenFileToPath, hashFilePath };
+/** Compare a saved source snapshot against current stat metadata to classify identity drift vs ctime-only updates. */
+function diffOriginalSnapshot(saved, currentStat, currentRealPath) {
+  const sameField = (a, b) => String(a) === String(b);
+  const changed = [];
+  if (currentRealPath !== saved.realPath) changed.push('path');
+  if (!sameField(currentStat.dev, saved.dev)) changed.push('device');
+  if (!sameField(currentStat.ino, saved.ino)) changed.push('inode');
+  if (!sameField(currentStat.size, saved.size)) changed.push('size');
+  if (!sameField(currentStat.mtimeNs, saved.mtimeNs)) changed.push('mtime');
+  if (!sameField(currentStat.ctimeNs, saved.ctimeNs)) changed.push('ctime');
+  const sameStableMetadata = currentRealPath === saved.realPath
+    && sameField(currentStat.size, saved.size)
+    && sameField(currentStat.mtimeNs, saved.mtimeNs);
+  const identityMoved = !sameField(currentStat.dev, saved.dev)
+    || !sameField(currentStat.ino, saved.ino);
+  const ctimeOnly = changed.length > 0 && sameStableMetadata && !identityMoved;
+  return { changed, sameStableMetadata, identityMoved, ctimeOnly };
+}
+
+module.exports = { compareOpenFileToPath, hashFilePath, diffOriginalSnapshot };

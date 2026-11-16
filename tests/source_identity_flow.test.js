@@ -82,3 +82,30 @@ test('final recheck rejects same-size, same-mtime replacement bytes', async t =>
   assert.equal(result.outputNumber, 2);
   assert.match(result.variables.user.failure_reason, /byte comparison failed/);
 });
+
+test('final recheck tolerates a ctime-only hardlink unlink on the same inode and refreshes ctimeNs', async t => {
+  const bytes = Buffer.from('complete source bytes '.repeat(10000));
+  const fixture = createFixture(t, bytes);
+  const sibling = path.join(fixture.dir, 'seeding-hardlink.mkv');
+  fs.linkSync(fixture.original, sibling);
+  const snapshot = makeSnapshot(fixture.original);
+  delete snapshot.contentHash;
+  const before = fs.statSync(fixture.original, { bigint: true });
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+  fs.unlinkSync(sibling);
+  const after = fs.statSync(fixture.original, { bigint: true });
+  assert.equal(after.ino, before.ino);
+  assert.notEqual(after.ctimeNs, before.ctimeNs);
+
+  const messages = [];
+  const result = await loadPlugin(recheckCode)({
+    originalLibraryFile: { _id: fixture.original },
+    inputFileObj: { _id: fixture.candidate },
+    variables: { user: { original_snapshot: snapshot } },
+    jobLog: message => messages.push(String(message))
+  });
+
+  assert.equal(result.outputNumber, 1);
+  assert.equal(result.variables.user.original_snapshot.ctimeNs, String(after.ctimeNs));
+  assert.ok(messages.some(message => /ctime only/i.test(message)));
+});

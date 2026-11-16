@@ -433,16 +433,19 @@ one('  // 2. Stream Probing', '''  const saveOriginalSnapshot = (stat, realPath,
   const assertOriginalUnchanged = () => {
     const current=fs.statSync(originalPath,{bigint:true});
     const realPath=fs.realpathSync(originalPath);
-    const changed=[];
-    if(realPath!==originalSnapshot.realPath)changed.push('path');
-    if(current.dev!==originalSnapshot.dev)changed.push('device');
-    if(current.ino!==originalSnapshot.ino)changed.push('inode');
-    if(current.size!==originalSnapshot.size)changed.push('size');
-    if(current.mtimeNs!==originalSnapshot.mtimeNs)changed.push('mtime');
-    if(current.ctimeNs!==originalSnapshot.ctimeNs)changed.push('ctime');
+    const {changed,sameStableMetadata,identityMoved,ctimeOnly}=diffOriginalSnapshot(originalSnapshot,current,realPath);
     if(!changed.length)return;
-    const sameStableMetadata=realPath===originalSnapshot.realPath&&current.size===originalSnapshot.size&&current.mtimeNs===originalSnapshot.mtimeNs;
-    const identityMoved=current.dev!==originalSnapshot.dev||current.ino!==originalSnapshot.ino;
+    if(ctimeOnly){
+      if(originalGuardFd!==null){
+        const fdStat=fs.fstatSync(originalGuardFd,{bigint:true});
+        if(fdStat.dev!==current.dev||fdStat.ino!==current.ino||fdStat.size!==current.size||fdStat.mtimeNs!==current.mtimeNs){
+          throw new Error('Original library file descriptor diverged during ctime-only metadata change');
+        }
+      }
+      saveOriginalSnapshot(current,realPath);
+      log('[Original guard] Source inode metadata changed (ctime only; same dev/ino/size/mtime); continuing with the unchanged source.');
+      return;
+    }
     let verificationError='';
     if(sameStableMetadata&&identityMoved&&originalGuardFd!==null){
       try{
@@ -451,7 +454,7 @@ one('  // 2. Stream Probing', '''  const saveOriginalSnapshot = (stat, realPath,
           const previousHash=args.variables.user.original_snapshot?.contentHash;
           if(previousHash&&previousHash!==comparison.hash)throw new Error('previously verified content hash changed');
           const after=fs.statSync(originalPath,{bigint:true});
-          if(fs.realpathSync(originalPath)!==realPath||after.dev!==current.dev||after.ino!==current.ino||after.size!==current.size||after.mtimeNs!==current.mtimeNs||after.ctimeNs!==current.ctimeNs)throw new Error('path changed during byte comparison');
+          if(diffOriginalSnapshot({realPath,...current},after,fs.realpathSync(originalPath)).changed.length)throw new Error('path changed during byte comparison');
           saveOriginalSnapshot(current,realPath,comparison.hash);
           log(`[Original guard] File identity changed (${changed.join(', ')}) but the current file is byte-for-byte identical; treating it as a Mover relocation.`);
           return;
@@ -1585,25 +1588,23 @@ guard['inputsDB']['code']=source_identity+'\n'+guard['inputsDB']['code']
 old_snapshot_check="    if (!s.isFile() || fs.realpathSync(original)!==saved.realPath || String(s.dev)!==saved.dev || String(s.ino)!==saved.ino || String(s.size)!==saved.size || String(s.mtimeNs)!==saved.mtimeNs || String(s.ctimeNs)!==saved.ctimeNs) throw new Error('Original changed since job began');"
 new_snapshot_check="""    if (!s.isFile()) throw new Error('Original is not a regular file');
     const realPath=fs.realpathSync(original);
-    const changed=[];
-    if(realPath!==saved.realPath)changed.push('path');
-    if(String(s.dev)!==saved.dev)changed.push('device');
-    if(String(s.ino)!==saved.ino)changed.push('inode');
-    if(String(s.size)!==saved.size)changed.push('size');
-    if(String(s.mtimeNs)!==saved.mtimeNs)changed.push('mtime');
-    if(String(s.ctimeNs)!==saved.ctimeNs)changed.push('ctime');
+    const {changed,sameStableMetadata,ctimeOnly}=diffOriginalSnapshot(saved,s,realPath);
     if(changed.length){
-      const sameStableMetadata=realPath===saved.realPath&&String(s.size)===saved.size&&String(s.mtimeNs)===saved.mtimeNs;
-      if(!sameStableMetadata||!/^([a-f0-9]{64})$/.test(String(saved.contentHash||'')))throw new Error(`Original changed since job began; changed fields: ${changed.join(', ')}`);
-      const beforeHash=fs.statSync(original,{bigint:true});
-      const beforeRealPath=fs.realpathSync(original);
-      if(beforeRealPath!==realPath||beforeHash.dev!==s.dev||beforeHash.ino!==s.ino||beforeHash.size!==s.size||beforeHash.mtimeNs!==s.mtimeNs||beforeHash.ctimeNs!==s.ctimeNs)throw new Error('Original changed while preparing relocation verification');
-      const currentHash=hashFilePath(original);
-      const afterHash=fs.statSync(original,{bigint:true});
-      if(fs.realpathSync(original)!==beforeRealPath||afterHash.dev!==beforeHash.dev||afterHash.ino!==beforeHash.ino||afterHash.size!==beforeHash.size||afterHash.mtimeNs!==beforeHash.mtimeNs||afterHash.ctimeNs!==beforeHash.ctimeNs)throw new Error('Original changed during relocation verification');
-      if(currentHash!==saved.contentHash)throw new Error(`Original changed since job began; changed fields: ${changed.join(', ')}; byte comparison failed`);
-      Object.assign(saved,{realPath,dev:String(s.dev),ino:String(s.ino),size:String(s.size),mtimeNs:String(s.mtimeNs),ctimeNs:String(s.ctimeNs)});
-      log(`[Original guard] File identity changed (${changed.join(', ')}) after processing, but byte-for-byte verification passed; treating it as a Mover relocation.`);
+      if(ctimeOnly){
+        saved.ctimeNs=String(s.ctimeNs);
+        log('[Original guard] Source inode metadata changed (ctime only; same dev/ino/size/mtime) before replacement; continuing.');
+      }else{
+        if(!sameStableMetadata||!/^([a-f0-9]{64})$/.test(String(saved.contentHash||'')))throw new Error(`Original changed since job began; changed fields: ${changed.join(', ')}`);
+        const beforeHash=fs.statSync(original,{bigint:true});
+        const beforeRealPath=fs.realpathSync(original);
+        if(diffOriginalSnapshot({realPath,...s},beforeHash,beforeRealPath).changed.length)throw new Error('Original changed while preparing relocation verification');
+        const currentHash=hashFilePath(original);
+        const afterHash=fs.statSync(original,{bigint:true});
+        if(diffOriginalSnapshot({realPath:beforeRealPath,...beforeHash},afterHash,fs.realpathSync(original)).changed.length)throw new Error('Original changed during relocation verification');
+        if(currentHash!==saved.contentHash)throw new Error(`Original changed since job began; changed fields: ${changed.join(', ')}; byte comparison failed`);
+        Object.assign(saved,{realPath,dev:String(s.dev),ino:String(s.ino),size:String(s.size),mtimeNs:String(s.mtimeNs),ctimeNs:String(s.ctimeNs)});
+        log(`[Original guard] File identity changed (${changed.join(', ')}) after processing, but byte-for-byte verification passed; treating it as a Mover relocation.`);
+      }
     }"""
 if guard['inputsDB']['code'].count(old_snapshot_check)!=1: raise RuntimeError('Unexpected original snapshot check')
 guard['inputsDB']['code']=guard['inputsDB']['code'].replace(old_snapshot_check,new_snapshot_check,1)
