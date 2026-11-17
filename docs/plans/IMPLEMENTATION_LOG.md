@@ -105,3 +105,16 @@
   - TDD Red -> Green across [`tests/success_notify.test.js`](tests/success_notify.test.js) and [`tests/failure_notify.test.js`](tests/failure_notify.test.js).
   - `python3 scripts/stage_signatures.py --check-isolation`: all 4 isolation invariants passed with zero changes to `arc_av1_monolithic` stage hashes (`precheck_video`, `precheck_audio`, `encode`, `candidate_frames`, `decode` unchanged).
   - `make check`: `381/381` tests passed (`96.97%` line, `77.48%` branch, `94.32%` function coverage), `git diff --check` clean.
+
+## 2026-11-17 — Route-Aware Dynamic Stage Progress Budgets (V16.5)
+
+- **Scope:** In-place update across [`src/progress.js`](src/progress.js), [`scripts/build.py`](scripts/build.py), [`scripts/build_additions.py`](scripts/build_additions.py), [`scripts/stage_signatures.py`](scripts/stage_signatures.py), [`README.md`](README.md), and [`flow.json`](flow.json) (plan in [`docs/plans/PLAN.md`](docs/plans/PLAN.md)).
+- **Changes implemented:**
+  - Added `STAGE_PROGRESS_PROFILES`, `STAGE_PROGRESS_ORDER`, `createStageProgressPlan`, and `stageProgressValue` to `src/progress.js`, replacing static completion bounds (`1-8%`, `10-80%`, `82-90%`, etc.) with route-specific weights (`qsv`, `hybrid`, `sw_hdr`) that allocate budget in proportion to wall-clock time across source scan, audio precheck, encode, remux, candidate frame scan, packet timelines, video decode, and audio decode.
+  - Re-anchored `progressPlan` after source inspection and on cached precheck / quarantined candidate / skipped-remux paths so remaining active stages expand proportionally without resetting or regressing monotonic percentage progress (`0.1 -> 99.9`).
+  - Tagged the new progress planning helpers as `("ui_only",)` in `scripts/stage_signatures.py` so UI progress tuning does not invalidate source-precheck or quarantine caches.
+- **Verification:**
+  - TDD Red -> Green across [`tests/progress.test.js`](tests/progress.test.js), [`tests/flow.test.js`](tests/flow.test.js), and [`tests/integration.test.js`](tests/integration.test.js).
+  - `python3 scripts/stage_signatures.py --check-isolation`: all 4 isolation invariants passed.
+  - `make check`: `384/384` tests passed (`97.02%` line, `77.49%` branch, `94.40%` function coverage), `git diff --check` clean.
+  - Isolated container smoke test in `tdarr-flow-live-test-20261102` on a 10s sample (`watchmen-10s.mkv`): exited with `outputNumber: 1`, `monotonic: true` across `117` worker updates (`0.1% -> 99.9%`), allocating `1% -> 28.69%` to source scan, `28.69% -> 30.18%` to audio precheck, `30.18% -> 47.98%` to `av1_qsv` encode, `49.96% -> 85.56%` to candidate frame scan, `85.56% -> 90%` to packet timelines, `90.01% -> 98.9%` to QSV video decode, and `99.9%` to audio decode.
