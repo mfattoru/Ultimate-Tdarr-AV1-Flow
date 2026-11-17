@@ -1,7 +1,7 @@
 # Tdarr Arc AV1 V15 design
 
-**Updated:** 2026-11-12
-**Design state:** local 17-plugin candidate; includes Option 1A DV/HDR10 Level 6 conflict handling and `dovi5_hdr10` Profile 5 → HDR10 conversion via Vulkan `libplacebo` + `dovi_tool` Level 6/9 metadata synthesis, passing `314/314` automated tests and a 150-frame live container smoke check.
+**Updated:** 2026-11-17
+**Design state:** local 17-plugin candidate; includes Option 1A DV/HDR10 Level 6 conflict handling, `dovi5_hdr10` Profile 5 → HDR10 conversion via Vulkan `libplacebo` + `dovi_tool` Level 6/9 metadata synthesis, **V16** PAL/NTSC BT.470 + native HLG + full-range `pc` HDR10/HDR10+ + orphan HDR SDR cleanup, **V16.1** `ctime`-only source tolerance, **V16.2** VAAPI-scaled `p010` + `-enc_time_base:v 1:1000`, **V16.3** `mov_text -> subrip` clear-packet filtering + frame-driven `timestamp-isolated` decode progress, and **V16.4** aligned Discord notifications, passing `381/381` automated tests and isolated container end-to-end verifications.
 **Deployment state:** the latest sanitized local export has not been imported into Tdarr. The test instance still contains an older V15 import with legacy static Arr settings. Production state is not assessed or changed by this document update.
 
 ## Intent

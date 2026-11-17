@@ -952,6 +952,7 @@ one('''  if (!isAlreadyAV1 && isHdr) {
   }''')
 one('    cmdArgs.push("-i", inputPath);', '    if (hdrMasterOverride && !forceStreamCopy) cmdArgs.push("-mastering_display", hdrMasterOverride);\n    if (hdrLightOverride && !forceStreamCopy) cmdArgs.push("-content_light", hdrLightOverride);\n    if (useHybrid && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));\n    cmdArgs.push("-i", inputPath);\n    if (is12Bit && !forceStreamCopy) cmdArgs.push("-sws_dither", "ed");')
 one('    if (useHybrid && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));', '    if ((useHybrid || useSoftwareFallback) && !forceStreamCopy) cmdArgs.push("-threads", String(getDecodeThreadCount()));')
+one('pipelineMode = "Full QSV Hardware (Native 10-bit GPU Decode + Pass-Through VPP + GPU AV1 Encode)";', 'pipelineMode = "Full QSV Hardware (Native 10-bit GPU Decode + Direct QSV + GPU AV1 Encode)";')
 one('const runFfmpeg = (useHybrid = false, forceStreamCopy = false, useIcqOnly = false) => {', 'const runFfmpeg = (useHybrid = false, forceStreamCopy = false, useSoftwareFallback = false) => {')
 one('''    if (!doCopyVideo) {
       // Both Full Hardware and Hybrid modes require VAAPI->QSV device context for av1_qsv encoder''', '''    if (!doCopyVideo && !useSoftwareFallback) {
