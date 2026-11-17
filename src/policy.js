@@ -850,8 +850,24 @@ const composeVideoFilterChain = (baseFilter, options={}) => {
   if (options.removeHdr10Plus) filters.push('sidedata=mode=delete:type=DYNAMIC_HDR_PLUS');
   if (options.removeMasteringDisplay) filters.push('sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA');
   if (options.removeContentLight) filters.push('sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL');
-  filters.push(String(baseFilter));
+  if (baseFilter) filters.push(String(baseFilter));
   return filters.join(',');
+};
+/**
+ * Builds the FFmpeg `-vf` filter chain for video encodes.
+ * QSV paths avoid `vpp_qsv` / `scale_qsv` because both rescale timestamps onto `1/fps` ticks.
+ */
+const buildVideoEncodeFilterChain = (options={}) => {
+  const baseFilter=options.hdrClass==='dovi5_hdr10'
+    ? `libplacebo=apply_dolbyvision=true:colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084:range=tv:tonemapping=clip:peak_detect=false:format=${options.useSoftwareFallback?'yuv420p10le':'p010le'},sidedata=mode=delete:type=DOVI_METADATA`
+    : options.useSoftwareFallback
+      ? 'sidedata=mode=delete:type=DOVI_METADATA,format=yuv420p10le'
+      : options.useHybrid
+        ? 'format=p010le'
+        : options.is10Bit
+          ? ''
+          : 'hwmap=derive_device=vaapi:reverse=1,scale_vaapi=format=p010,hwmap=derive_device=qsv';
+  return composeVideoFilterChain(baseFilter,options);
 };
 const compareVideoTimestamps = (source, output) => {
   const a=source?.timestamps,b=output?.timestamps;

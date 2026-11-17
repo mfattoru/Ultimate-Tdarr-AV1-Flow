@@ -35,10 +35,11 @@ one('if (toSrtCodecs.includes(c) || toSrtCodecIDs.includes(cid)) {', 'if (should
 one('return (toSrtCodecs.includes(c) || toSrtCodecIDs.includes(cid)) ? "subrip" : s.codec_name;', 'return shouldConvertSubToSrt(s) ? "subrip" : s.codec_name;')
 one('''    // Video Mapping & Encoding / Stream-Copy Arguments
     cmdArgs.push("-map", `0:${mainVideo.index}`);
-    if (doCopyVideo) {''', '''    // Video Mapping & Encoding / Stream-Copy Arguments
+    if (doCopyVideo) {''', '''    // [STAGE:encode:start]
+    // Video Mapping & Encoding / Stream-Copy Arguments
     cmdArgs.push("-map", `0:${mainVideo.index}`);
-    // Prevent FFmpeg's automatic sync mode from silently dropping or duplicating decoded frames.
-    if (!doCopyVideo) cmdArgs.push("-fps_mode:v", "passthrough");
+    // Preserve source millisecond timestamps without dropping or quantizing onto 1/fps ticks.
+    if (!doCopyVideo) cmdArgs.push("-fps_mode:v", "passthrough", "-enc_time_base:v", "1:1000");
     if (hdrClass === "untagged") cmdArgs.push(...untaggedColorRangeArgs(hdrClass,sdrSource));
     if (doCopyVideo) {''')
 one('''    if (doCopyVideo) {
@@ -968,20 +969,19 @@ one('''      if (useHybrid) {
         cmdArgs.push("-vf", "vpp_qsv");
       } else {
         cmdArgs.push("-vf", "vpp_qsv=format=p010");
-      }''', '''      const baseVideoFilter=hdrClass==="dovi5_hdr10"
-        ? `libplacebo=apply_dolbyvision=true:colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084:range=tv:tonemapping=clip:peak_detect=false:format=${useSoftwareFallback?"yuv420p10le":"p010le"},sidedata=mode=delete:type=DOVI_METADATA`
-        : useSoftwareFallback
-          ? "sidedata=mode=delete:type=DOVI_METADATA,format=yuv420p10le"
-          : useHybrid ? "format=p010le" : is10Bit ? "vpp_qsv" : "vpp_qsv=format=p010";
-      const sourceHasContentLight=(hdrSource?.side_data_list || []).some(x=>x.side_data_type==="Content light level metadata");
-      const videoFilter=composeVideoFilterChain(baseVideoFilter,{
+      }''', '''      const sourceHasContentLight=(hdrSource?.side_data_list || []).some(x=>x.side_data_type==="Content light level metadata");
+      const videoFilter=buildVideoEncodeFilterChain({
+        hdrClass,
+        is10Bit,
+        useHybrid,
+        useSoftwareFallback,
         normalizeProgressiveFieldOrder:(useHybrid || useSoftwareFallback) && isInterlacedFieldOrderTag(mainVideo),
         removeHdr10Plus:hdrClass==="hdr10plus_hdr10" || hdrClass==="dovi81_hdr10plus_hdr10" || hdrClass==="dovi7_hdr10plus_hdr10",
         removeContentLight:(isHdr && !sourceHasContentLight) || stripOrphanStaticHdr,
         removeMasteringDisplay:stripOrphanStaticHdr,
         removeDoviMetadata:stripOrphanDovi
       });
-      cmdArgs.push("-vf",videoFilter);''')
+      if (videoFilter) cmdArgs.push("-vf", videoFilter);''')
 one('''        } else {
           cmdArgs.push("-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc");
         }
@@ -1021,6 +1021,7 @@ one('''      cmdArgs.push(
         );
       }
       cmdArgs.push("-field_order", "progressive");''')
+one('    // Stamp flow signature on all encoded and bloat-fallback files to prevent re-encode loops', '    // [STAGE:encode:end]\n    // Stamp flow signature on all encoded and bloat-fallback files to prevent re-encode loops')
 one('encoded_by=ArcAV1_QSV','encoded_by=ArcAV1_QSV_V15')
 one('cmdArgs.push("-metadata:g", "encoded_by=ArcAV1_QSV_V15");', 'cmdArgs.push("-metadata:g", forceStreamCopy ? "encoded_by=ArcAV1_SeekHeal_V15" : useSoftwareFallback ? "encoded_by=ArcAV1_SVTAV1_HDRFallback_V15" : "encoded_by=ArcAV1_QSV_V15");')
 one('      codec: expectedVideoCodec,\n', '      codec: expectedVideoCodec,\n      requireMarker: true,\n      hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10" || hdrClass === "dovi5_hdr10",\n      optionalHdrStatic: hdrClass === "hdr10",\n      hlg: hdrClass === "hlg",\n      untagged: hdrClass === "untagged",\n      stripOrphanDovi,\n      stripOrphanStaticHdr,\n      sourceClass: hdrClass,\n      sourceHdr: hdrSource,\n      sdrSource,\n      sourceFrameScan: frameScan,\n      outputMarker: isBloat ? \"ArcAV1_SeekHeal_V15\" : softwareHdrFallback ? \"ArcAV1_SVTAV1_HDRFallback_V15\" : \"ArcAV1_QSV_V15\",\n')

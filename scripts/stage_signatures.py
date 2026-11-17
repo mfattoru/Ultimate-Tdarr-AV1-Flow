@@ -86,6 +86,7 @@ SYMBOL_STAGE_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         "checkHdrFrameStatic": ("precheck_video", "encode", "decode"),
         "hdrFrameMetadataRequirements": ("precheck_video", "decode"),
         "composeVideoFilterChain": ("encode",),
+        "buildVideoEncodeFilterChain": ("encode",),
         "compareVideoTimestamps": ("decode",),
         "hasVerifiedCandidateFrameTimestamps": ("decode",),
         "validateHlg": ("decode",),

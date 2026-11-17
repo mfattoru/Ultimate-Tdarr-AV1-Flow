@@ -276,3 +276,13 @@ test('V16 engine wires full-range pc HDR10+, orphan DOVI SDR, and orphan static 
  assert.ok(engine.includes('removeMasteringDisplay:stripOrphanStaticHdr'),'orphan static HDR SDR cleanup must strip mastering display metadata');
  assert.ok(engine.includes('removeDoviMetadata:stripOrphanDovi'),'orphan DOVI SDR cleanup must strip DOVI metadata');
 });
+
+test('V16.2 non-copy encodes emit -enc_time_base:v 1:1000 without vpp_qsv and hash encode args in STAGE:encode',()=>{
+ const runFfmpegBlock=engine.slice(engine.indexOf('const runFfmpeg ='),engine.indexOf('const cleanupChapters ='));
+ assert.equal(runFfmpegBlock.includes('vpp_qsv'),false,'runFfmpeg must not emit vpp_qsv filters');
+ assert.equal(runFfmpegBlock.includes('scale_qsv'),false,'runFfmpeg must not emit scale_qsv filters');
+ assert.ok(engine.includes('cmdArgs.push("-fps_mode:v", "passthrough", "-enc_time_base:v", "1:1000")'),'non-copy video encodes must keep millisecond encoder timebase alongside passthrough');
+ assert.ok(engine.includes('if (videoFilter) cmdArgs.push("-vf", videoFilter);'),'empty 10-bit QSV filter chains must omit -vf cleanly');
+ const encodeSections=Array.from(engine.matchAll(/\/\/ \[STAGE:encode:start\]([\s\S]*?)\/\/ \[STAGE:encode:end\]/g),m=>m[1]);
+ assert.ok(encodeSections.some(section=>section.includes('-enc_time_base:v') && section.includes('buildVideoEncodeFilterChain')),'encode stage signature must cover runFfmpeg video filter and timebase flags');
+});

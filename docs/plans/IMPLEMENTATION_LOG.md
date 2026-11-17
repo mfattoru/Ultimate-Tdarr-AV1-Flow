@@ -66,3 +66,11 @@
 - **Verification:**
   - TDD Red -> Green across [`tests/source_identity.test.js`](tests/source_identity.test.js), [`tests/source_identity_flow.test.js`](tests/source_identity_flow.test.js), and [`tests/integration.test.js`](tests/integration.test.js).
   - `make check`: `371/371` tests passed (`96.94%` line coverage, `94.30%` function coverage), `git diff --check` clean.
+
+## 2026-11-16 — Preserve Millisecond Video Presentation Timestamps on Arc QSV & SVT-AV1 Encodes (V16.2)
+
+- **Scope:** In-place fix across [`src/policy.js`](src/policy.js), [`scripts/stage_signatures.py`](scripts/stage_signatures.py), [`scripts/build.py`](scripts/build.py), [`docs/architecture/FAILURE_DIAGNOSTICS.md`](docs/architecture/FAILURE_DIAGNOSTICS.md), and [`flow.json`](flow.json) (plan in [`docs/plans/PLAN.md`](docs/plans/PLAN.md)).
+- **Changes implemented:**
+  - Updated `composeVideoFilterChain` to omit empty base filters cleanly and added `buildVideoEncodeFilterChain` in `src/policy.js` (replacing `vpp_qsv` / `vpp_qsv=format=p010` on QSV hardware encodes with `hwmap=derive_device=vaapi:reverse=1,scale_vaapi=format=p010,hwmap=derive_device=qsv` for 8-bit QSV inputs and direct pass-through or `sidedata`-only for 10-bit QSV inputs).
+  - Emitted `-enc_time_base:v 1:1000` alongside `-fps_mode:v passthrough` for `!doCopyVideo` encodes in `scripts/build.py` (without changing `doCopyVideo` seek-heal remuxes).
+  - Registered `buildVideoEncodeFilterChain` in `scripts/stage_signatures.py` (`encode`) and wrapped `runFfmpeg`'s video encode argument block inside `// [STAGE:encode:start] ... // [STAGE:encode:end]` so pre-V16.2 quarantined candidates retire automatically while keeping valid source prechecks cached.

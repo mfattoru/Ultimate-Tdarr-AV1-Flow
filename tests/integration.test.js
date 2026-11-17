@@ -899,3 +899,34 @@ test('Category D2: explicit BT.709 SDR source with orphan ST 2086 metadata encod
  const badRes=await run(bad,argsFor(input,bad.logs));
  assert.equal(badRes.outputNumber,2,'candidate retaining static HDR on BT.709 SDR must be rejected');
 });
+
+test('half-frame delayed H.264 Matroska encodes with -enc_time_base:v 1:1000 pass timestamp comparison without quantization ties',async()=>{
+ const offsetSrc=path.join(dir,'half-frame-offset-src.mkv');
+ const rawH264=path.join(dir,'half-frame-raw-v.mkv');
+ const rawAac=path.join(dir,'half-frame-raw-a.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=320x180:rate=24000/1001','-frames:v','48','-c:v','libx264','-preset','ultrafast','-x264-params','bframes=5:b_pyramid=2:ref=4','-y',rawH264],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','sine=frequency=440:sample_rate=48000','-t','2.1','-c:a','aac','-y',rawAac],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-itsoffset','0.021','-i',rawH264,'-i',rawAac,'-map','0:v','-map','1:a','-c','copy','-y',offsetSrc],{stdio:'ignore'});
+
+ // Verify real FFmpeg encode with -fps_mode:v passthrough -enc_time_base:v 1:1000 preserves timestamps on +21ms source
+ const realOut=path.join(dir,'half-frame-offset-out.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-xerror','-fflags','+genpts','-i',offsetSrc,'-map','0:0','-fps_mode:v','passthrough','-enc_time_base:v','1:1000','-vf','format=yuv420p10le','-c:v','libsvtav1','-preset','12','-crf','40','-svtav1-params','lp=1:log-level=0','-map','0:1','-c:a','copy','-max_interleave_delta','10000000','-avoid_negative_ts','make_zero','-max_muxing_queue_size','2048','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',realOut],{stdio:'ignore'});
+ const x=load({inputPath:offsetSrc,smallerOutput:realOut});
+ const args=argsFor(offsetSrc,x.logs);
+ const res=await run(x,args);
+ assert.equal(res.outputNumber,1,args.variables.user.failure_reason);
+ const enc=x.commands.find(c=>c.args.includes('av1_qsv'));
+ assert.ok(enc,'expected av1_qsv encode');
+ const av=enc.args.slice(enc.args.indexOf('--')+2);
+ assert.equal(av[av.indexOf('-fps_mode:v')+1],'passthrough');
+ const etbIdx=av.indexOf('-enc_time_base:v');
+ assert.ok(etbIdx>=0,'non-copy encode must emit -enc_time_base:v');
+ assert.equal(av[etbIdx+1],'1:1000');
+ assert.equal(av.includes('vpp_qsv'),false,'QSV encode must not use vpp_qsv');
+ assert.ok(av[av.indexOf('-vf')+1].includes('scale_vaapi=format=p010'),'8-bit QSV encode must convert to p010 via scale_vaapi');
+
+ const readTs=file=>child.execFileSync('ffprobe',['-v','error','-select_streams','v:0','-show_frames','-show_entries','frame=best_effort_timestamp_time','-of','compact=p=1:nk=0',file],{encoding:'utf8'}).split(/\r?\n/).map(l=>l.match(/best_effort_timestamp_time=([^|]+)/)).filter(Boolean).map(m=>Number(m[1]));
+ const srcTs=readTs(offsetSrc),outTs=readTs(realOut);
+ assert.equal(outTs.length,srcTs.length);
+ for(let i=1;i<outTs.length;i++) if(srcTs[i]>srcTs[i-1]) assert.ok(outTs[i]>outTs[i-1],`expected strictly increasing output PTS at frame ${i}: ${outTs[i-1]} -> ${outTs[i]}`);
+});

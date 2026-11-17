@@ -449,3 +449,51 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
 3. **Refactor & Verification:**
    - Review `src/source_identity.js` and `scripts/build.py` for zero duplicated diff logic, concise docstrings, and edge-case FD checks.
    - Run `make check` (`python3 scripts/build.py && npm run test:coverage && git diff --check`) and verify all tests pass with >= 90% coverage.
+
+---
+
+# V16.2 Execution Plan: Preserve Millisecond Video Presentation Timestamps on Arc QSV & SVT-AV1 Encodes
+
+## Change Categorization
+- **In-Place Bugfix / Behavioral Change (Encoder Filter & Timebase Args + Encode Signature Coverage):**
+  - Currently, non-copy encodes pass `-fps_mode:v passthrough` with default `-enc_time_base:v 0` (`1/fps` = `1001/24000`) and route QSV-decoded streams through `vpp_qsv` / `vpp_qsv=format=p010`.
+  - Live testing on `tdarr-flow-live-test-20261102` established both are responsible for `video_timestamp_order_changed` rejections on half-frame-offset (`+21 ms`) Matroska sources (*The Eminence in Shadow - S01E16*, `Po2VdJH`):
+    - **Full `S01E16` (34,047 frames) live check** with `hwmap=derive_device=vaapi:reverse=1,scale_vaapi=format=p010,hwmap=derive_device=qsv` and `-enc_time_base:v 1:1000`: finished in `61s` at `259,199,513` bytes (vs `259,199,564` bytes in `WkNgZd5`), `srcFrames: 34047 -> outFrames: 34047`, **`ties: 0`**, **`backwards: 0`**, **`maxDrift: 0.000000s`**, **`FULL_DTS_NONINC: 0`**, and clean full timestamp-isolated CPU video decode + audio decode.
+    - **10-bit `sidedata`-only check** verified `sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL` runs directly on 10-bit QSV hardware frames without `vpp_qsv` or `hwmap`.
+    - **Stage-signature audit** revealed that `runFfmpeg`, `baseVideoFilter`, `vpp_qsv`, and `-fps_mode:v` sat *outside* `// [STAGE:encode:start] ... // [STAGE:encode:end]` in `flow.json` (`STAGE:encode` only spanned indices `262938..269441`). Without fixing encode-stage hash coverage too, `Po2VdJH`'s already-quarantined broken candidate would match `stageSignatures.encode` and fail revalidation instead of retiring and re-encoding.
+  - Note on behavior scope: replacing `vpp_qsv` with `hwmap=derive_device=vaapi:reverse=1,scale_vaapi=format=p010,hwmap=derive_device=qsv` (for 8-bit QSV) / omitting `vpp_qsv` pass-through (for 10-bit QSV) and adding `-enc_time_base:v 1:1000` assumes VAAPI-derived QSV (`/dev/dri/renderD129` `vaapi=va:...` -> `qsv=hw@va`) and Matroska millisecond (`1:1000`) output containers. Confirm whether to update this in-place or gate behind a flow/library flag.
+
+## Architectural Review
+- **Files Affected:**
+  - [`src/policy.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/policy.js):
+    - Update `composeVideoFilterChain(baseFilter, options)` to handle empty/null `baseFilter` safely (`filters.filter(Boolean).join(',')`, returning `''` when no filter applies).
+    - Add shared `buildVideoEncodeFilterChain({ hdrClass, is10Bit, useHybrid, useSoftwareFallback, normalizeProgressiveFieldOrder, removeHdr10Plus, removeContentLight, removeMasteringDisplay, removeDoviMetadata })` helper returning `''` when no `-vf` is needed (10-bit QSV pass-through without metadata/field filters), `sidedata=...` directly when 10-bit QSV only needs side-data deletion, or `hwmap=derive_device=vaapi:reverse=1,scale_vaapi=format=p010,hwmap=derive_device=qsv` (with any prepended `sidedata` filters) for 8-bit QSV -> 10-bit `p010` while keeping `dovi5_hdr10` (`libplacebo`), `useHybrid` (`format=p010le`), and `useSoftwareFallback` (`format=yuv420p10le`) intact.
+  - [`scripts/stage_signatures.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/stage_signatures.py):
+    - Register `buildVideoEncodeFilterChain` in `SYMBOL_STAGE_MAP["policy.js"]` under `("encode",)`.
+    - Verify `--check-isolation` passes and edits to encode filters/timebase change `STAGE_CODE_HASHES.encode` without changing `precheck_video` or `precheck_audio`.
+  - [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py):
+    - Pass `-enc_time_base:v 1:1000` alongside `-fps_mode:v passthrough` when `!doCopyVideo` (`av1_qsv`, `libsvtav1` fallback, `dovi5_hdr10`, `useHybrid`; keep `doCopyVideo` unchanged).
+    - Replace inline `vpp_qsv` / `baseVideoFilter` construction with `buildVideoEncodeFilterChain(...)`, emitting `-vf` only when non-empty.
+    - Wrap `runFfmpeg`'s video encode argument construction (covering `doCopyVideo`, `-fps_mode:v`, `-enc_time_base:v`, `-vf`, and encoder flags) in `// [STAGE:encode:start]` ... `// [STAGE:encode:end]` so future encode CLI flag edits also bump `STAGE_CODE_HASHES.encode` automatically, ensuring stale `Po2VdJH`-class quarantined candidates auto-retire while keeping cached source prechecks.
+  - [`docs/architecture/FAILURE_DIAGNOSTICS.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/architecture/FAILURE_DIAGNOSTICS.md) & [`docs/plans/IMPLEMENTATION_LOG.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/plans/IMPLEMENTATION_LOG.md): document the `vpp_qsv` / `-enc_time_base:v` root cause and fix.
+  - [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json): rebuilt via `python3 scripts/build.py`.
+  - Tests: [`tests/policy.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/policy.test.js), [`tests/flow.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/flow.test.js), [`tests/integration.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/integration.test.js).
+- **API / Data Model Updates:**
+  - `src/policy.js` exports `buildVideoEncodeFilterChain` (and `testVideoEncodeFilterChain` alongside existing test helpers).
+  - `STAGE_CODE_HASHES.encode` updates deterministically on rebuild, retiring stale pre-fix `qsv_av1_encode` / `svt_av1_encode` quarantined candidates (e.g., `Po2VdJH`) via existing `candSigs.encode !== currentEncodeSignature` handling while keeping `precheck_video` and `precheck_audio` cache hits intact.
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase (Failing Tests First):**
+   - Update/add unit tests in `tests/policy.test.js` for `composeVideoFilterChain` (including empty base) and `buildVideoEncodeFilterChain` (8-bit QSV `scale_vaapi`, 10-bit QSV empty vs `sidedata`-only, `useHybrid`, `useSoftwareFallback`, `dovi5_hdr10`).
+   - Add flow tests in `tests/flow.test.js` verifying `!doCopyVideo` emits `-fps_mode:v passthrough` + `-enc_time_base:v 1:1000`, `doCopyVideo` omits both, `vpp_qsv` is absent from `arc_av1_monolithic`, and the encode CLI block is covered by `STAGE:encode`.
+   - Add FFmpeg integration tests in `tests/integration.test.js` encoding a synthetic `+21 ms`-delayed `24000/1001` H.264 + AAC MKV with `-fps_mode:v passthrough -enc_time_base:v 1:1000` and testing stale quarantine retirement when `encode` stage signature changes while preserving source precheck cache.
+   - Run `npm test` to confirm expected failures before modifying `src/` or `scripts/`.
+2. **Green Phase (Implementation & Build):**
+   - Implement `composeVideoFilterChain` empty-base support and `buildVideoEncodeFilterChain` in `src/policy.js`.
+   - Register the new declaration in `scripts/stage_signatures.py`.
+   - Update `scripts/build.py` to emit `-enc_time_base:v 1:1000`, call `buildVideoEncodeFilterChain`, and include the `runFfmpeg` encode block inside `STAGE:encode`.
+   - Rebuild `flow.json` via `python3 scripts/build.py`.
+3. **Verification:**
+   - Run `python3 scripts/stage_signatures.py --check-isolation` and `make check` (`build`, `test:coverage`, `git diff --check`) locally.
+   - Verify end-to-end inside `tdarr-flow-live-test-20261102` and clean up any temporary files.
+   - Update `docs/architecture/FAILURE_DIAGNOSTICS.md` and `docs/plans/IMPLEMENTATION_LOG.md`, then re-run `make check`.

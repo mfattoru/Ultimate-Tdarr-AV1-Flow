@@ -44,6 +44,7 @@ const engineExports = {
   testHdrFrameRequirements: 'hdrFrameMetadataRequirements',
   testHdrStatic: 'checkHdrFrameStatic',
   testVideoFilter: 'composeVideoFilterChain',
+  testVideoEncodeFilter: 'buildVideoEncodeFilterChain',
   testSdrTransfer: 'validateEffectiveSdrTransfer',
   testSdrFrameSignaling: 'validateSdrFrameSignaling',
   testMediaInfoColors: 'validateMediaInfoHdrColors',

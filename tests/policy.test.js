@@ -683,9 +683,16 @@ test('Dolby output frame checks require only static metadata present in the veri
 
 test('HDR encode removes content-light side data only when the source has no verified value',()=>{
  assert.equal(typeof p.testVideoFilter,'function');
- assert.equal(p.testVideoFilter('vpp_qsv',{removeContentLight:true}),'sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL,vpp_qsv');
  assert.equal(p.testVideoFilter('format=p010le',{removeHdr10Plus:true,removeContentLight:true}),'sidedata=mode=delete:type=DYNAMIC_HDR_PLUS,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL,format=p010le');
- assert.equal(p.testVideoFilter('vpp_qsv',{removeContentLight:false}),'vpp_qsv');
+ assert.equal(p.testVideoFilter('',{removeContentLight:true}),'sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL');
+ assert.equal(p.testVideoFilter('',{removeContentLight:false}),'');
+ assert.equal(typeof p.testVideoEncodeFilter,'function');
+ assert.equal(p.testVideoEncodeFilter({hdrClass:'sdr',is10Bit:false,useHybrid:false,useSoftwareFallback:false}),'hwmap=derive_device=vaapi:reverse=1,scale_vaapi=format=p010,hwmap=derive_device=qsv');
+ assert.equal(p.testVideoEncodeFilter({hdrClass:'hdr10',is10Bit:true,useHybrid:false,useSoftwareFallback:false,removeContentLight:true}),'sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL');
+ assert.equal(p.testVideoEncodeFilter({hdrClass:'hdr10',is10Bit:true,useHybrid:false,useSoftwareFallback:false,removeContentLight:false}),'');
+ assert.equal(p.testVideoEncodeFilter({hdrClass:'hdr10plus_hdr10',is10Bit:true,useHybrid:true,useSoftwareFallback:false,normalizeProgressiveFieldOrder:true,removeHdr10Plus:true}),'setfield=mode=prog,sidedata=mode=delete:type=DYNAMIC_HDR_PLUS,format=p010le');
+ assert.equal(p.testVideoEncodeFilter({hdrClass:'hdr10',is10Bit:true,useHybrid:false,useSoftwareFallback:true,normalizeProgressiveFieldOrder:true}),'setfield=mode=prog,sidedata=mode=delete:type=DOVI_METADATA,format=yuv420p10le');
+ assert.equal(p.testVideoEncodeFilter({hdrClass:'dovi5_hdr10',is10Bit:true,useHybrid:true,useSoftwareFallback:false}),'libplacebo=apply_dolbyvision=true:colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084:range=tv:tonemapping=clip:peak_detect=false:format=p010le,sidedata=mode=delete:type=DOVI_METADATA');
  const md={side_data_type:'Mastering display metadata',red_x:'17/25',red_y:'8/25',green_x:'53/200',green_y:'69/100',blue_x:'3/20',blue_y:'3/50',white_point_x:'3127/10000',white_point_y:'329/1000',min_luminance:'1/10000',max_luminance:'1000/1'};
  const requirements=p.testHdrFrameRequirements({side_data_list:[md]});
  assert.doesNotThrow(()=>p.testHdrStatic({side_data_list:[md]},{staticInfo:{mastering:md,light:null,conflict:false}},requirements.requireLight,requirements.requireMastering));
@@ -1241,7 +1248,7 @@ test('Category D: explicit BT.709 SDR with orphan DOVI config (0 RPUs) or orphan
  assert.equal(p.testIsSdrWithOrphanStaticHdr({...d2Video,side_data_list:[]},{...sdrBt709Info}, {frames:24,interlaced:0,dovi:0,hdr10plus:0,otherDynamic:0,staticInfo:{mastering:null,light:null,conflict:false}}),false);
 
  assert.equal(
-  p.testVideoFilter('vpp_qsv=format=p010',{removeDoviMetadata:true,removeMasteringDisplay:true,removeContentLight:true}),
-  'sidedata=mode=delete:type=DOVI_METADATA,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL,vpp_qsv=format=p010'
+  p.testVideoEncodeFilter({hdrClass:'sdr',is10Bit:false,useHybrid:false,useSoftwareFallback:false,removeDoviMetadata:true,removeMasteringDisplay:true,removeContentLight:true}),
+  'sidedata=mode=delete:type=DOVI_METADATA,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL,hwmap=derive_device=vaapi:reverse=1,scale_vaapi=format=p010,hwmap=derive_device=qsv'
  );
 });
