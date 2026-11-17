@@ -310,3 +310,38 @@ test('retiring a candidate with keepSourcePrecheck preserves source-scoped prech
   assert.equal(await removeQuarantineCandidatesForSource({root:fixture.cache,sourcePath:fixture.sourcePath,libraryRoots:[fixture.library]}),0);
   assert.equal(fs.existsSync(sourcePrecheckPath),false);
 });
+
+test('findQuarantineCandidate and storeQuarantineCandidate emit monotonic hashing progress updates', async t => {
+  const fixture = makeFixture(t);
+  const bigBytes = Buffer.alloc(3 * 1024 * 1024 + 123, 0x5a);
+  fs.writeFileSync(fixture.sourcePath, bigBytes);
+  const candPath = makeCandidate(fixture, 'progress', Buffer.alloc(2 * 1024 * 1024 + 77, 0x3c));
+  const storeEvents = [];
+  const stored = await storeQuarantineCandidate({
+    root: fixture.cache,
+    sourcePath: fixture.sourcePath,
+    candidatePath: candPath,
+    marker: 'ArcAV1_QSV_V15',
+    kind: 'qsv_av1_encode',
+    validationReport: { outcome: 'inconclusive', stage: 'audio_decode' },
+    libraryRoots: [fixture.library],
+    onProgress: info => storeEvents.push(info)
+  });
+  assert.ok(stored && stored.id);
+  assert.ok(storeEvents.length >= 2, `expected store progress updates, got ${storeEvents.length}`);
+  assert.equal(storeEvents.at(-1).ratio, 1);
+
+  const findEvents = [];
+  const found = await findQuarantineCandidate({
+    root: fixture.cache,
+    sourcePath: fixture.sourcePath,
+    libraryRoots: [fixture.library],
+    onProgress: info => findEvents.push(info)
+  });
+  assert.equal(found.id, stored.id);
+  assert.ok(findEvents.length >= 2, `expected find progress updates, got ${findEvents.length}`);
+  for (let i = 1; i < findEvents.length; i++) {
+    assert.ok(findEvents[i].overallRatio >= findEvents[i - 1].overallRatio, 'overallRatio must stay monotonic');
+  }
+  assert.equal(findEvents.at(-1).overallRatio, 1);
+});

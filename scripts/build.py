@@ -366,7 +366,9 @@ r'''    const detail=String(err?.message || err);
           kind:isBloat?"seek_heal_remux":softwareHdrFallback?"svt_av1_encode":"qsv_av1_encode",
           validationReport:quarantineReport,
           stageSignatures:currentStageSignatures,
-          assertSourceUnchanged:assertOriginalUnchanged
+          assertSourceUnchanged:assertOriginalUnchanged,
+          minIntervalMs:1500,
+          onProgress:info=>reportWorkerProgress(args.updateWorker,{percentage:99.9,fps:0,status:"Quarantine: saving verified candidate"},initialWorkerProgressDetails)
         });
         args.variables.user.quarantine_entry=storedCandidate;
         persistPrechecks(storedCandidate, true);
@@ -448,7 +450,7 @@ one('  // 2. Stream Probing', '''  const saveOriginalSnapshot = (stat, realPath,
     workerLog:"Preparing source metadata and safety checks.",
     lastPluginDetails:{source:"Community",id:"arc_av1_monolithic",number:"1/1"}
   };
-  reportWorkerProgress(args.updateWorker,{percentage:0.1,fps:0,status:initialWorkerProgressDetails.status},initialWorkerProgressDetails);
+  reportWorkerProgress(args.updateWorker,{percentage:0.1,fps:0,status:initialWorkerProgressDetails.status,resetProgress:true},initialWorkerProgressDetails);
   const assertOriginalUnchanged = () => {
     const current=fs.statSync(originalPath,{bigint:true});
     const realPath=fs.realpathSync(originalPath);
@@ -536,7 +538,17 @@ one('  // 2. Stream Probing', '''  const saveOriginalSnapshot = (stat, realPath,
     }
   } else {
     try {
-      quarantinedCandidate = await findQuarantineCandidate({root:quarantineRootForJob,sourcePath:originalPath,libraryRoots:quarantineLibraryRoots});
+      quarantinedCandidate = await findQuarantineCandidate({
+        root:quarantineRootForJob,
+        sourcePath:originalPath,
+        libraryRoots:quarantineLibraryRoots,
+        minIntervalMs:1500,
+        onProgress:info=>{
+          const pct=Number((0.1+0.35*(info.overallRatio||0)).toFixed(2));
+          const status=info.phase==="candidate"?"Preparing: verifying cached candidate":"Preparing: verifying source hash";
+          reportWorkerProgress(args.updateWorker,{percentage:pct,fps:0,status},initialWorkerProgressDetails);
+        }
+      });
       if (quarantinedCandidate) {
         let retireInterlaced = quarantinedCandidate.validationReport?.failure?.message === 'Output has interlaced field order';
         if (!retireInterlaced && quarantinedCandidate.candidatePath) {
@@ -655,6 +667,57 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
     args.variables.user.failure_reason=reason;log(reason);
     return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
   }
+  let toolVersions=null,sourceVideoSignature=null,sourceAudioSignature=null,sourceHdrSignature=null,precheckResult=null,cachedFrameScan=null,cachedAudioPrecheck=null,cachedHdrPreflight=null;
+  let didRunVideoPrecheck=false,didRunAudioPrecheck=false,didRunHdrPrecheck=false,hdrPreflightToSave=null;
+  const resolveSourcePrecheckRef=async()=>{
+    if(quarantinedCandidate)return quarantinedCandidate;
+    if(retiredCandidatePrecheckRef)return retiredCandidatePrecheckRef;
+    try {
+      const qRoot=fs.realpathSync(quarantineRootForJob);
+      const qDir=path.join(qRoot,'tdarr-av1-quarantine');
+      const sKey=require('crypto').createHash('sha256').update(originalSnapshot.realPath).digest('hex');
+      const matches=fs.readdirSync(qDir).filter(name=>name.startsWith(`${sKey}-`) && /^[a-f0-9]{64}-[a-f0-9]{64}\\.prechecks\\.gz$/.test(name));
+      if(!matches.length)return null;
+      const sourceHash=await hashFileAsync(originalSnapshot.realPath,{
+        minIntervalMs:1500,
+        onProgress:info=>reportWorkerProgress(args.updateWorker,{percentage:Number((0.1+0.38*(info.ratio||0)).toFixed(2)),fps:0,status:"Preparing: verifying source precheck cache"},initialWorkerProgressDetails)
+      });
+      return {root:qRoot,quarantineRoot:qDir,sourceKey:sKey,sourceHash};
+    } catch(_) { return null; }
+  };
+  try {
+    const versionOf=bin=>{
+      const result=require('child_process').spawnSync(bin,['-version'],{encoding:'utf8',timeout:15000,maxBuffer:1024*1024});
+      if(result.status!==0 || !result.stdout)throw Error('Unable to identify media tool');
+      return result.stdout;
+    };
+    const optionalVersionOf=bin=>{
+      try {
+        const result=require('child_process').spawnSync(bin,['--version'],{encoding:'utf8',timeout:5000,maxBuffer:256*1024});
+        return result.status===0?String(result.stdout || '').trim():'';
+      } catch(_) { return ''; }
+    };
+    toolVersions={node:process.version,ffprobe:versionOf(ffprobeBin),ffmpeg:versionOf(ffmpegBin),doviTool:optionalVersionOf('dovi_tool')};
+    sourceVideoSignature=hashJson({codeHash:STAGE_CODE_HASHES.precheck_video,node:toolVersions.node,ffprobe:toolVersions.ffprobe,video:mainVideo,mediaInfo:preflightInfoVideo});
+    sourceAudioSignature=hashJson({codeHash:STAGE_CODE_HASHES.precheck_audio,node:toolVersions.node,ffprobe:toolVersions.ffprobe,ffmpeg:toolVersions.ffmpeg,audioStreams:(streams || []).filter(s=>s.codec_type==='audio').map(s=>({index:s.index,codec:s.codec_name,timeBase:s.time_base,channels:s.channels,tags:s.tags,disposition:s.disposition}))});
+    sourceHdrSignature=hashJson({codeHash:STAGE_CODE_HASHES.precheck_video,node:toolVersions.node,ffprobe:toolVersions.ffprobe,ffmpeg:toolVersions.ffmpeg,doviTool:toolVersions.doviTool,video:mainVideo,mediaInfo:preflightInfoVideo});
+    const sourcePrecheckRef=await resolveSourcePrecheckRef();
+    if(sourcePrecheckRef){
+      assertOriginalUnchanged();
+      precheckResult=loadSourcePrecheck(sourcePrecheckRef,{videoSignature:sourceVideoSignature,audioSignature:sourceAudioSignature,hdrSignature:sourceHdrSignature});
+      assertOriginalUnchanged();
+      cachedFrameScan=precheckResult.frameScan;
+      cachedAudioPrecheck=precheckResult.audio;
+      cachedHdrPreflight=precheckResult.hdr || null;
+      hdrPreflightToSave=cachedHdrPreflight;
+      args.variables.user.source_precheck_entry={root:sourcePrecheckRef.root,quarantineRoot:sourcePrecheckRef.quarantineRoot,sourceKey:sourcePrecheckRef.sourceKey,sourceHash:sourcePrecheckRef.sourceHash};
+      if(precheckResult.hit!=='none'){
+        log(`[Precheck cache] Source lookup (${precheckResult.hit}): video=${precheckResult.videoReason}, audio=${precheckResult.audioReason}.`);
+      } else if(precheckResult.videoReason!=='missing' || precheckResult.audioReason!=='missing'){
+        log(`[Precheck cache] Invalidated: video=${precheckResult.videoReason}, audio=${precheckResult.audioReason}; running required source prechecks.`);
+      }
+    }
+  } catch(error) { log(`[Precheck cache] Reuse unavailable: ${error.message || error}`); }
   let preflightDoviRoute=null,preflightHdrSource=null,preflightHdrLightOverride=null,preflightHdrMasterOverride=null,preflightHdrWarning=null,preflightLevel6=null;
   const INTEL_VULKAN_ICD="/usr/share/vulkan/icd.d/intel_icd.json";
   try {
@@ -665,6 +728,12 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
     preflightDoviRoute=preflightDolbyHdrRoute(mainVideo,preflightInfoVideo,hybridPreflight,preflightRpuPresent);
     if(preflightDoviRoute) {
       initialWorkerProgressDetails.status="Precheck: Dolby Vision metadata";
+      const doviExpectedDuration=Number(mainVideo.duration || args.inputFileObj?.ffProbeData?.format?.duration || 0);
+      const onDoviProgress=info=>{
+        const r=Math.max(0,Math.min(1,Number(info?.ratio || 0)));
+        const pct=Number((0.5+0.48*r).toFixed(2));
+        reportWorkerProgress(args.updateWorker,{percentage:pct,fps:Number(info?.fps || 0),status:initialWorkerProgressDetails.status},initialWorkerProgressDetails);
+      };
       if(preflightDoviRoute==="dovi5_hdr10") {
         try {
           fs.accessSync(INTEL_VULKAN_ICD,fs.constants.R_OK);
@@ -675,10 +744,17 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
         if(!/\\blibplacebo\\b/.test(filtersOut)) {
           throw Error(`Dolby Vision Profile 5 requires libplacebo and Intel Vulkan ICD (${INTEL_VULKAN_ICD})`);
         }
-        initialWorkerProgressDetails.workerLog="Checking Dolby Vision Profile 5 RPU Level 6 and Level 9 metadata before the full source scan.";
-        reportWorkerProgress(args.updateWorker,{percentage:0.5,fps:0,status:initialWorkerProgressDetails.status},initialWorkerProgressDetails);
-        verifyDolbyProfile5RpuFullRange(readHdrFrames(ffprobeBin,inputPath,mainVideo.index));
-        preflightLevel6=await extractDolbyProfile5HdrMetadata(ffmpegBin,inputPath,mainVideo.index);
+        if(cachedHdrPreflight && cachedHdrPreflight.route==="dovi5_hdr10" && cachedHdrPreflight.level6) {
+          preflightLevel6={value:cachedHdrPreflight.level6,level6:cachedHdrPreflight.level6,level9:cachedHdrPreflight.level9 ?? null,frames:cachedHdrPreflight.frames};
+          log(`[HDR preflight] Reused cached Dolby Vision Profile 5 Level 6/9 metadata (${preflightLevel6.frames} frames).`);
+        } else {
+          initialWorkerProgressDetails.workerLog="Checking Dolby Vision Profile 5 RPU Level 6 and Level 9 metadata before the full source scan.";
+          reportWorkerProgress(args.updateWorker,{percentage:0.5,fps:0,status:initialWorkerProgressDetails.status},initialWorkerProgressDetails);
+          verifyDolbyProfile5RpuFullRange(readHdrFrames(ffprobeBin,inputPath,mainVideo.index));
+          didRunHdrPrecheck=true;
+          preflightLevel6=await extractDolbyProfile5HdrMetadata(ffmpegBin,inputPath,mainVideo.index,null,{expectedDuration:doviExpectedDuration,onProgress:onDoviProgress});
+          hdrPreflightToSave={route:"dovi5_hdr10",frames:preflightLevel6.frames,level6:preflightLevel6.level6,level9:preflightLevel6.level9 ?? null};
+        }
         const dovi5Target=buildDovi5HdrTarget(preflightLevel6.level6,preflightLevel6.level9);
         preflightHdrSource=dovi5Target.targetVideo;
         preflightHdrMasterOverride=dovi5Target.masteringDisplayArg;
@@ -692,7 +768,14 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
         const preflightHdrFrames=readHdrFrames(ffprobeBin,inputPath,mainVideo.index);
         preflightHdrSource=mergeHdrMetadata(mainVideo,preflightHdrFrames,{allowMissingLight:true});
         const resolved=await resolveHdrLight(preflightHdrSource,preflightDoviRoute,async()=>{
-          preflightLevel6=await extractDolbyLevel6(ffmpegBin,inputPath,mainVideo.index,null,true);
+          if(cachedHdrPreflight && cachedHdrPreflight.route===preflightDoviRoute && cachedHdrPreflight.level6) {
+            preflightLevel6={value:cachedHdrPreflight.level6,frames:cachedHdrPreflight.frames};
+            log(`[HDR preflight] Reused cached Dolby Level 6 metadata (${preflightLevel6.frames} frames).`);
+            return preflightLevel6.value;
+          }
+          didRunHdrPrecheck=true;
+          preflightLevel6=await extractDolbyLevel6(ffmpegBin,inputPath,mainVideo.index,null,true,false,{expectedDuration:doviExpectedDuration,onProgress:onDoviProgress});
+          hdrPreflightToSave={route:preflightDoviRoute,frames:preflightLevel6.frames,level6:preflightLevel6.value,level9:null};
           return preflightLevel6.value;
         });
         preflightHdrSource=resolved.metadata;
@@ -876,7 +959,10 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
           hdrMasterOverride=preflightHdrMasterOverride;
           hdrLightOverride=preflightHdrLightOverride;
         } else {
-          const dovi5Meta=await extractDolbyProfile5HdrMetadata(ffmpegBin,inputPath,mainVideo.index,frameScan.frames);
+          const dovi5Meta=await extractDolbyProfile5HdrMetadata(ffmpegBin,inputPath,mainVideo.index,frameScan.frames,{
+            expectedDuration:Number(mainVideo.duration || args.inputFileObj?.ffProbeData?.format?.duration || 0),
+            onProgress:info=>reportWorkerProgress(args.updateWorker,{percentage:progressPlan.sourceScan.end,fps:Number(info?.fps || 0),status:"Precheck: Dolby Vision metadata"},initialWorkerProgressDetails)
+          });
           const dovi5Target=buildDovi5HdrTarget(dovi5Meta.level6,dovi5Meta.level9);
           hdrSource=dovi5Target.targetVideo;
           hdrMasterOverride=dovi5Target.masteringDisplayArg;
@@ -892,7 +978,10 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
           const mediaInfoHdrSeed=hdrClass==="hdr10"?seedHdrMetadataFromMediaInfo(mainVideo,infoVideos[0]):{video:mainVideo,added:[],contentLightOverride:null};
           if(mediaInfoHdrSeed.added.length)log(`[HDR metadata] Filled missing FFprobe side data from stream-sourced MediaInfo fields: ${mediaInfoHdrSeed.added.join(", ")}. Candidate metadata must still match these values.`);
           hdrSource = mergeHdrMetadata(mediaInfoHdrSeed.video,readHdrFrames(ffprobeBin,inputPath,mainVideo.index),{allowMissingLight:canUseDolbyLevel6 || hdrClass==="hdr10plus_hdr10",allowMissingAll:hdrClass==="hdr10"});
-          const resolved = await resolveHdrLight(hdrSource,hdrClass,() => extractDolbyLevel6(ffmpegBin,inputPath,mainVideo.index,frameScan.frames));
+          const resolved = await resolveHdrLight(hdrSource,hdrClass,() => extractDolbyLevel6(ffmpegBin,inputPath,mainVideo.index,frameScan.frames,false,false,{
+            expectedDuration:Number(mainVideo.duration || args.inputFileObj?.ffProbeData?.format?.duration || 0),
+            onProgress:info=>reportWorkerProgress(args.updateWorker,{percentage:progressPlan.sourceScan.end,fps:Number(info?.fps || 0),status:"Precheck: Dolby Vision metadata"},initialWorkerProgressDetails)
+          }));
           if (resolved.warning) log(`[HDR warning] ${resolved.warning}`);
           hdrSource = resolved.metadata; hdrLightOverride = resolved.override || mediaInfoHdrSeed.contentLightOverride;
         }
@@ -1316,44 +1405,6 @@ one('  const needsProactiveHybrid = hdrClass === "dovi5_hdr10"', '  // [STAGE:en
 one('    pipelineMode = "Size Bloat Fallback (Original Video Stream-Copy + Seek Healed)";', '    // [STAGE:encode:end]\n    pipelineMode = "Size Bloat Fallback (Original Video Stream-Copy + Seek Healed)";')
 one('  const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scanRole:"source",', '''  // [STAGE:precheck_video:start]
   // Stage-scoped signatures isolate source precheck, encode, candidate frame scan, and decode checks.
-  let toolVersions=null,sourceVideoSignature=null,sourceAudioSignature=null,precheckResult=null,cachedFrameScan=null,cachedAudioPrecheck=null;
-  let didRunVideoPrecheck=false,didRunAudioPrecheck=false;
-  const resolveSourcePrecheckRef=()=>{
-    if(quarantinedCandidate)return quarantinedCandidate;
-    if(retiredCandidatePrecheckRef)return retiredCandidatePrecheckRef;
-    try {
-      const qRoot=fs.realpathSync(quarantineRootForJob);
-      const qDir=path.join(qRoot,'tdarr-av1-quarantine');
-      const sKey=require('crypto').createHash('sha256').update(originalSnapshot.realPath).digest('hex');
-      const matches=fs.readdirSync(qDir).filter(name=>name.startsWith(`${sKey}-`) && /^[a-f0-9]{64}-[a-f0-9]{64}\\.prechecks\\.gz$/.test(name));
-      if(!matches.length)return null;
-      return {root:qRoot,quarantineRoot:qDir,sourceKey:sKey,sourceHash:hashFilePath(originalSnapshot.realPath)};
-    } catch(_) { return null; }
-  };
-  try {
-    const versionOf=bin=>{
-      const result=require('child_process').spawnSync(bin,['-version'],{encoding:'utf8',timeout:15000,maxBuffer:1024*1024});
-      if(result.status!==0 || !result.stdout)throw Error('Unable to identify media tool');
-      return result.stdout;
-    };
-    toolVersions={node:process.version,ffprobe:versionOf(ffprobeBin),ffmpeg:versionOf(ffmpegBin)};
-    sourceVideoSignature=hashJson({codeHash:STAGE_CODE_HASHES.precheck_video,node:toolVersions.node,ffprobe:toolVersions.ffprobe,video:mainVideo,mediaInfo:preflightInfoVideo});
-    sourceAudioSignature=hashJson({codeHash:STAGE_CODE_HASHES.precheck_audio,node:toolVersions.node,ffprobe:toolVersions.ffprobe,ffmpeg:toolVersions.ffmpeg,audioStreams:(streams || []).filter(s=>s.codec_type==='audio').map(s=>({index:s.index,codec:s.codec_name,timeBase:s.time_base,channels:s.channels,tags:s.tags,disposition:s.disposition}))});
-    const sourcePrecheckRef=resolveSourcePrecheckRef();
-    if(sourcePrecheckRef){
-      assertOriginalUnchanged();
-      precheckResult=loadSourcePrecheck(sourcePrecheckRef,{videoSignature:sourceVideoSignature,audioSignature:sourceAudioSignature});
-      assertOriginalUnchanged();
-      cachedFrameScan=precheckResult.frameScan;
-      cachedAudioPrecheck=precheckResult.audio;
-      args.variables.user.source_precheck_entry={root:sourcePrecheckRef.root,quarantineRoot:sourcePrecheckRef.quarantineRoot,sourceKey:sourcePrecheckRef.sourceKey,sourceHash:sourcePrecheckRef.sourceHash};
-      if(precheckResult.hit!=='none'){
-        log(`[Precheck cache] Source lookup (${precheckResult.hit}): video=${precheckResult.videoReason}, audio=${precheckResult.audioReason}.`);
-      } else if(precheckResult.videoReason!=='missing' || precheckResult.audioReason!=='missing'){
-        log(`[Precheck cache] Invalidated: video=${precheckResult.videoReason}, audio=${precheckResult.audioReason}; running required source prechecks.`);
-      }
-    }
-  } catch(error) { log(`[Precheck cache] Reuse unavailable: ${error.message || error}`); }
   let progressPlan=createStageProgressPlan({
     route:(quarantinedCandidate?.kind==="svt_av1_encode"||preflightDoviRoute==="dovi5_hdr10")?"sw_hdr":(!useQsvDecode(mainVideo)||isInterlacedFieldOrderTag(mainVideo))?"hybrid":"qsv",
     hasSourceScan:!cachedFrameScan,
@@ -1377,9 +1428,15 @@ one('  const audioTimestampRepairs = new Map();', '''  const audioTimestampRepai
   const currentAudioPrecheckStreams=finalAudioStreams.map(s=>({index:s.index,timeBase:String(s.time_base || '')}));
   const persistPrechecks=(entry,force=false)=>{
     if(!sourceVideoSignature || !entry)return;
-    if(!force && !didRunVideoPrecheck && !didRunAudioPrecheck && !precheckResult?.migratedFromLegacy)return;
+    if(!force && !didRunVideoPrecheck && !didRunAudioPrecheck && !didRunHdrPrecheck && !precheckResult?.migratedFromLegacy)return;
     assertOriginalUnchanged();
-    const saved=saveSourcePrecheck(entry,{videoSignature:sourceVideoSignature,audioSignature:sourceAudioSignature},{frameScan,audio:{streams:currentAudioPrecheckStreams,repairs:Array.from(audioTimestampRepairs.entries())}});
+    const sigs={videoSignature:sourceVideoSignature,audioSignature:sourceAudioSignature};
+    const payload={frameScan,audio:{streams:currentAudioPrecheckStreams,repairs:Array.from(audioTimestampRepairs.entries())}};
+    if(sourceHdrSignature && hdrPreflightToSave){
+      sigs.hdrSignature=sourceHdrSignature;
+      payload.hdrPreflight=hdrPreflightToSave;
+    }
+    const saved=saveSourcePrecheck(entry,sigs,payload);
     assertOriginalUnchanged();
     if(saved && entry.sourceKey && entry.sourceHash){
       args.variables.user.source_precheck_entry={root:entry.root,quarantineRoot:entry.quarantineRoot,sourceKey:entry.sourceKey,sourceHash:entry.sourceHash};

@@ -637,41 +637,106 @@ const buildDovi5HdrTarget = (level6, level9=null) => {
     contentLightArg
   };
 };
-const extractDolbyLevel6 = async (ffmpeg, file, index, expectedFrames, includeCount=false, includeLevel9=false) => {
+/** Extract Dolby Vision RPU Level 6 (and optional Level 9) metadata asynchronously with live progress heartbeats. */
+const extractDolbyLevel6 = async (ffmpeg, file, index, expectedFrames, includeCount=false, includeLevel9=false, options={}) => {
   const dir=fs.mkdtempSync(path.join(require('os').tmpdir(),'tdarr-dovi-'));
+  const onProgress=typeof options?.onProgress==='function'?options.onProgress:null;
+  const expectedDuration=Number(options?.expectedDuration||0);
+  const heartbeatMs=Number.isFinite(options?.heartbeatIntervalMs)&&options.heartbeatIntervalMs>0?options.heartbeatIntervalMs:10000;
+  let lastRatio=0,lastFrames=0,lastFps=0,lastStage='extract',heartbeatTimer=null;
+  const emitProgress=(ratio,stage=lastStage,frames=lastFrames,fps=lastFps)=>{
+    if(!onProgress)return;
+    const bounded=Math.max(lastRatio,Math.min(1,Number.isFinite(ratio)?ratio:lastRatio));
+    lastRatio=bounded;
+    lastStage=stage;
+    onProgress({frames,fps,ratio:bounded,stage});
+  };
   try {
     const rpu=path.join(dir,'rpu.bin'), csv=path.join(dir,'level6.csv'), csv9=path.join(dir,'level9.csv');
-    const source=timelineSpawn(ffmpeg,['-v','error','-xerror','-fflags','+genpts+igndts','-i',file,'-map',`0:${index}`,'-c:v','copy','-bsf:v','hevc_mp4toannexb','-f','hevc','-'],{stdio:['ignore','pipe','pipe']});
+    const sourceArgs=onProgress
+      ? ['-v','error','-xerror','-progress','pipe:3','-nostats','-fflags','+genpts+igndts','-i',file,'-map',`0:${index}`,'-c:v','copy','-bsf:v','hevc_mp4toannexb','-f','hevc','-']
+      : ['-v','error','-xerror','-fflags','+genpts+igndts','-i',file,'-map',`0:${index}`,'-c:v','copy','-bsf:v','hevc_mp4toannexb','-f','hevc','-'];
+    const sourceStdio=onProgress?['ignore','pipe','pipe','pipe']:['ignore','pipe','pipe'];
+    const source=timelineSpawn(ffmpeg,sourceArgs,{stdio:sourceStdio});
     const extract=timelineSpawn('dovi_tool',['extract-rpu','-','-o',rpu],{stdio:['pipe','ignore','pipe']});
-    let sourceErr='',extractErr='';
+    let sourceErr='',extractErr='',progBuf='';
     source.stderr.on('data',x=>sourceErr=(sourceErr+x.toString()).slice(-8192));
     extract.stderr.on('data',x=>extractErr=(extractErr+x.toString()).slice(-8192));
-    const closed = (proc,getError) => new Promise((resolve,reject)=>{
+    if(onProgress && source.stdio && source.stdio[3]){
+      source.stdio[3].setEncoding('utf8');
+      source.stdio[3].on('data',chunk=>{
+        progBuf+=chunk;
+        const lines=progBuf.split(/\r?\n/);
+        progBuf=lines.pop()||'';
+        for(const raw of lines){
+          const line=raw.trim();
+          const mFrame=/^frame=(\d+)$/.exec(line);
+          if(mFrame)lastFrames=Number(mFrame[1]);
+          const mFps=/^fps=([0-9.]+)$/.exec(line);
+          if(mFps)lastFps=Number(mFps[1]);
+          const mTime=/^out_time_us=(\d+)$/.exec(line);
+          let timeRatio=0;
+          if(mTime && expectedDuration>0)timeRatio=Number(mTime[1])/(expectedDuration*1e6);
+          const frameRatio=(expectedFrames>0 && lastFrames>0)?lastFrames/expectedFrames:0;
+          const best=Math.max(frameRatio,timeRatio);
+          if(line==='progress=continue' || line==='progress=end'){
+            const r=best>0?Math.min(0.92,best*0.92):Math.min(0.9,lastRatio+0.01);
+            emitProgress(r,'extract',lastFrames,lastFps);
+          }
+        }
+      });
+    }
+    if(onProgress){
+      emitProgress(0.01,'extract',0,0);
+      heartbeatTimer=setInterval(()=>{
+        if(lastStage==='extract'){
+          emitProgress(Math.min(0.9,lastRatio+0.01),'extract',lastFrames,lastFps);
+        } else if(lastStage==='export'){
+          emitProgress(Math.min(0.99,Math.max(0.92,lastRatio+0.01)),'export',lastFrames,lastFps);
+        }
+      },heartbeatMs);
+      if(heartbeatTimer.unref)heartbeatTimer.unref();
+    }
+    const closed = (proc,getError,label) => new Promise((resolve,reject)=>{
       proc.on('error',reject);
-      proc.on('close',(status,signal)=>status===0?resolve():reject(Error(`Dolby extraction failed (${status ?? signal}): ${getError().slice(-500)}`)));
+      proc.on('close',(status,signal)=>status===0?resolve():reject(Error(`${label} (${status ?? signal}): ${getError().slice(-500)}`)));
     });
     const timer=setTimeout(()=>{source.kill('SIGKILL');extract.kill('SIGKILL');},12*60*60*1000);
     if (timer.unref) timer.unref();
     try {
-      await Promise.all([closed(source,()=>sourceErr),closed(extract,()=>extractErr),require('stream/promises').pipeline(source.stdout,extract.stdin)]);
+      await Promise.all([closed(source,()=>sourceErr,'Dolby extraction failed'),closed(extract,()=>extractErr,'Dolby extraction failed'),require('stream/promises').pipeline(source.stdout,extract.stdin)]);
     } catch (e) {source.kill('SIGKILL');extract.kill('SIGKILL');throw e;}
     finally {clearTimeout(timer);}
+    emitProgress(Math.max(lastRatio,0.92),'export',lastFrames,lastFps);
     const levelsSpec=includeLevel9 ? `level6=${csv},level9=${csv9}` : `level6=${csv}`;
-    execFileSync('dovi_tool',['export','-i',rpu,'--levels',levelsSpec,'--levels-format','csv'],{encoding:'utf8',timeout:12*60*60*1000,maxBuffer:1024*1024});
+    const exportProc=timelineSpawn('dovi_tool',['export','-i',rpu,'--levels',levelsSpec,'--levels-format','csv'],{stdio:['ignore','pipe','pipe']});
+    let exportErr='';
+    exportProc.stderr.on('data',x=>exportErr=(exportErr+x.toString()).slice(-8192));
+    const exportTimer=setTimeout(()=>exportProc.kill('SIGKILL'),12*60*60*1000);
+    if(exportTimer.unref)exportTimer.unref();
+    try {
+      await closed(exportProc,()=>exportErr,'Dolby export failed');
+    } finally {
+      clearTimeout(exportTimer);
+    }
     if (fs.statSync(csv).size>128*1024*1024) throw Error('Dolby Level 6 export exceeds safety limit');
     const l6=summarizeLevel6Rows(fs.readFileSync(csv,'utf8').split(/\r?\n/),expectedFrames,includeCount || includeLevel9);
-    if (!includeLevel9) return l6;
     let level9=null;
-    if (fs.existsSync(csv9)) {
+    if (includeLevel9 && fs.existsSync(csv9)) {
       if (fs.statSync(csv9).size>128*1024*1024) throw Error('Dolby Level 9 export exceeds safety limit');
       const l9Raw=fs.readFileSync(csv9,'utf8').trim();
       if (l9Raw) level9=summarizeLevel9Rows(l9Raw.split(/\r?\n/),expectedFrames ?? l6.frames);
     }
+    emitProgress(1,'complete',includeCount||includeLevel9?l6.frames:(expectedFrames||lastFrames),lastFps);
+    if (!includeLevel9) return l6;
     return {...l6,level6:l6.value,level9};
-  } finally { fs.rmSync(dir,{recursive:true,force:true}); }
+  } finally {
+    if(heartbeatTimer)clearInterval(heartbeatTimer);
+    fs.rmSync(dir,{recursive:true,force:true});
+  }
 };
-const extractDolbyProfile5HdrMetadata = (ffmpeg, file, index, expectedFrames=null) =>
-  extractDolbyLevel6(ffmpeg,file,index,expectedFrames,true,true);
+const extractDolbyProfile5HdrMetadata = (ffmpeg, file, index, expectedFrames=null, options={}) =>
+  extractDolbyLevel6(ffmpeg,file,index,expectedFrames,true,true,options);
 
 const rationalValue = (x) => {
   const parts=String(x).split('/'), n=Number(parts[0]), d=parts.length===2?Number(parts[1]):1;

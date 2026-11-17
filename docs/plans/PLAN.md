@@ -642,3 +642,52 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
    - Run `python3 scripts/stage_signatures.py --check-isolation` and `make check` (`build`, `test:coverage`, `git diff --check`).
    - Run a short live container smoke verification in `tdarr-flow-live-test-20261102` capturing full monotonic `updateWorker` progress percentages across all phases, then clean up temporary scratch files.
    - Update `docs/plans/IMPLEMENTATION_LOG.md` and `README.md`, then run a final `make check`.
+
+# V16.6 Execution Plan: Non-Blocking Hash/Dolby Preflight Heartbeats & Preflight Cache Reuse
+
+## Change Categorization
+- **Non-Breaking Fix / Resilience Addition:**
+  - Root cause of `pE8HZjH-log.txt` (`The Matrix Resurrections (2021) WEBDL-2160p.mp4` stalled & auto-cancelled by Tdarr's Worker Stall Detector at `14:19:50` after `V16.5` hash `d2d852fdaedc361c`) is **not** a V16.3–V16.5 regression:
+    1. `findQuarantineCandidate` (`src/quarantine.js`) ran synchronous `quarantineHashFile` across the `19.2 GB` source MP4 and `7.17 GB` quarantined candidate MKV (`14:10:01 -> 14:12:54`, `2m 52s`), blocking the Node event loop with zero `updateWorker` progress updates (`0.1%`).
+    2. Dolby Vision Profile 5 preflight (`extractDolbyProfile5HdrMetadata` -> `extractDolbyLevel6` in `src/policy.js`) then ran before `loadSourcePrecheck`, re-demuxed the full `19.2 GB / 212,784-frame` MP4 into `dovi_tool extract-rpu`, and ran synchronous `execFileSync('dovi_tool', ['export', ...])` with zero `updateWorker` heartbeats (`14:12:54 -> 14:19:53`, `6m 59s`), tripping Tdarr's Worker Stall Detector.
+  - Preserves all existing quarantine manifest schemas, source-identity invariants, Dolby Level 6/Level 9 validation rules, and existing `.prechecks.gz` v2 compatibility.
+
+## Architectural Review
+- **1. Async Yielding Hashing with Worker Progress Heartbeats (`src/quarantine.js`, `src/source_identity.js`):**
+  - Add async chunked file hashing (`hashFileAsync(filePath, { onProgress, assertSameStat })` / `quarantineHashFileAsync`) yielding between chunks (`setImmediate`) and reporting byte progress (`ratio`) throttled every `~2s`.
+  - Use async hashing with optional `onProgress` inside `findQuarantineCandidate`, `storeQuarantineCandidate`, `updateQuarantineFailure`, and `resolveSourcePrecheckRef` (`scripts/build.py`), keeping synchronous `hashFilePath` export intact for existing tests/callers.
+  - Wire pre-scan worker progress inside `[0.1%, 0.48%]` (`Preparing: verifying source hash` / `Preparing: verifying cached candidate`) so hashing `20–60 GB` remuxes keeps the event loop alive (`reservationHeartbeatTimer` continues firing every `30s`) and updates Tdarr smoothly without tripping the stall detector.
+- **2. Streaming Progress & Async Export in `extractDolbyLevel6` (`src/policy.js`):**
+  - Extend `extractDolbyLevel6(ffmpeg, file, index, expectedFrames, includeCount = false, includeLevel9 = false, options = {})` (defaulting `options` for full signature compatibility) to:
+    - Accept `expectedDuration`, `expectedFrames`, and `onProgress({ frames, ratio, fps, stage })`.
+    - Attach `-progress pipe:3 -nostats` (`stdio: ['ignore', 'pipe', 'pipe', 'pipe']`) on `source` when supported by `timelineSpawn` (preserving raw Annex-B stream on `stdout` fd `1` into `dovi_tool`), plus a periodic heartbeat timer fallback (`10s` interval) when piped mocks or slow frames don't flush `pipe:3`, clamping progress ratio cleanly inside `[0, 0.92]`.
+    - Replace synchronous `execFileSync('dovi_tool', ['export', ...])` with an async `spawn`/`timelineSpawn` helper that maintains a `10s` progress heartbeat during CSV export (`[0.92, 0.99]`), then emit `1` on completion.
+  - In `scripts/build.py`, map Dolby Vision preflight (`dovi5_hdr10` and `dovi7`/`dovi81` fallback paths) cleanly into `[0.5%, 0.99%]` monotonic worker progress (`status: "Precheck: Dolby Vision metadata"`) before `progressPlan.sourceScan` starts at `1%`.
+- **3. Cache Verified Dolby Preflight Evidence in `.prechecks.gz` (`src/precheck_cache.js`, `scripts/build.py`):**
+  - Load `sourcePrecheckRef` (via `quarantinedCandidate || retiredCandidatePrecheckRef || resolveSourcePrecheckRef()`) **before** running Dolby RPU extraction (`extractDolbyProfile5HdrMetadata` / `extractDolbyLevel6`), reusing cached verified `hdrPreflight` (`{ route, level6, level9, frames }`) when `sourceHash`, `hdrSignature` (FFprobe/FFmpeg/dovi_tool + `precheck_video` code hash), and frame count match.
+  - Persist `hdrPreflight` optionally inside v2 `.prechecks.gz` manifests via `saveSourcePrecheck` / `loadSourcePrecheck` (`hdrPreflight` stays optional so existing `.prechecks.gz` files without it remain valid for `frameScan`/`audio` and simply populate `hdrPreflight` on the next completed precheck).
+- **Files Affected:**
+  - [`src/source_identity.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/source_identity.js): add `hashFileAsync` while keeping `hashFilePath` unchanged.
+  - [`src/quarantine.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/quarantine.js): switch `findQuarantineCandidate`, `storeQuarantineCandidate`, `updateQuarantineFailure`, `quarantineVerifyCandidate` to async yielding hashing with optional `onProgress`.
+  - [`src/policy.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/policy.js): add `-progress pipe:3` + async `dovi_tool export` + timer fallback heartbeats to `extractDolbyLevel6` and forward `options` in `extractDolbyProfile5HdrMetadata`.
+  - [`src/precheck_cache.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/precheck_cache.js): support optional `hdrSignature` + validated `hdrPreflight` persistence/loading in `saveSourcePrecheck` / `loadSourcePrecheck`.
+  - [`scripts/stage_signatures.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/stage_signatures.py): map any new `hashFileAsync` / helper symbols without breaking stage isolation (`--check-isolation`).
+  - [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py): wire async hash progress (`0.1–0.48%`), early `sourcePrecheckRef` resolution/load, cached `hdrPreflight` reuse, and live Dolby preflight progress (`0.5–0.99%`).
+  - [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json) & [`docs/plans/IMPLEMENTATION_LOG.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/plans/IMPLEMENTATION_LOG.md).
+  - Tests: [`tests/source_identity.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/source_identity.test.js), [`tests/quarantine.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/quarantine.test.js), [`tests/policy.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/policy.test.js), [`tests/precheck_cache.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/precheck_cache.test.js), [`tests/integration.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/integration.test.js).
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase (Failing Tests First):**
+   - `tests/source_identity.test.js`: test `hashFileAsync` matches `hashFilePath`, emits monotonic `onProgress`, yields across chunks, and detects mid-read content size/stat mismatch.
+   - `tests/quarantine.test.js`: test `findQuarantineCandidate` and `storeQuarantineCandidate` forward `onProgress` updates during hashing.
+   - `tests/policy.test.js`: test `extractDolbyLevel6` / `extractDolbyProfile5HdrMetadata` emit `onProgress` updates via `-progress pipe:3` (and heartbeat fallback) + async `dovi_tool export` without mutating returned Level 6/Level 9 values.
+   - `tests/precheck_cache.test.js`: test `saveSourcePrecheck` / `loadSourcePrecheck` backward compatibility when `hdrSignature`/`hdrPreflight` are omitted, independent invalidation when `hdrSignature` changes, and full reuse when present.
+   - `tests/integration.test.js`: test DV Profile 5 retry with quarantined candidate emits monotonic hashing + Dolby preflight progress (`0.1 -> 0.48 -> 0.5 -> 0.99`) when `hdrPreflight` is absent and skips `dovi_tool` extraction on subsequent hit.
+   - Run `npm test` to confirm Red failures.
+2. **Green Phase (Implementation & Build):**
+   - Implement updates in `src/source_identity.js`, `src/quarantine.js`, `src/policy.js`, `src/precheck_cache.js`, `scripts/stage_signatures.py`, and `scripts/build.py`.
+   - Rebuild `flow.json` via `python3 scripts/build.py`.
+3. **Verification:**
+   - Run `python3 scripts/stage_signatures.py --check-isolation` and `make check` (`build`, `test:coverage`, `git diff --check`).
+   - Run an isolated live smoke test in `tdarr-flow-live-test-20261102` against a short cropped sample of `The Matrix Resurrections (2021) WEBDL-2160p.mp4` verifying monotonic pre-scan hashing + Dolby Level 6/9 progress emission (`pipe:3` + async export) and `.prechecks.gz` `hdrPreflight` reuse on retry, then clean up `/test` and `/dev/shm`.
+   - Update `docs/plans/IMPLEMENTATION_LOG.md` and run a final `make check`.

@@ -1252,3 +1252,49 @@ test('Category D: explicit BT.709 SDR with orphan DOVI config (0 RPUs) or orphan
   'sidedata=mode=delete:type=DOVI_METADATA,sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL,hwmap=derive_device=vaapi:reverse=1,scale_vaapi=format=p010,hwmap=derive_device=qsv'
  );
 });
+
+test('extractDolbyProfile5HdrMetadata emits monotonic progress via pipe:3 and async dovi_tool export',async()=>{
+ const nodeFs=require('node:fs'),nodeOs=require('node:os'),nodePath=require('node:path');
+ const binDir=nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(),'tdarr-p5-progress-'));
+ const oldPath=process.env.PATH||'';
+ try{
+  const writeStub=(name,body)=>{
+   const pBin=nodePath.join(binDir,name);
+   nodeFs.writeFileSync(pBin,`#!/bin/sh\n${body}\n`,{mode:0o755});
+  };
+  writeStub('ffmpeg',`prog=""
+for arg in "$@"; do
+ case "$arg" in pipe:3) prog=3 ;; esac
+done
+if [ "$prog" = "3" ]; then
+ printf "frame=1\\nout_time_us=1000000\\nfps=120.0\\nprogress=continue\\n" >&3
+fi
+printf "FAKE_HEVC_ANNEXB"`);
+  writeStub('dovi_tool',`cmd="$1"; shift
+if [ "$cmd" = "extract-rpu" ]; then
+ cat >/dev/null
+ out=""; while [ "$#" -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done
+ printf "FAKE_RPU" > "$out"
+elif [ "$cmd" = "export" ]; then
+ levels=""; while [ "$#" -gt 0 ]; do [ "$1" = "--levels" ] && levels="$2"; shift; done
+ l6=\${levels#*level6=}; l6=\${l6%%,*}
+ l9=\${levels#*level9=}
+ printf "frame,max_display_mastering_luminance,min_display_mastering_luminance,max_content_light_level,max_frame_average_light_level\\n0,1000,1,10000,315\\n1,1000,1,10000,315\\n" > "$l6"
+ printf "frame,length,source_primary_index\\n0,1,0\\n1,1,0\\n" > "$l9"
+fi`);
+  process.env.PATH=`${binDir}:${oldPath}`;
+  const updates=[];
+  const full=await p.testExtractP5('ffmpeg','/fake/dune.mkv',0,2,{
+   expectedDuration:2,
+   onProgress:info=>updates.push(info)
+  });
+  assert.deepEqual(full.level6,{max_content:10000,max_average:315,max_luminance:1000,min_luminance:0.0001});
+  assert.deepEqual(full.level9,{source_primary_index:0,frames:2});
+  assert.ok(updates.length>=2,`expected pipe:3 + completion progress updates, got ${JSON.stringify(updates)}`);
+  for(let i=1;i<updates.length;i++) assert.ok(updates[i].ratio>=updates[i-1].ratio);
+  assert.equal(updates.at(-1).ratio,1);
+ }finally{
+  process.env.PATH=oldPath;
+  nodeFs.rmSync(binDir,{recursive:true,force:true});
+ }
+});

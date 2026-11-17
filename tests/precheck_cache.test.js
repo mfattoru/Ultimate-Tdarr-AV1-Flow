@@ -119,3 +119,31 @@ test('candidate frame scan cache keys by candidateHash and signature and rejects
   removeCandidateFramesCache(entry);
   assert.equal(fs.existsSync(candidateFramesPathFor(entry)),false);
 });
+
+test('source precheck cache optionally stores and independently validates Dolby hdrPreflight metadata',t=>{
+  const entry=fixture(t);
+  const data=evidence();
+  const hdrPreflight={
+    route:'dovi5_hdr10',
+    frames:24,
+    level6:{max_content:1000,max_average:200,max_luminance:1000,min_luminance:0.0001},
+    level9:{source_primary_index:0,frames:24}
+  };
+  const v1='1'.repeat(64), a1='2'.repeat(64), h1='3'.repeat(64), h2='4'.repeat(64);
+  assert.equal(saveSourcePrecheck(entry,{videoSignature:v1,audioSignature:a1,hdrSignature:h1},{...data,hdrPreflight}),true);
+  const hit=loadSourcePrecheck(entry,{videoSignature:v1,audioSignature:a1,hdrSignature:h1});
+  assert.equal(hit.hit,'full');
+  assert.equal(hit.hdrReason,'matched');
+  assert.deepEqual(hit.hdr,hdrPreflight);
+
+  // Changing hdrSignature misses hdrPreflight without invalidating video/audio
+  const hdrMiss=loadSourcePrecheck(entry,{videoSignature:v1,audioSignature:a1,hdrSignature:h2});
+  assert.equal(hdrMiss.hit,'full');
+  assert.equal(hdrMiss.hdrReason,'hdr_signature_changed');
+  assert.equal(hdrMiss.hdr,null);
+  assert.deepEqual(hdrMiss.frameScan,data.frameScan);
+
+  // Legacy caller omitting hdrSignature still gets full video/audio hit cleanly
+  const legacyCaller=loadSourcePrecheck(entry,{videoSignature:v1,audioSignature:a1});
+  assert.equal(legacyCaller.hit,'full');
+});

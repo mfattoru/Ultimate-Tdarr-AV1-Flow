@@ -70,6 +70,49 @@ function hashFilePath(filePath) {
   }
 }
 
+/** Hash a regular file asynchronously in 1 MB chunks, yielding to the event loop and emitting throttled progress. */
+async function hashFileAsync(filePath, { chunkBytes = SOURCE_COMPARE_CHUNK_BYTES, onProgress = null, minIntervalMs = 0 } = {}) {
+  const fd = sourceIdentityFs.openSync(filePath, 'r');
+  try {
+    const before = sourceIdentityFs.fstatSync(fd, { bigint: true });
+    if (!before.isFile()) throw new Error('Path is not a regular file');
+    if (before.size > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('File exceeds the safe positional-read limit');
+    const size = Number(before.size);
+    const step = Number.isSafeInteger(chunkBytes) && chunkBytes > 0 ? chunkBytes : SOURCE_COMPARE_CHUNK_BYTES;
+    const buffer = Buffer.allocUnsafe(step);
+    const hash = sourceIdentityCrypto.createHash('sha256');
+    let lastEmitMs = 0;
+    const emit = (bytesRead, ratio, force = false) => {
+      if (typeof onProgress !== 'function') return;
+      const now = Date.now();
+      if (!force && minIntervalMs > 0 && now - lastEmitMs < minIntervalMs) return;
+      lastEmitMs = now;
+      onProgress({ bytesRead, totalBytes: size, ratio });
+    };
+    if (size === 0) {
+      emit(0, 1, true);
+    } else {
+      for (let position = 0; position < size; position += step) {
+        const length = Math.min(step, size - position);
+        const read = sourceIdentityReadChunk(fd, buffer, length, position);
+        if (read !== length) throw new Error('File changed or ended during content verification');
+        hash.update(buffer.subarray(0, length));
+        const bytesRead = position + length;
+        const done = bytesRead >= size;
+        emit(bytesRead, bytesRead / size, done);
+        if (!done) await new Promise(resolve => setImmediate(resolve));
+      }
+    }
+    const after = sourceIdentityFs.fstatSync(fd, { bigint: true });
+    if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
+      throw new Error('File changed during content verification');
+    }
+    return hash.digest('hex');
+  } finally {
+    sourceIdentityFs.closeSync(fd);
+  }
+}
+
 /** Compare a saved source snapshot against current stat metadata to classify identity drift vs ctime-only updates. */
 function diffOriginalSnapshot(saved, currentStat, currentRealPath) {
   const sameField = (a, b) => String(a) === String(b);
@@ -89,4 +132,4 @@ function diffOriginalSnapshot(saved, currentStat, currentRealPath) {
   return { changed, sameStableMetadata, identityMoved, ctimeOnly };
 }
 
-module.exports = { compareOpenFileToPath, hashFilePath, diffOriginalSnapshot };
+module.exports = { compareOpenFileToPath, hashFilePath, hashFileAsync, diffOriginalSnapshot };

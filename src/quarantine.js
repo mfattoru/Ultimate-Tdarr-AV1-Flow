@@ -82,7 +82,10 @@ function quarantineEnsureDirectory(root) {
   return directory;
 }
 
-function quarantineHashFile(filePath) {
+const quarantineYield = () => new Promise(resolve => setImmediate(resolve));
+
+/** Compute a file's SHA-256 asynchronously in 1 MB chunks, yielding to the event loop and emitting progress. */
+async function quarantineHashFile(filePath, onProgress = null, { minIntervalMs = 0 } = {}) {
   const fd = quarantineFs.openSync(filePath, 'r');
   try {
     const before = quarantineFs.fstatSync(fd, {bigint: true});
@@ -90,15 +93,31 @@ function quarantineHashFile(filePath) {
     const buffer = Buffer.allocUnsafe(QUARANTINE_CHUNK_BYTES);
     const hash = quarantineCrypto.createHash('sha256');
     const size = Number(before.size);
-    for (let position = 0; position < size; position += QUARANTINE_CHUNK_BYTES) {
-      const wanted = Math.min(QUARANTINE_CHUNK_BYTES, size - position);
-      let total = 0;
-      while (total < wanted) {
-        const count = quarantineFs.readSync(fd, buffer, total, wanted - total, position + total);
-        if (count === 0) throw Error('Quarantine content changed or ended during hashing');
-        total += count;
+    let lastEmitMs = 0;
+    const emit = (bytesRead, ratio, force = false) => {
+      if (typeof onProgress !== 'function') return;
+      const now = Date.now();
+      if (!force && minIntervalMs > 0 && now - lastEmitMs < minIntervalMs) return;
+      lastEmitMs = now;
+      onProgress({ bytesRead, totalBytes: size, ratio });
+    };
+    if (size === 0) {
+      emit(0, 1, true);
+    } else {
+      for (let position = 0; position < size; position += QUARANTINE_CHUNK_BYTES) {
+        const wanted = Math.min(QUARANTINE_CHUNK_BYTES, size - position);
+        let total = 0;
+        while (total < wanted) {
+          const count = quarantineFs.readSync(fd, buffer, total, wanted - total, position + total);
+          if (count === 0) throw Error('Quarantine content changed or ended during hashing');
+          total += count;
+        }
+        hash.update(buffer.subarray(0, wanted));
+        const bytesRead = position + wanted;
+        const done = bytesRead >= size;
+        emit(bytesRead, bytesRead / size, done);
+        if (!done) await quarantineYield();
       }
-      hash.update(buffer.subarray(0, wanted));
     }
     const after = quarantineFs.fstatSync(fd, {bigint: true});
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
@@ -140,12 +159,12 @@ function quarantineReadManifest(directory, manifestName) {
   return {id, manifest, manifestPath, candidatePath: quarantinePath.join(directory, manifest.candidateName)};
 }
 
-function quarantineVerifyCandidate(entry, allowMissing = false) {
+async function quarantineVerifyCandidate(entry, allowMissing = false, onProgress = null, progressOptions = {}) {
   try {
     const stat = quarantineFs.lstatSync(entry.candidatePath);
     if (!stat.isFile() || stat.isSymbolicLink()) throw Error('Quarantine candidate is not a regular file');
     if (quarantineFs.realpathSync(entry.candidatePath) !== entry.candidatePath) throw Error('Quarantine candidate resolves outside its directory');
-    if (quarantineHashFile(entry.candidatePath) !== entry.manifest.candidateHash) throw Error('Quarantine candidate SHA-256 does not match its manifest');
+    if (await quarantineHashFile(entry.candidatePath, onProgress, progressOptions) !== entry.manifest.candidateHash) throw Error('Quarantine candidate SHA-256 does not match its manifest');
     return true;
   } catch (error) {
     if (allowMissing && error.code === 'ENOENT') return false;
@@ -173,7 +192,7 @@ function quarantineEntry(root, directory, loaded) {
   };
 }
 
-function quarantineLoadEntry(entry, allowMissingCandidate = false) {
+async function quarantineLoadEntry(entry, allowMissingCandidate = false) {
   if (!entry || entry.version !== 1 || !QUARANTINE_ID_RE.test(String(entry.id || ''))) throw Error('Invalid quarantine entry handle');
   const root = quarantineRootPath(entry.root);
   const directory = quarantinePath.join(root, QUARANTINE_DIRECTORY);
@@ -182,7 +201,7 @@ function quarantineLoadEntry(entry, allowMissingCandidate = false) {
   const loaded = quarantineReadManifest(directory, `${entry.id}.json`);
   if (loaded.manifest.sourcePath !== entry.sourcePath || loaded.manifest.sourceHash !== entry.sourceHash
       || loaded.manifest.candidateHash !== entry.candidateHash) throw Error('Quarantine entry no longer matches its manifest');
-  quarantineVerifyCandidate(loaded, allowMissingCandidate);
+  await quarantineVerifyCandidate(loaded, allowMissingCandidate);
   return {root, directory, loaded};
 }
 
@@ -218,7 +237,7 @@ function quarantineWriteManifest(manifestPath, manifest) {
   }
 }
 
-async function findQuarantineCandidate({root, sourcePath, sourceHash, libraryRoots}) {
+async function findQuarantineCandidate({root, sourcePath, sourceHash, libraryRoots, onProgress = null, minIntervalMs = 0}) {
   root = quarantineRootPath(root);
   quarantineAssertOutsideLibraries(root,libraryRoots);
   const canonicalSource = quarantineSourcePath(sourcePath);
@@ -234,13 +253,22 @@ async function findQuarantineCandidate({root, sourcePath, sourceHash, libraryRoo
   const prefix = `${sourceKey}-`;
   const names = quarantineFs.readdirSync(directory).filter(name => name.startsWith(prefix) && name.endsWith('.json')).sort().reverse();
   if (names.length === 0) return null;
-  const expectedHash = sourceHash === undefined ? quarantineHashFile(canonicalSource) : sourceHash;
+  const emitPhase = (phase, ratio, extra = {}) => {
+    if (typeof onProgress !== 'function') return;
+    const base = phase === 'source' ? 0 : 0.6;
+    const span = phase === 'source' ? 0.6 : 0.4;
+    onProgress({ phase, ratio, overallRatio: Math.min(1, base + span * Math.max(0, Math.min(1, ratio))), ...extra });
+  };
+  const expectedHash = sourceHash === undefined
+    ? await quarantineHashFile(canonicalSource, info => emitPhase('source', info.ratio, info), { minIntervalMs })
+    : sourceHash;
   if (!QUARANTINE_HASH_RE.test(String(expectedHash || ''))) throw Error('Invalid source SHA-256 for quarantine lookup');
   for (const name of names) {
     try {
       const loaded = quarantineReadManifest(directory, name);
       if (loaded.manifest.sourcePath !== canonicalSource || loaded.manifest.sourceHash !== expectedHash) continue;
-      quarantineVerifyCandidate(loaded);
+      await quarantineVerifyCandidate(loaded, false, info => emitPhase('candidate', info.ratio, info), { minIntervalMs });
+      emitPhase('candidate', 1);
       return quarantineEntry(root, directory, loaded);
     } catch (_) {
       // A damaged entry is not reusable, but it must not block another valid
@@ -248,10 +276,11 @@ async function findQuarantineCandidate({root, sourcePath, sourceHash, libraryRoo
       continue;
     }
   }
+  emitPhase('candidate', 1);
   return null;
 }
 
-async function storeQuarantineCandidate({root, sourcePath, sourceHash, candidatePath, marker, kind, validationReport, stageSignatures, assertSourceUnchanged, libraryRoots}) {
+async function storeQuarantineCandidate({root, sourcePath, sourceHash, candidatePath, marker, kind, validationReport, stageSignatures, assertSourceUnchanged, libraryRoots, onProgress = null, minIntervalMs = 0}) {
   root = quarantineRootPath(root);
   quarantineAssertOutsideLibraries(root,libraryRoots);
   const canonicalSource = quarantineSourcePath(sourcePath);
@@ -263,13 +292,18 @@ async function storeQuarantineCandidate({root, sourcePath, sourceHash, candidate
   if (!sourceEntry.isFile() || sourceEntry.isSymbolicLink() || !/^tdarr-av1-[A-Za-z0-9_-]+$/.test(quarantinePath.basename(quarantinePath.dirname(canonicalCandidate)))) {
     throw Error('Candidate must be a regular output file in a job-owned Tdarr cache directory');
   }
+  const reportStorePhase = (base, span, info) => {
+    if (typeof onProgress === 'function') {
+      onProgress({ ratio: Math.min(1, base + span * Math.max(0, Math.min(1, info.ratio))), bytesRead: info.bytesRead, totalBytes: info.totalBytes });
+    }
+  };
   if (typeof assertSourceUnchanged === 'function') assertSourceUnchanged();
-  const verifiedSourceHash = quarantineHashFile(canonicalSource);
+  const verifiedSourceHash = await quarantineHashFile(canonicalSource, info => reportStorePhase(0, 0.5, info), { minIntervalMs });
   if (sourceHash !== undefined && verifiedSourceHash !== sourceHash) throw Error('Source SHA-256 changed before quarantine storage');
   sourceHash = verifiedSourceHash;
   if (typeof assertSourceUnchanged === 'function') assertSourceUnchanged();
   if (sourceEntry.size < 1) throw Error('Refusing to quarantine an empty candidate file');
-  const candidateHash = quarantineHashFile(canonicalCandidate);
+  const candidateHash = await quarantineHashFile(canonicalCandidate, info => reportStorePhase(0.5, 0.35, info), { minIntervalMs });
   if (typeof assertSourceUnchanged === 'function') assertSourceUnchanged();
   const directory = quarantineEnsureDirectory(root);
   const id = `${quarantinePathKey(canonicalSource)}-${sourceHash}-${quarantineCrypto.randomBytes(12).toString('hex')}`;
@@ -299,7 +333,7 @@ async function storeQuarantineCandidate({root, sourcePath, sourceHash, candidate
       if (typeof reserveCapacity !== 'function' || typeof releaseCapacity !== 'function') throw Error('Cross-filesystem quarantine copy requires the reservation ledger');
       temporaryReservation = await reserveCapacity({root, candidate: directory, bytes: BigInt(sourceEntry.size), floorBytes: 0n});
       quarantineFs.copyFileSync(canonicalCandidate, temporaryCopy, quarantineFs.constants.COPYFILE_EXCL);
-      if (quarantineHashFile(temporaryCopy) !== candidateHash) throw Error('Cross-filesystem quarantine copy failed SHA-256 verification');
+      if (await quarantineHashFile(temporaryCopy, info => reportStorePhase(0.85, 0.08, info), { minIntervalMs }) !== candidateHash) throw Error('Cross-filesystem quarantine copy failed SHA-256 verification');
       quarantineFs.renameSync(temporaryCopy, installedCandidate);
     };
     if (sourceDevice === destinationDevice) {
@@ -314,7 +348,8 @@ async function storeQuarantineCandidate({root, sourcePath, sourceHash, candidate
       await copyCandidate();
     }
     installed = true;
-    if (quarantineHashFile(installedCandidate) !== candidateHash) throw Error('Installed quarantine candidate SHA-256 does not match its source');
+    if (await quarantineHashFile(installedCandidate, info => reportStorePhase(0.93, 0.07, info), { minIntervalMs }) !== candidateHash) throw Error('Installed quarantine candidate SHA-256 does not match its source');
+    if (typeof onProgress === 'function') onProgress({ ratio: 1 });
     if (typeof assertSourceUnchanged === 'function') assertSourceUnchanged();
     quarantineWriteManifest(manifestPath, manifest);
     manifestInstalled = true;
@@ -345,7 +380,7 @@ async function storeQuarantineCandidate({root, sourcePath, sourceHash, candidate
 }
 
 async function updateQuarantineFailure(entry, validationReport, stageSignatures) {
-  const {root, directory, loaded} = quarantineLoadEntry(entry);
+  const {root, directory, loaded} = await quarantineLoadEntry(entry);
   const normalizedStageSignatures = stageSignatures !== undefined
     ? quarantineNormalizeStageSignatures(stageSignatures)
     : loaded.manifest.stageSignatures;
@@ -361,7 +396,7 @@ async function updateQuarantineFailure(entry, validationReport, stageSignatures)
 }
 
 async function removeQuarantineCandidate(entry, {keepSourcePrecheck = false} = {}) {
-  const {directory, loaded} = quarantineLoadEntry(entry, true);
+  const {directory, loaded} = await quarantineLoadEntry(entry, true);
   quarantineUnlinkIfPresent(`${loaded.candidatePath}.prechecks.gz`);
   quarantineUnlinkIfPresent(`${loaded.candidatePath}.frames.gz`);
   if (!keepSourcePrecheck) {

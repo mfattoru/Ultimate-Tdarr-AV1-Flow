@@ -152,6 +152,7 @@ SYMBOL_STAGE_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         "candidateFramesPathFor": ("candidate_frames",),
         "validFrameScanEvidence": ("precheck_video", "candidate_frames"),
         "validAudioPrecheckEvidence": ("precheck_audio",),
+        "validHdrPreflightEvidence": ("precheck_video",),
         "validPrecheckEvidence": ("precheck_video", "precheck_audio"),
         "safeUnlink": ("precheck_video", "precheck_audio", "candidate_frames"),
         "writeSignedEnvelope": ("precheck_video", "precheck_audio", "candidate_frames"),

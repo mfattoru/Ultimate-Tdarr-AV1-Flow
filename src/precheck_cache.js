@@ -80,6 +80,15 @@ function validAudioPrecheckEvidence(a) {
     && a.repairs.every(r => Array.isArray(r) && r.length === 2 && Number.isSafeInteger(r[0]) && r[1] && typeof r[1] === 'object');
 }
 
+/** Validate optional cached Dolby Vision Level 6 / Level 9 preflight metadata. */
+function validHdrPreflightEvidence(h) {
+  return !!h && typeof h === 'object' && !Array.isArray(h)
+    && typeof h.route === 'string' && h.route.length > 0
+    && Number.isSafeInteger(h.frames) && h.frames >= 1
+    && (h.level6 === null || h.level6 === undefined || (typeof h.level6 === 'object' && !Array.isArray(h.level6)))
+    && (h.level9 === null || h.level9 === undefined || (typeof h.level9 === 'object' && !Array.isArray(h.level9)));
+}
+
 function validPrecheckEvidence(data) {
   return validFrameScanEvidence(data?.frameScan) && validAudioPrecheckEvidence(data?.audio);
 }
@@ -159,25 +168,31 @@ function removePrecheckCache(entry) {
   safeUnlink(precheckPathFor(entry));
 }
 
-/** Save split video/audio source precheck evidence at the source-scoped path. */
+/** Save split video/audio/Dolby preflight source evidence at the source-scoped path. */
 function saveSourcePrecheck(entry, signatures, data) {
   try {
     const videoSignature = String(signatures?.videoSignature || '');
     const audioSignature = signatures?.audioSignature ? String(signatures.audioSignature) : null;
+    const hdrSignature = signatures?.hdrSignature ? String(signatures.hdrSignature) : null;
     if (!PRECHECK_HASH_RE.test(videoSignature) || !validFrameScanEvidence(data?.frameScan)) return false;
     if (audioSignature !== null && (!PRECHECK_HASH_RE.test(audioSignature) || !validAudioPrecheckEvidence(data?.audio))) {
+      return false;
+    }
+    if (hdrSignature !== null && (!PRECHECK_HASH_RE.test(hdrSignature) || !validHdrPreflightEvidence(data?.hdrPreflight))) {
       return false;
     }
     const destination = sourcePrecheckPathFor(entry);
     const payloadData = {
       frameScan: data.frameScan,
-      audio: audioSignature !== null ? data.audio : null
+      audio: audioSignature !== null ? data.audio : null,
+      ...(hdrSignature !== null ? { hdrPreflight: data.hdrPreflight } : {})
     };
     return writeSignedEnvelope(destination, {
       version: 2,
       sourceHash: entry.sourceHash,
       videoSignature,
       audioSignature,
+      ...(hdrSignature !== null ? { hdrSignature } : {}),
       data: payloadData
     });
   } catch (_) {
@@ -185,19 +200,22 @@ function saveSourcePrecheck(entry, signatures, data) {
   }
 }
 
-/** Load source-scoped precheck evidence with independent video/audio hit state and miss reasons. */
+/** Load source-scoped precheck evidence with independent video/audio/hdr hit state and miss reasons. */
 function loadSourcePrecheck(entry, signatures) {
   const miss = (reason) => ({
     hit: 'none',
     frameScan: null,
     audio: null,
+    hdr: null,
     videoReason: reason,
     audioReason: reason,
+    hdrReason: signatures?.hdrSignature ? reason : 'not_requested',
     migratedFromLegacy: false
   });
   try {
     const videoSignature = String(signatures?.videoSignature || '');
     const audioSignature = String(signatures?.audioSignature || '');
+    const hdrSignature = signatures?.hdrSignature ? String(signatures.hdrSignature) : null;
     if (!PRECHECK_HASH_RE.test(videoSignature) || !PRECHECK_HASH_RE.test(audioSignature)) {
       return miss('invalid_signature');
     }
@@ -226,6 +244,23 @@ function loadSourcePrecheck(entry, signatures) {
     const audioReason = audioMatch ? 'matched'
       : (record.data?.audio != null && !audioValid ? 'corrupt' : 'audio_signature_changed');
 
+    let hdrMatch = false;
+    let hdrReason = hdrSignature ? 'missing' : 'not_requested';
+    if (hdrSignature !== null) {
+      if (!PRECHECK_HASH_RE.test(hdrSignature)) {
+        hdrReason = 'invalid_signature';
+      } else if (!record.data?.hdrPreflight || !record.hdrSignature) {
+        hdrReason = 'missing';
+      } else if (!validHdrPreflightEvidence(record.data.hdrPreflight)) {
+        hdrReason = 'corrupt';
+      } else if (record.hdrSignature !== hdrSignature) {
+        hdrReason = 'hdr_signature_changed';
+      } else {
+        hdrMatch = true;
+        hdrReason = 'matched';
+      }
+    }
+
     const hit = (videoMatch && audioMatch) ? 'full'
       : videoMatch ? 'video_only'
       : audioMatch ? 'audio_only'
@@ -234,8 +269,10 @@ function loadSourcePrecheck(entry, signatures) {
       hit,
       frameScan: videoMatch ? record.data.frameScan : null,
       audio: audioMatch ? record.data.audio : null,
+      hdr: hdrMatch ? record.data.hdrPreflight : null,
       videoReason,
       audioReason,
+      hdrReason,
       migratedFromLegacy
     };
   } catch (_) {
@@ -295,6 +332,7 @@ if (typeof module !== 'undefined') {
     candidateFramesPathFor,
     validFrameScanEvidence,
     validAudioPrecheckEvidence,
+    validHdrPreflightEvidence,
     savePrecheckCache,
     loadPrecheckCache,
     removePrecheckCache,

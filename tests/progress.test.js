@@ -154,3 +154,16 @@ test('createStageProgressPlan allocates route-weighted contiguous budgets and re
  assert.equal(stageProgressValue({start:10,end:28},NaN),10);
  assert.equal(stageProgressValue({start:10,end:28},0.5),19);
 });
+
+test('reportWorkerProgress clamps percentages monotonically within a job and resets only on explicit resetProgress',()=>{
+ const updates=[];
+ const cb=payload=>updates.push(payload);
+ const details={sourceFileSizeInBytes:1024};
+ reportWorkerProgress(cb,{percentage:0.1,status:'start',resetProgress:true},details);
+ reportWorkerProgress(cb,{percentage:60.1,status:'encode'},details);
+ reportWorkerProgress(cb,{percentage:58.9,status:'encode'},details);
+ reportWorkerProgress(cb,{percentage:63.8,status:'validate'},details);
+ reportWorkerProgress(cb,{percentage:0.1,status:'next job',resetProgress:true},details);
+ assert.deepEqual(updates.map(u=>u.percentage),[0.1,60.1,60.1,63.8,0.1]);
+ assert.equal('resetProgress' in updates[0],false);
+});

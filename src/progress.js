@@ -37,11 +37,20 @@ const reportWorkerProgress = (updateWorker,data,workerDetails,mediaRatio) => {
   try {
     const payload={...data};
     const previous=progressWorkerContext.get(updateWorker) || {};
+    const reset=Boolean(data && data.resetProgress);
+    if ('resetProgress' in payload) delete payload.resetProgress;
+    const baseMax=!reset && Number.isFinite(previous.maxPercent) ? previous.maxPercent : 0;
+    const incomingPercent=Number(payload.percentage);
+    if (Number.isFinite(incomingPercent)) {
+      payload.percentage=Math.min(99.9,Math.max(baseMax,incomingPercent));
+    }
+    const maxPercent=Number.isFinite(Number(payload.percentage)) ? Math.max(baseMax,Number(payload.percentage)) : baseMax;
     const context={
       workerDetails:workerDetails && typeof workerDetails === 'object' ? workerDetails : previous.workerDetails,
-      mediaRatio:Number.isFinite(mediaRatio) ? mediaRatio : previous.mediaRatio
+      mediaRatio:Number.isFinite(mediaRatio) ? mediaRatio : previous.mediaRatio,
+      maxPercent
     };
-    if (context.workerDetails) progressWorkerContext.set(updateWorker,context);
+    progressWorkerContext.set(updateWorker,context);
     const details=context.workerDetails;
     if (details) {
       for (const key of ['CLIType','preset','lastPluginDetails']) {

@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { compareOpenFileToPath, hashFilePath, diffOriginalSnapshot } = require('../src/source_identity');
+const { compareOpenFileToPath, hashFilePath, hashFileAsync, diffOriginalSnapshot } = require('../src/source_identity');
 
 function withFiles(t, sourceBytes, currentBytes = sourceBytes) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tdarr-source-identity-'));
@@ -93,5 +93,25 @@ test('diffOriginalSnapshot classifies unchanged, ctime-only, mover relocation, a
     identityMoved: false,
     ctimeOnly: false
   });
+});
+
+test('hashFileAsync matches hashFilePath, yields across chunks, and reports monotonic progress', async t => {
+  const bytes = Buffer.alloc(3 * 1024 * 1024 + 513, 0x7b);
+  const { current } = withFiles(t, bytes);
+  const expected = hashFilePath(current);
+  const updates = [];
+  let timerFired = false;
+  const timer = setTimeout(() => { timerFired = true; }, 0);
+  const actual = await hashFileAsync(current, {
+    onProgress: info => updates.push(info)
+  });
+  clearTimeout(timer);
+  assert.equal(actual, expected);
+  assert.equal(timerFired, true, 'hashFileAsync must yield to the event loop across multi-chunk reads');
+  assert.ok(updates.length >= 2, `expected multi-chunk progress updates, got ${updates.length}`);
+  for (let i = 1; i < updates.length; i++) {
+    assert.ok(updates[i].ratio >= updates[i - 1].ratio);
+  }
+  assert.equal(updates.at(-1).ratio, 1);
 });
 

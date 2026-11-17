@@ -19,11 +19,50 @@ child.execFileSync('ffmpeg',['-v','error','-i',source,'-map','0:0','-map','0:1',
 child.execFileSync('ffmpeg',['-v','error','-i',multiAudioSource,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',multiAudioCandidate],{stdio:'ignore'});
 assert.ok(fs.statSync(multiAudioCandidate).size < fs.statSync(multiAudioSource).size);
 function argsFor(file,logs=[]) { const f={_id:file,container:'mkv',file_size:fs.statSync(file).size/1024/1024}; return {inputFileObj:{...f},originalLibraryFile:{...f},workDir:dir,variables:{user:{min_cache_free_mb:1}},ffmpegPath:'ffmpeg',librarySettings:{folder:dir},jobLog:m=>logs.push(String(m))}; }
-function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,qsvLongTimestampLines=false,matchedVideoDtsTies=false,matchedSubFramePtsTie=false,sourceFieldOrder=null,candidateFieldOrder=null,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,candidateMissingSar=false,mediaInfoPixelAspectRatio,candidateMediaInfoPixelAspectRatio,hdr=false,colorOverride=null,mediaInfoOverride=null,candidateSideData=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,unlinkHardlinkDuringSourceScan=null,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate,codeOverride=null}={}) {
-  const calls=[],commands=[],logs=[],audioDecodeCommands=[]; let initialProbe=true,moverSimulated=false;
-  const fakeFs=new Proxy(fs,{get(t,p){if(p==='unlinkSync' && denyIso)return name=>{if(String(name).endsWith('.iso'))throw Error('simulated ISO permission error');return t.unlinkSync(name)};if(p==='accessSync')return (name,...args)=>name==='/dev/dri/renderD129'?undefined:t.accessSync(name,...args);return t[p]}});
+function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,qsvLongTimestampLines=false,matchedVideoDtsTies=false,matchedSubFramePtsTie=false,sourceFieldOrder=null,candidateFieldOrder=null,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,candidateMissingSar=false,mediaInfoPixelAspectRatio,candidateMediaInfoPixelAspectRatio,hdr=false,dovi5Test=false,colorOverride=null,mediaInfoOverride=null,candidateSideData=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,unlinkHardlinkDuringSourceScan=null,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate,codeOverride=null}={}) {
+  const calls=[],commands=[],logs=[],audioDecodeCommands=[]; let initialProbe=true,moverSimulated=false,doviExtractCalls=0;
+  const fakeFs=new Proxy(fs,{get(t,p){if(p==='unlinkSync' && denyIso)return name=>{if(String(name).endsWith('.iso'))throw Error('simulated ISO permission error');return t.unlinkSync(name)};if(p==='accessSync')return (name,...args)=>(name==='/dev/dri/renderD129'||(dovi5Test&&name==='/usr/share/vulkan/icd.d/intel_icd.json'))?undefined:t.accessSync(name,...args);return t[p]}});
   const fakeChild={...child,
     spawn(cmd,args,opts){
+      if(dovi5Test&&cmd==='ffmpeg'&&args.includes('hevc')&&args.includes('-')){
+        doviExtractCalls++;
+        const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
+        const proc=new EventEmitter();proc.stdout=new PassThrough();proc.stderr=new PassThrough();proc.stdio=[null,proc.stdout,proc.stderr,new PassThrough()];proc.kill=()=>{};
+        queueMicrotask(()=>{
+          proc.stdio[3].write('frame=48\nout_time_us=2000000\nfps=96.0\nprogress=continue\n');
+          proc.stdio[3].end('frame=96\nout_time_us=4000000\nfps=96.0\nprogress=end\n');
+          proc.stdout.end(Buffer.from('FAKE_HEVC_ANNEXB'));proc.stderr.end();proc.emit('close',0,null);
+        });
+        return proc;
+      }
+      if(dovi5Test&&cmd==='dovi_tool'){
+        const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
+        const proc=new EventEmitter();proc.stdin=new PassThrough();proc.stdout=new PassThrough();proc.stderr=new PassThrough();proc.kill=()=>{};
+        const sub=args[0];
+        if(sub==='extract-rpu'){
+          const out=args[args.indexOf('-o')+1];
+          proc.stdin.resume();
+          proc.stdin.on('end',()=>{fs.writeFileSync(out,'FAKE_RPU');proc.stderr.end();proc.emit('close',0,null);});
+        } else if(sub==='export'){
+          const spec=args[args.indexOf('--levels')+1];
+          const parts=Object.fromEntries(spec.split(',').map(kv=>kv.split('=')));
+          const rows6=['frame,max_display_mastering_luminance,min_display_mastering_luminance,max_content_light_level,max_frame_average_light_level'];
+          const rows9=['frame,length,source_primary_index'];
+          for(let i=0;i<96;i++){rows6.push(`${i},1000,1,1000,250`);rows9.push(`${i},1,0`);}
+          queueMicrotask(()=>{fs.writeFileSync(parts.level6,rows6.join('\n')+'\n');if(parts.level9)fs.writeFileSync(parts.level9,rows9.join('\n')+'\n');proc.stderr.end();proc.emit('close',0,null);});
+        }
+        return proc;
+      }
+      if(dovi5Test&&cmd==='ffprobe'&&args.includes('-show_frames')&&args.includes(inputPath)){
+        const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
+        const proc=new EventEmitter();proc.stdout=new PassThrough();proc.stderr=new PassThrough();proc.kill=()=>{};
+        const lines=[];
+        for(let i=0;i<96;i++){
+          lines.push(`frame|best_effort_timestamp_time=${(i/24).toFixed(6)}|pkt_pos=${1024+i*512}|interlaced_frame=0|pix_fmt=yuv420p10le|color_range=pc|side_datum/dolby_vision_rpu_data:side_data_type=Dolby Vision RPU Data`);
+        }
+        queueMicrotask(()=>{proc.stdout.end(lines.join('\n')+'\n');proc.stderr.end();proc.emit('close',0,null);});
+        return proc;
+      }
       if(matchedSubFramePtsTie&&cmd==='ffprobe'&&args.includes('-show_frames')&&args.includes('compact=p=1:nk=0')){
         const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
         const process=new EventEmitter();process.stdout=new PassThrough();process.stderr=new PassThrough();process.kill=()=>{};
@@ -142,6 +181,10 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
       return process;
     },
     execFileSync(cmd,args,opts){
+      if(dovi5Test&&cmd==='ffmpeg'&&args.includes('-filters'))return 'T.C libplacebo ...';
+      if(dovi5Test&&cmd==='ffprobe'&&args.includes('%+1')&&args.includes(inputPath)){
+        return JSON.stringify({frames:[{side_data_list:[{side_data_type:'Dolby Vision RPU Data'},{side_data_type:'Dolby Vision Metadata',vdr_rpu_profile:0,bl_video_full_range_flag:1}]}]});
+      }
       if(cmd==='mediainfo') {
         if(!mediainfo) throw Error('no mediainfo');
    const isInputTarget=args[args.length-1]===inputPath;
@@ -155,7 +198,10 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
         const probe=JSON.parse(result);
    if((missingSourceSar && args[args.length-1]===inputPath) || (candidateMissingSar && args[args.length-1]!==inputPath)) for(const stream of probe.streams||[]) if(stream.codec_type==='video') delete stream.sample_aspect_ratio;
         for(const stream of probe.streams||[])if(stream.codec_type==='video'){
-          Object.assign(stream,colorOverride?colorOverride:hdr?{color_transfer:'smpte2084',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv'}:{color_transfer:'bt709',color_primaries:'bt709',color_space:'bt709',color_range:'tv'});
+          if(dovi5Test&&args[args.length-1]===inputPath){
+            delete stream.color_transfer;delete stream.color_primaries;delete stream.color_space;
+            Object.assign(stream,{codec_name:'hevc',pix_fmt:'yuv420p10le',color_range:'pc',side_data_list:[{side_data_type:'DOVI configuration record',dv_profile:5,dv_level:6,rpu_present_flag:1,el_present_flag:0,bl_present_flag:1,dv_bl_signal_compatibility_id:0}]});
+          } else Object.assign(stream,colorOverride?colorOverride:hdr?{color_transfer:'smpte2084',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv'}:{color_transfer:'bt709',color_primaries:'bt709',color_space:'bt709',color_range:'tv'});
           if(sourceFieldOrder&&args[args.length-1]===inputPath)stream.field_order=sourceFieldOrder;
           if(candidateFieldOrder&&args[args.length-1]!==inputPath)stream.field_order=candidateFieldOrder;
           if(Array.isArray(candidateSideData)&&args[args.length-1]!==inputPath){
@@ -187,7 +233,7 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
   };
   const m={exports:{}}; const req=n=>n==='fs'?fakeFs:n==='child_process'?fakeChild:require(n);
   runFlowCode(['require','module','exports'],codeOverride || code,[req,m,m.exports]);
-  return {fn:m.exports,calls,commands,logs,audioDecodeCommands,moverSimulated:()=>moverSimulated};
+  return {fn:m.exports,calls,commands,logs,audioDecodeCommands,moverSimulated:()=>moverSimulated,doviExtractCalls:()=>doviExtractCalls};
 }
 async function run(x,args) {try{return await x.fn(args);}finally{const h=args.variables?.user?.cache_reservation;if(h){await x.fn.releaseForTest(h);delete args.variables.user.cache_reservation;}}}
 
@@ -985,4 +1031,32 @@ test('QSV encode allocates proportional progress across source scan, encode, and
  const encMax=Math.max(...progressUpdates.filter(p=>/Encoding: Arc QSV AV1/.test(String(p.status||''))).map(p=>Number(p.percentage)));
  assert.ok(srcMax>15,`expected source video scan budget >15% on QSV route, got ${srcMax}`);
  assert.ok(encMax<65,`expected QSV encode end <65% leaving room for candidate scan & decode, got ${encMax}`);
+});
+
+test('Dolby Vision Profile 5 emits live extraction progress on first pass and reuses cached Level 6/9 preflight on quarantined retry',async()=>{
+ const library=path.join(dir,'dovi5-cache-library');fs.mkdirSync(library,{recursive:true});
+ const dvInput=path.join(library,'dovi5-source.mp4');fs.copyFileSync(source,dvInput);
+ const dvOut=path.join(dir,'dovi5-hdr10-candidate.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=24:duration=4','-f','lavfi','-i','sine=frequency=440:duration=4','-map','0:v:0','-map','1:a:0','-c:v','libsvtav1','-preset','12','-crf','40','-svtav1-params','lp=1:log-level=0','-c:a','aac','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-bsf:v','av1_metadata=color_primaries=9:transfer_characteristics=16:matrix_coefficients=9','-metadata:g','encoded_by=ArcAV1_SVTAV1_HDRFallback_V15','-y',dvOut],{stdio:'ignore'});
+ const dvInfo={HDR_Format:'Dolby Vision',HDR_Format_Profile:'dvhe.05.06',HDR_Format_Compatibility:'IPT-PQ-c2',colour_range:'Full'};
+
+ const firstUpdates=[];
+ const first=load({inputPath:dvInput,smallerOutput:dvOut,dovi5Test:true,mediaInfoOverride:dvInfo,qsvValidationFailure:true,cpuValidationFailure:true});
+ const firstArgs=argsFor(dvInput,first.logs);firstArgs.librarySettings.folder=library;
+ firstArgs.updateWorker=u=>firstUpdates.push(u);
+ const r1=await run(first,firstArgs);
+ assert.equal(r1.outputNumber,2);
+ assert.equal(first.doviExtractCalls(),1);
+ const dvProgress=firstUpdates.filter(u=>u?.status==='Precheck: Dolby Vision metadata').map(u=>Number(u.percentage));
+ assert.ok(dvProgress.length>=2&&dvProgress.at(-1)>dvProgress[0],`expected Dolby Vision extraction progress updates, got ${JSON.stringify(dvProgress)}`);
+ assert.ok(firstArgs.variables.user.quarantine_entry,'complete candidate should be quarantined for retry');
+
+ const secondUpdates=[];
+ const second=load({inputPath:dvInput,smallerOutput:dvOut,dovi5Test:true,mediaInfoOverride:dvInfo,qsvValidationFailure:true,cpuValidationFailure:true});
+ const secondArgs=argsFor(dvInput,second.logs);secondArgs.librarySettings.folder=library;
+ secondArgs.updateWorker=u=>secondUpdates.push(u);
+ const r2=await run(second,secondArgs);
+ assert.equal(r2.outputNumber,2);
+ assert.equal(second.doviExtractCalls(),0,'quarantined retry must reuse cached Level 6/9 metadata instead of re-extracting');
+ assert.ok(second.logs.some(line=>line.includes('[HDR preflight] Reused cached Dolby Vision Profile 5 Level 6/9 metadata (96 frames).')));
 });
