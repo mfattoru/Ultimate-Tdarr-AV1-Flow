@@ -930,3 +930,43 @@ test('half-frame delayed H.264 Matroska encodes with -enc_time_base:v 1:1000 pas
  assert.equal(outTs.length,srcTs.length);
  for(let i=1;i<outTs.length;i++) if(srcTs[i]>srcTs[i-1]) assert.ok(outTs[i]>outTs[i-1],`expected strictly increasing output PTS at frame ${i}: ${outTs[i-1]} -> ${outTs[i]}`);
 });
+
+test('MP4 mov_text converted to MKV subrip passes timeline validation despite empty 2-byte clear packets while real cue drops still reject',async()=>{
+ const srtFile=path.join(dir,'movtext-cues.srt');
+ fs.writeFileSync(srtFile,'1\n00:00:01,000 --> 00:00:02,000\nFirst spoken line\n\n2\n00:00:02,500 --> 00:00:03,200\nSecond spoken line\n');
+ const mp4Src=path.join(dir,'movtext-source.mp4');
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=320x180:rate=24:duration=4','-f','lavfi','-i','sine=frequency=440:duration=4','-i',srtFile,'-map','0:v','-map','1:a','-map','2:s','-c:v','libx265','-preset','ultrafast','-crf','12','-x265-params','log-level=error:pools=1','-c:a','aac','-c:s','mov_text','-metadata:s:s:0','language=eng','-y',mp4Src],{stdio:'ignore'});
+ const mkvOut=path.join(dir,'movtext-candidate.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-i',mp4Src,'-map','0:v','-map','0:a','-map','0:s','-c:v','libsvtav1','-preset','12','-crf','42','-svtav1-params','lp=1:log-level=0','-c:a','copy','-c:s','srt','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',mkvOut],{stdio:'ignore'});
+
+ const x=load({inputPath:mp4Src,smallerOutput:mkvOut});
+ const args=argsFor(mp4Src,x.logs);
+ args.inputFileObj.container='mp4';
+ args.originalLibraryFile.container='mp4';
+ const res=await run(x,args);
+ assert.equal(res.outputNumber,1,args.variables.user.failure_reason);
+
+ // Dropping one real dialogue cue in the SRT output must still be rejected
+ const droppedSrtFile=path.join(dir,'movtext-dropped.srt');
+ fs.writeFileSync(droppedSrtFile,'1\n00:00:01,000 --> 00:00:02,000\nFirst spoken line\n');
+ const badOut=path.join(dir,'movtext-dropped-candidate.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-i',mkvOut,'-i',droppedSrtFile,'-map','0:v','-map','0:a','-map','1:0','-c:v','copy','-c:a','copy','-c:s','srt','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',badOut],{stdio:'ignore'});
+ const bad=load({inputPath:mp4Src,smallerOutput:badOut});
+ const badArgs=argsFor(mp4Src,bad.logs);
+ badArgs.inputFileObj.container='mp4';
+ badArgs.originalLibraryFile.container='mp4';
+ const badRes=await run(bad,badArgs);
+ assert.equal(badRes.outputNumber,2,'dropping an actual dialogue cue must still fail validation');
+ assert.match(badArgs.variables.user.failure_reason,/Output subtitle packet count 1 is less than source 2/);
+});
+
+test('timestamp-isolated fallback emits Validation worker progress updates from decoded frames',async()=>{
+ const progressUpdates=[];
+ const x=load({qsvTimestampFailure:true,qsvTimestampExitZero:true,qsvLongTimestampLines:true,matchedVideoDtsTies:true,matchedSubFramePtsTie:true});
+ const args=argsFor(source,x.logs);
+ args.updateWorker=payload=>progressUpdates.push(payload);
+ const r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+ const isolated=progressUpdates.filter(p=>p?.status==='Validation: timestamp-isolated software decode');
+ assert.ok(isolated.some(p=>Number(p.percentage)>96),`expected frame-driven >96% progress during timestamp-isolated decode, got ${JSON.stringify(isolated)}`);
+});

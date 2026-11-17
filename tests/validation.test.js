@@ -254,3 +254,31 @@ test('resource errors containing decoder-error wording cannot classify media cor
   await assert.rejects(verifyCandidateDecodes(o),e=>e.validation?.outcome==='inconclusive'&&e.validation.sourceCorruption===false);
   assert.equal(sourceChecks,0);
 });
+
+test('isolated decode reports throttled frame progress and completion without changing pass behavior',async()=>{
+  const {verifyTimestampIsolatedVideo}=require('../src/validation');
+  const updates=[];
+  const lines=[
+    'frame=2',
+    'fps=48.5',
+    'progress=continue',
+    'frame=4',
+    'fps=52.0',
+    'progress=continue',
+    'frame=6',
+    'fps=55.0',
+    'progress=end'
+  ];
+  await verifyTimestampIsolatedVideo({
+    ffmpeg:'ffmpeg',
+    input:'candidate.mkv',
+    index:0,
+    threads:4,
+    expectedFrames:6,
+    runProcess:async (_bin,_args,onLine)=>{for(const line of lines)onLine(line);return '';},
+    onProgress:(frames,total,complete,fps)=>updates.push({frames,total,complete,fps})
+  });
+  assert.ok(updates.length>=2,`expected throttled progress updates, got ${updates.length}`);
+  assert.deepEqual(updates[0],{frames:2,total:6,complete:false,fps:48.5});
+  assert.deepEqual(updates[updates.length-1],{frames:6,total:6,complete:true,fps:55.0});
+});

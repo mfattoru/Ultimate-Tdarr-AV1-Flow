@@ -497,3 +497,55 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
    - Run `python3 scripts/stage_signatures.py --check-isolation` and `make check` (`build`, `test:coverage`, `git diff --check`) locally.
    - Verify end-to-end inside `tdarr-flow-live-test-20261102` and clean up any temporary files.
    - Update `docs/architecture/FAILURE_DIAGNOSTICS.md` and `docs/plans/IMPLEMENTATION_LOG.md`, then re-run `make check`.
+
+# V16.3 Execution Plan: Progress Heartbeats for Timestamp-Isolated Decode & MP4 `mov_text -> srt` Subtitle Validation
+
+## Change Categorization
+- **Part 1 — Feature Addition / Backward-Compatible Bugfix (`verifyTimestampIsolatedVideo` Progress Heartbeat, `YpOrwGM`):**
+  - Currently [`verifyTimestampIsolatedVideo`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/validation.js#L115-L128) tracks `frame=` and `progress=end` without emitting periodic `onProgress` updates, whereas `runVideo('qsv')` and `runVideo('software')` in [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py#L285-L293) forward continuous progress to `reportWorkerProgress`. On long 4K 60fps files (`Watchmen`, `670,664` frames), CPU `timestamp-isolated` decode runs longer than ~10 minutes and trips Tdarr's Worker Stall Detector (`Cancelled worker: automatic`).
+  - Adding an optional `onProgress` callback to `verifyTimestampIsolatedVideo` (defaulting to `null`) is strictly backward-compatible for all callers and leaves validation pass/fail criteria unchanged.
+- **Part 2 — In-Place Validation Behavior Update (`mov_text -> subrip` Empty Clear-Packet Filtering, `5SgR8RI`):**
+  - Currently `verifyVideoTimeline` compares raw container packet counts (`d.packets < s.packets`) and raw `first`/`last` bounds for `mov_text` (`tx3g`) -> `subrip` (`srt`) conversions. Verified empirically on `/mnt/media/movies/The Matrix Resurrections (2021)/The Matrix Resurrections (2021) WEBDL-2160p.mp4`:
+    - Stream `2` (`ron`): `3,127` `tx3g` packets = `1,564` `size<=2` empty clear packets + `1,563` dialogue cue packets (matching MediaInfo `Events_Total: 1563`).
+    - Stream `3` (`eng` SDH): `4,377` `tx3g` packets = `2,189` `size<=2` empty clear packets + `2,188` dialogue cue packets (matching MediaInfo `Events_Total: 2188` and the candidate's `2,188` SRT packets).
+    - Leading/trailing `2`-byte clear packets also shift raw source `first`/`last` relative to dialogue cue bounds (`0.000s -> 5.380s`).
+  - Updating `verifyVideoTimeline` + `measureStreamTimeline` to ignore `size <= 2` empty `tx3g` flush packets when `sourceCodec === 'mov_text'` and `outputCodec === 'subrip'` changes existing validation behavior on `mov_text -> subrip` pairs (other codecs such as `subrip`, `ass`/`ssa`, and `hdmv_pgs_subtitle` remain untouched). Confirm whether to update this in-place or gate behind a flow flag.
+
+## Architectural Review
+- **Files Affected:**
+  - [`src/validation.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/validation.js):
+    - Extend `verifyTimestampIsolatedVideo({ ffmpeg, input, index, threads, expectedFrames, runProcess, onProgress = null })` to parse `frame=` and `fps=` from FFmpeg `-progress pipe:1` output and invoke `onProgress(frames, expectedFrames, complete, fps)` throttled (`>= 1000ms` between non-terminal emissions, always on `progress=end` when `Number.isSafeInteger(frames)`). Keep exact `complete && frames === expectedFrames` and empty-stderr assertions unchanged.
+  - [`src/subtitle_timing.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/subtitle_timing.js):
+    - Add a small pure helper `getSubtitleTimelineFilterOptions(sourceCodec, outputCodec)` returning `{ ignoreEmptySubtitleMaxBytes: 2 }` when `sourceCodec === 'mov_text'` and `outputCodec === 'subrip'` (case-insensitive), and `{ ignoreEmptySubtitleMaxBytes: 0 }` otherwise.
+  - [`scripts/stage_signatures.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/stage_signatures.py):
+    - Register `getSubtitleTimelineFilterOptions` under `("decode",)` in `SYMBOL_STAGE_MAP["subtitle_timing.js"]`.
+    - Ensure `--check-isolation` confirms only `STAGE_CODE_HASHES.decode` changes (leaving `precheck_video`, `precheck_audio`, `encode`, and `candidate_frames` untouched).
+  - [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py) & [`scripts/build_additions.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build_additions.py):
+    - Include `size` in `measureStreamTimeline`'s `-show_entries packet=pts_time,dts_time,duration_time,pos,size` and accept an optional trailing options object `{ ignoreEmptySubtitleMaxBytes = 0 }` so packets with `type === 'subtitle' && ignoreEmptySubtitleMaxBytes > 0 && Number.isFinite(size) && size <= ignoreEmptySubtitleMaxBytes` still drive scan progress without counting as dialogue packets or skewing `first`/`last`/`count` (treating missing `size=` gracefully as non-empty).
+    - Pass `getSubtitleTimelineFilterOptions(sourceCodec, outputCodec)` for the source `measureStreamTimeline` call in `verifyVideoTimeline` (keeping output `subrip` measurement unfiltered so genuine `subrip` drops or empty cues are still caught).
+    - Wire `onProgress` from `verifyTimestampIsolatedVideo` in `runVideo` to throttled `reportWorkerProgress(updateWorker, { percentage: 96 + 3 * ratio, status: "Validation: timestamp-isolated software decode", ...(fps > 0 ? { fps } : {}) })`.
+    - Wrap `measureStreamTimeline` + `verifyVideoTimeline` in `// [STAGE:decode:start] ... // [STAGE:decode:end]` so timeline/decode fixes update `STAGE_CODE_HASHES.decode`.
+  - [`docs/architecture/FAILURE_DIAGNOSTICS.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/architecture/FAILURE_DIAGNOSTICS.md) & [`docs/plans/IMPLEMENTATION_LOG.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/plans/IMPLEMENTATION_LOG.md): document both fixes and verification results.
+  - [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json): rebuilt via `python3 scripts/build.py`.
+  - Tests: [`tests/validation.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/validation.test.js), [`tests/subtitle_timing.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/subtitle_timing.test.js), [`tests/flow.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/flow.test.js), [`tests/integration.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/integration.test.js).
+- **API / Data Model Updates:**
+  - `src/validation.js` (`verifyTimestampIsolatedVideo`): optional `onProgress(frames, expectedFrames, complete, fps)` parameter (backward-compatible when omitted).
+  - `src/subtitle_timing.js`: exports `getSubtitleTimelineFilterOptions(sourceCodec, outputCodec)`.
+  - `measureStreamTimeline`: optional 8th parameter `{ ignoreEmptySubtitleMaxBytes = 0 }`.
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase (Failing Tests First):**
+   - Add unit tests in `tests/validation.test.js` asserting `verifyTimestampIsolatedVideo` emits `(frames, expectedFrames, complete, fps)` progress updates across `progress=continue`/`progress=end` (throttled for rapid updates, always delivering final completion) while preserving existing omitted-`onProgress` callers.
+   - Add unit tests in `tests/subtitle_timing.test.js` for `getSubtitleTimelineFilterOptions` (`mov_text -> subrip` vs `subrip -> subrip`, `ass -> ass`).
+   - Add flow tests in `tests/flow.test.js` asserting `verifyTimestampIsolatedVideo` forwards `onProgress` to `reportWorkerProgress` and `verifyVideoTimeline` wires `getSubtitleTimelineFilterOptions` + `STAGE:decode`.
+   - Add FFmpeg integration tests in `tests/integration.test.js`:
+     - Synthetic MP4 with `mov_text` containing empty `2`-byte clear packets + dialogue cues converting `-c:s srt` into MKV passes timeline validation, while dropping an actual non-empty dialogue cue still fails with `Output subtitle packet count`.
+     - Verify `timestamp-isolated` fallback invokes `updateWorker` with `"Validation: timestamp-isolated software decode"` progress updates >=96%.
+   - Run `npm test` to observe expected failures before modifying `src/` or `scripts/`.
+2. **Green Phase (Implementation & Build):**
+   - Update `src/validation.js`, `src/subtitle_timing.js`, `scripts/stage_signatures.py`, `scripts/build.py`, and `scripts/build_additions.py`.
+   - Run `python3 scripts/build.py`.
+3. **Verification:**
+   - Run `python3 scripts/stage_signatures.py --check-isolation` and `make check` (`build`, `test:coverage`, `git diff --check`).
+   - Run an isolated live test in `tdarr-flow-live-test-20261102` verifying MP4 `mov_text -> srt` validation (against a short synthetic/cropped or real stream check in `/test/`) and `timestamp-isolated` worker progress emission, then clean up temporary container files.
+   - Update `docs/architecture/FAILURE_DIAGNOSTICS.md` and `docs/plans/IMPLEMENTATION_LOG.md`, and run a final `make check`.

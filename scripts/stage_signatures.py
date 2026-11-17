@@ -110,6 +110,7 @@ SYMBOL_STAGE_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         "formatAssTimestamp": ("encode",),
         "reconstructAssSubtitleFile": ("encode",),
         "validateCopiedSubtitlePackets": ("decode",),
+        "getSubtitleTimelineFilterOptions": ("decode",),
     },
     "audio_timing.js": {
         "MAX_AUDIO_TIMESTAMP_REPAIR_SECONDS": ("precheck_audio", "encode"),

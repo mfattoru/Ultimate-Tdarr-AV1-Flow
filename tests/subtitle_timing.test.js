@@ -315,3 +315,13 @@ test('reconstructAssSubtitleFile rejects missing extradata, empty header, bad ti
  assert.throws(()=>reconstructAssSubtitleFile({streams:[{extradata:hex('[Script Info]\n')}],packets:[{pts_time:'1',duration_time:'1',data:hex('no-comma')}]}),/missing ReadOrder/);
  assert.throws(()=>reconstructAssSubtitleFile({streams:[{extradata:hex('[Script Info]\n')}],packets:[{pts_time:'1',duration_time:'1',data:hex('0,no-second-comma')}]}),/missing Layer/);
 });
+
+test('getSubtitleTimelineFilterOptions skips 2-byte empty tx3g clear packets only for mov_text to subrip conversions',()=>{
+ const {getSubtitleTimelineFilterOptions}=require('../src/subtitle_timing');
+ assert.deepEqual(getSubtitleTimelineFilterOptions('mov_text','subrip'),{ignoreEmptySubtitleMaxBytes:2});
+ assert.deepEqual(getSubtitleTimelineFilterOptions('MOV_TEXT','SUBRIP'),{ignoreEmptySubtitleMaxBytes:2});
+ assert.deepEqual(getSubtitleTimelineFilterOptions('subrip','subrip'),{ignoreEmptySubtitleMaxBytes:0});
+ assert.deepEqual(getSubtitleTimelineFilterOptions('ass','ass'),{ignoreEmptySubtitleMaxBytes:0});
+ assert.deepEqual(getSubtitleTimelineFilterOptions('mov_text','ass'),{ignoreEmptySubtitleMaxBytes:0});
+ assert.deepEqual(getSubtitleTimelineFilterOptions(undefined,'subrip'),{ignoreEmptySubtitleMaxBytes:0});
+});

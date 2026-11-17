@@ -112,16 +112,27 @@ const validateRetainedAttachments=(sourceStreams,candidateStreams,sourceIndices)
   }
 };
 // Synthetic PTS are confined to the null sink; the saved candidate is never changed.
-const verifyTimestampIsolatedVideo=async({ffmpeg,input,index,threads,expectedFrames,runProcess})=>{
+const verifyTimestampIsolatedVideo=async({ffmpeg,input,index,threads,expectedFrames,runProcess,onProgress=null})=>{
   if (!Number.isSafeInteger(expectedFrames) || expectedFrames<1) throw Error('Expected decoded frame count is unavailable');
   const argv=['-v','error','-xerror','-progress','pipe:1','-nostats','-threads',String(threads),'-i',input,
     '-map',`0:${index}`,'-vf','settb=expr=1/1000000,setpts=N','-fps_mode:v','passthrough',
     '-enc_time_base:v','1:1000000','-f','null','-'];
-  let frames=null,complete=false;
+  let frames=null,complete=false,fps=0,lastReportAt=0;
   const stderr=await runProcess(ffmpeg,argv,line=>{
-    const match=String(line).trim().match(/^frame=\s*(\d+)$/);
+    const trimmed=String(line).trim();
+    const match=trimmed.match(/^frame=\s*(\d+)$/);
     if(match)frames=Number(match[1]);
-    if(String(line).trim()==='progress=end')complete=true;
+    const fpsMatch=trimmed.match(/^fps=\s*([\d.]+)$/);
+    if(fpsMatch)fps=Number(fpsMatch[1])||0;
+    const isEnd=trimmed==='progress=end';
+    if(isEnd)complete=true;
+    if((isEnd||trimmed==='progress=continue')&&typeof onProgress==='function'&&Number.isSafeInteger(frames)){
+      const now=Date.now();
+      if(isEnd||now-lastReportAt>=1000){
+        lastReportAt=now;
+        try{onProgress(frames,expectedFrames,isEnd,fps);}catch(_){}
+      }
+    }
   });
   if(!complete)throw Error('Timestamp-isolated decode did not report complete progress');
   if(frames!==expectedFrames)throw Error(`Timestamp-isolated decode frame count differs: expected ${expectedFrames}, decoded ${frames}`);

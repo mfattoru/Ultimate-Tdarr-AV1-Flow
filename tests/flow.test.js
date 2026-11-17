@@ -286,3 +286,11 @@ test('V16.2 non-copy encodes emit -enc_time_base:v 1:1000 without vpp_qsv and ha
  const encodeSections=Array.from(engine.matchAll(/\/\/ \[STAGE:encode:start\]([\s\S]*?)\/\/ \[STAGE:encode:end\]/g),m=>m[1]);
  assert.ok(encodeSections.some(section=>section.includes('-enc_time_base:v') && section.includes('buildVideoEncodeFilterChain')),'encode stage signature must cover runFfmpeg video filter and timebase flags');
 });
+
+test('V16.3 timestamp-isolated decode reports worker progress and mov_text->subrip filters empty tx3g packets inside STAGE:decode',()=>{
+ assert.ok(engine.includes('Validation: timestamp-isolated software decode'));
+ assert.ok(engine.includes('onProgress:(frames,total,complete,fps)=>'),'verifyTimestampIsolatedVideo caller must wire onProgress into reportWorkerProgress');
+ assert.ok(engine.includes('getSubtitleTimelineFilterOptions(sourceCodec,outputCodec)'),'verifyVideoTimeline must query getSubtitleTimelineFilterOptions');
+ const decodeSections=Array.from(engine.matchAll(/\/\/ \[STAGE:decode:start\]([\s\S]*?)\/\/ \[STAGE:decode:end\]/g),m=>m[1]);
+ assert.ok(decodeSections.some(section=>section.includes('getSubtitleTimelineFilterOptions') && section.includes('verifyTimestampIsolatedVideo')),'decode stage signature must cover timeline and timestamp-isolated validation');
+});

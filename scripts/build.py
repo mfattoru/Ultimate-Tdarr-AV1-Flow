@@ -200,9 +200,12 @@ one('''async function measureStreamTimeline(ffprobe, file, streamIndex, type) {
   if (count===0 && type==='subtitle') return {empty:true};
   if (count===0 || !Number.isFinite(first) || !Number.isFinite(last) || (type==='video' && (count<2 || !(last>first)))) throw new Error(`${type} timeline is unavailable or too short to verify`);
   return {first,last,duration:last-first,packets:count,empty:false};
-}''', '''async function measureStreamTimeline(ffprobe, file, streamIndex, type, onProgress, durationHint, role='file') {
+}''', '''// [STAGE:decode:start]
+async function measureStreamTimeline(ffprobe, file, streamIndex, type, onProgress, durationHint, role='file', options={}) {
   let first=Infinity, last=-Infinity, count=0, packetCount=0, invalid=0, missingPtsCount=0, missingTimestampCount=0;
   let previousDts=null,outputDtsNonIncreasingCount=0,missingDtsCount=0;
+  const ignoreEmptySubtitleMaxBytes=type==='subtitle'&&Number.isSafeInteger(options?.ignoreEmptySubtitleMaxBytes)&&options.ignoreEmptySubtitleMaxBytes>0?options.ignoreEmptySubtitleMaxBytes:0;
+  const packetEntries=ignoreEmptySubtitleMaxBytes>0?'packet=pts_time,dts_time,duration_time,pos,size':'packet=pts_time,dts_time,duration_time,pos';
   const missingPtsPackets=[],missingTimestampPackets=[];
   let missingPtsBitmap=Buffer.alloc(0),missingTimestampBitmap=Buffer.alloc(0);
   const markMissingPacket=(bitmap,ordinal)=>{
@@ -227,12 +230,13 @@ one('''async function measureStreamTimeline(ffprobe, file, streamIndex, type) {
     const now=Date.now();
     if(ratio-lastReported>=0.002||now-lastReportAt>=1000||ratio>=1){lastReported=ratio;lastReportAt=now;try{onProgress(ratio);}catch(_){}}
   };
-  await runTimelineProcess(ffprobe, ['-v','error','-select_streams',String(streamIndex),'-show_packets','-show_entries','packet=pts_time,dts_time,duration_time,pos','-of','compact=p=0:nk=0',file], line => {
-    const ptsMatch=line.match(/(?:^|\\|)pts_time=([^|]+)/), dtsMatch=line.match(/(?:^|\\|)dts_time=([^|]+)/), durMatch=line.match(/(?:^|\\|)duration_time=([^|]+)/), posMatch=line.match(/(?:^|\\|)pos=([^|]+)/);
+  await runTimelineProcess(ffprobe, ['-v','error','-select_streams',String(streamIndex),'-show_packets','-show_entries',packetEntries,'-of','compact=p=0:nk=0',file], line => {
+    const ptsMatch=line.match(/(?:^|\\|)pts_time=([^|]+)/), dtsMatch=line.match(/(?:^|\\|)dts_time=([^|]+)/), durMatch=line.match(/(?:^|\\|)duration_time=([^|]+)/), posMatch=line.match(/(?:^|\\|)pos=([^|]+)/), sizeMatch=ignoreEmptySubtitleMaxBytes>0?line.match(/(?:^|\\|)size=([^|]+)/):null;
     if (!ptsMatch && !dtsMatch) return;
     const packetOrdinal=packetCount++;
     const pts=ptsMatch && ptsMatch[1] !== 'N/A' ? Number(ptsMatch[1]) : NaN;
     const dts=dtsMatch && dtsMatch[1] !== 'N/A' ? Number(dtsMatch[1]) : NaN;
+    const packetSize=sizeMatch && sizeMatch[1] !== 'N/A' ? Number(sizeMatch[1]) : NaN;
     if (Number.isFinite(dts)) {
       if (previousDts!==null && dts<=previousDts) outputDtsNonIncreasingCount++;
       previousDts=dts;
@@ -249,6 +253,7 @@ one('''async function measureStreamTimeline(ffprobe, file, streamIndex, type) {
     }
     const duration=durMatch && durMatch[1] !== 'N/A' ? Number(durMatch[1]) : 0;
     emitProgress({pts:Number.isFinite(pts)?pts:dts,position:posMatch&&posMatch[1]!=='N/A'?Number(posMatch[1]):NaN});
+    if (ignoreEmptySubtitleMaxBytes>0 && Number.isFinite(packetSize) && packetSize<=ignoreEmptySubtitleMaxBytes) return;
     const timelineTime=type==='audio'&&!Number.isFinite(pts)?dts:pts;
     if (!Number.isFinite(timelineTime)) { invalid++; return; }
     first=Math.min(first,timelineTime);
@@ -279,8 +284,17 @@ one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(upda
       let decodeStatus='completed (exit 0)';
       try {
       if(mode==='timestamp-isolated'){
-        reportWorkerProgress(updateWorker,{percentage:96,fps:0,status:"Validation: timestamp-isolated software decode"});
-        return await verifyTimestampIsolatedVideo({ffmpeg,input:output,index:outputIndex,threads:getDecodeThreadCount(),expectedFrames:durationHints?.verifiedFrames,runProcess:runTimelineProcess});
+        const status="Validation: timestamp-isolated software decode";
+        reportWorkerProgress(updateWorker,{percentage:96,fps:0,status});
+        return await verifyTimestampIsolatedVideo({
+          ffmpeg,input:output,index:outputIndex,threads:getDecodeThreadCount(),expectedFrames:durationHints?.verifiedFrames,runProcess:runTimelineProcess,
+          onProgress:(frames,total,complete,fps)=>{
+            const ratio=total>0?Math.min(1,Math.max(0,frames/total)):0;
+            const data={percentage:96+3*(complete?1:ratio),status};
+            if(Number.isFinite(fps)&&fps>0)data.fps=fps;
+            reportWorkerProgress(updateWorker,data);
+          }
+        });
       }
       const argv=mode==='qsv'?decode:withDecoderThreads(['-v','error','-xerror','-progress','pipe:1','-nostats','-i',output,'-map',`0:${outputIndex}`,'-f','null','-'],getDecodeThreadCount());
       const status=mode==='qsv'?"Validation: strict output video decode":"Validation: strict software video decode";

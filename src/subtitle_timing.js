@@ -258,4 +258,12 @@ function validateCopiedSubtitlePackets(sourcePackets, outputPackets, globalShift
   return result;
 }
 
-if (typeof module !== 'undefined') module.exports = {createSubtitleTimingPrecheck,parseSubtitlePacketLine,readSubtitlePackets,reconstructAssSubtitleFile,validateCopiedSubtitlePackets};
+function getSubtitleTimelineFilterOptions(sourceCodec, outputCodec) {
+  const from = String(sourceCodec || '').toLowerCase();
+  const to = String(outputCodec || '').toLowerCase();
+  return from === 'mov_text' && to === 'subrip'
+    ? {ignoreEmptySubtitleMaxBytes: 2}
+    : {ignoreEmptySubtitleMaxBytes: 0};
+}
+
+if (typeof module !== 'undefined') module.exports = {createSubtitleTimingPrecheck,parseSubtitlePacketLine,readSubtitlePackets,reconstructAssSubtitleFile,validateCopiedSubtitlePackets,getSubtitleTimelineFilterOptions};

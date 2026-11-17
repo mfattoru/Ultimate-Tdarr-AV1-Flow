@@ -71,7 +71,7 @@ After encoding, V15 scans every candidate frame and compares source and output p
 
 The `Untagged output color range changed` diagnostic is separate from source corruption. It means the candidate range tag did not match the range expected by policy; by itself, it does not prove the source pixels were converted incorrectly or that the source is damaged. The local candidate now assigns limited `tv` range to untagged SDR YUV only when stream metadata, decoded frames, and MediaInfo provide no range. Explicit or observed full range is kept, and `yuvj422p`/`yuvj444p` are treated as full-range formats. The AV1 encode and seek-heal remux both receive the resolved range tag. Primaries, transfer, and matrix remain unspecified. This default does not apply to HDR/Dolby Vision, RGB, unsupported pixel formats, or conflicting/unrecognized range data. It records a conventional assumption; it does not recover missing source metadata.
 
-Timing failures do not establish source corruption or trigger an Arr search. Complete candidates are quarantined when possible and the original is kept. Packet and full video/audio decode checks run only after the frame timestamp comparison passes.
+Timing failures do not establish source corruption or trigger an Arr search. Complete candidates are quarantined when possible and the original is kept. Packet and full video/audio decode checks run only after the frame timestamp comparison passes, and `verifyTimestampIsolatedVideo` emits throttled frame-based `onProgress` heartbeats (`Validation: timestamp-isolated software decode`, 96%–99%) so long 4K60 CPU fallback decodes do not trigger Tdarr's Worker Stall Detector.
 
 ### Output frame count differs
 
@@ -83,7 +83,7 @@ The V15 candidate retains the prior `-fps_mode:v passthrough` fix on Arc encodes
 
 `Output subtitle packet count 4027 is less than source 4028 for stream 3` is raised after the encode, while validating the new candidate. The candidate is rejected and the original remains. This says that the candidate has a different subtitle packet count; it does not say that the source itself is damaged.
 
-Recommended action: inspect the affected subtitle track/cues and the encode/mux result. Do not delete or request an Arr replacement from this count mismatch alone. Keep the check conservative until the output's subtitle content is shown to be equivalent.
+Recommended action: inspect the affected subtitle track/cues and the encode/mux result. Do not delete or request an Arr replacement from this count mismatch alone. Keep the check conservative until the output's subtitle content is shown to be equivalent. (V16.3 adds one targeted exception for MP4 `mov_text` -> `subrip` conversions via `getSubtitleTimelineFilterOptions`, ignoring `<= 2`-byte empty `tx3g` clear-screen flush packets on the source scan while still rejecting any dropped dialogue cue.)
 
 ## Oversized ASS/SSA subtitle encoding errors
 
