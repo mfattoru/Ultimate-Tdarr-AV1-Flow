@@ -595,3 +595,50 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
 3. **Verification:**
    - Run `python3 scripts/stage_signatures.py --check-isolation` (confirming `arc_av1_monolithic` stage hashes did not change) and `make check` (`build`, `test:coverage`, `git diff --check`).
    - Update `docs/plans/IMPLEMENTATION_LOG.md` and run a final `make check`.
+
+# V16.5 Execution Plan: Route-Aware Dynamic Progress Stage Budgets
+
+## Change Categorization
+- **In-Place UI/Behavior Update (Progress Weighting Refactor):**
+  - Replaces hardcoded static worker percentage boundaries (`1–8%` source scan, `8–10%` audio precheck, `10–80%` encode, `80–82%` seek-heal remux, `82–90%` candidate frame scan, `90–96%` timelines, `96–99%` video decode, `99–99.9%` audio decode) with normalized, route-aware stage budgets computed via a pure `src/progress.js` helper.
+  - Strictly preserves monotonic `percentage` (`0.1 -> 99.9`) and all validation/encoding semantics; changes the reported percentage curve in-place rather than gating behind an environment toggle. Confirm whether to update this in-place or keep legacy fixed `10–80%` bounds behind an opt-in variable.
+
+## Architectural Review
+- **Design (`src/progress.js`):**
+  - Add pure functions `createStageProgressPlan(options)` and `stageProgressValue(range, ratio)` (plus rounding to `0.1%`, clamped within `[range.start, range.end]`):
+    - **Route Profiles (active base weights before normalization into `[1, 99.9]`):**
+      - `'qsv'` (Full QSV Hardware): `sourceScan: 28`, `audioPrecheck: 1.5`, `encode: 18`, `remux: 2`, `candidateFrames: 36`, `timelines: 4.5`, `videoDecode: 9`, `audioDecode: 1`. (Reflects observed `S01E16` / `YpOrwGM` ratios where full CPU `ffprobe` scans and decodes dominate fast GPU encoding.)
+      - `'hybrid'` (`Hybrid` CPU decode -> QSV encode): `sourceScan: 26`, `audioPrecheck: 1.5`, `encode: 28`, `remux: 2`, `candidateFrames: 30`, `timelines: 4`, `videoDecode: 7.5`, `audioDecode: 1`.
+      - `'sw_hdr'` (`dovi5_hdr10` Vulkan `libplacebo` or `SVT-AV1` software HDR): `sourceScan: 26`, `audioPrecheck: 1.5`, `encode: 34`, `remux: 2`, `candidateFrames: 26`, `timelines: 3.5`, `videoDecode: 6`, `audioDecode: 1`.
+    - **Skipped-Stage Redistribution:**
+      - Flags `hasSourceScan`, `hasAudioPrecheck`, `hasEncode`, `hasRemux` (allocated alongside `hasEncode` when non-quarantined bloat fallback can occur, omitted on pure quarantined validation), `hasCandidateFrames`, `hasAudioDecode` zero out inactive stages and normalize remaining active weights cleanly across `[startPercent, endPercent]` (`1` to `99.9`), ensuring quarantined retries (`hasEncode: false`) and cached prechecks distribute the full `1% -> 99.9%` bar across the stages that actually run.
+      - Monotonic contiguous ranges: each stage's `start` equals the previous active stage's `end` (even when `hasSourceScan` or `hasEncode` is false, returning the cursor boundary cleanly).
+- **Files Affected:**
+  - [`src/progress.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/progress.js): export `createStageProgressPlan` and `stageProgressValue`.
+  - [`scripts/stage_signatures.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/stage_signatures.py): register `createStageProgressPlan` and `stageProgressValue` under `("ui_only",)` in `SYMBOL_STAGE_MAP["progress.js"]` so future weight tuning never invalidates precheck/quarantine stage hashes, and verify `--check-isolation` stays completely isolated.
+  - [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py) & [`scripts/build_additions.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build_additions.py):
+    - Build `initialProgressPlan` / `encodeProgressPlan` once route (`qsv` / `hybrid` / `sw_hdr`), precheck cache hits (`cachedPrecheck?.frameScan`, `cachedPrecheck?.audio`), and quarantine status (`quarantinedCandidate`) are known.
+    - Replace hardcoded `1+7*...`, `8->10`, `10->80`, `80->82`, `82+8*...`, `90+6*...`, `96+3*...`, and `99+0.9*...` formulas with `progressPlan.<stage>` (`stageProgressValue`), passing `progressPlan` ranges into `validateOutput` (`durationHints.progressPlan`). Note: this one-time wiring touches lines inside `STAGE:precheck_video`, `STAGE:precheck_audio`, `STAGE:encode`, `STAGE:candidate_frames`, and `STAGE:decode` in `arc_av1_monolithic`, so V16.5 will bump those stage hashes on rebuild; subsequent weight tweaks inside `src/progress.js` will not.
+  - [`docs/plans/IMPLEMENTATION_LOG.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/plans/IMPLEMENTATION_LOG.md) & [`README.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/README.md): note route-aware stage weighting.
+  - [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json): rebuilt via `python3 scripts/build.py`.
+  - Tests: [`tests/progress.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/progress.test.js), [`tests/flow.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/flow.test.js), [`tests/integration.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/integration.test.js).
+- **API / Data Model Updates:**
+  - `src/progress.js` exports `createStageProgressPlan` and `stageProgressValue`.
+  - Existing `runLimitedFfmpeg({ progressStart, progressEnd, ... })` API remains unchanged (receives `progressPlan.encode.start` / `.end` or `progressPlan.remux.start` / `.end`).
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase (Failing Tests First):**
+   - Add unit tests in `tests/progress.test.js` covering:
+     - All three route profiles (`qsv`, `hybrid`, `sw_hdr`), asserting monotonic contiguous bounds starting at `1` and ending at `99.9`, with `qsv` allocating more width to `sourceScan` + `candidateFrames` than `encode` (`< 25%` encode width).
+     - Skipped-stage redistribution (e.g., `quarantinedCandidate` / cached prechecks) normalizing active stages cleanly across `1 -> 99.9` without stalls or backward jumps.
+     - `stageProgressValue(range, ratio)` clamping (`ratio < 0`, `> 1`, NaN) cleanly inside `[range.start, range.end]`.
+   - Add flow/integration assertions in `tests/flow.test.js` and `tests/integration.test.js` verifying `arc_av1_monolithic` uses `createStageProgressPlan` and emits proportional monotonic `updateWorker` percentages across `sourceScan`, `encode`, `candidateFrames`, `timelines`, `videoDecode`, and `audioDecode`.
+   - Run `npm test` to confirm expected failures before modifying `src/` or `scripts/`.
+2. **Green Phase (Implementation & Build):**
+   - Implement `createStageProgressPlan` and `stageProgressValue` in `src/progress.js` and register them as `("ui_only",)` in `scripts/stage_signatures.py`.
+   - Wire `progressPlan` across precheck, encode/remux, and validation callers in `scripts/build.py` and `scripts/build_additions.py`.
+   - Rebuild `flow.json` via `python3 scripts/build.py`.
+3. **Verification:**
+   - Run `python3 scripts/stage_signatures.py --check-isolation` and `make check` (`build`, `test:coverage`, `git diff --check`).
+   - Run a short live container smoke verification in `tdarr-flow-live-test-20261102` capturing full monotonic `updateWorker` progress percentages across all phases, then clean up temporary scratch files.
+   - Update `docs/plans/IMPLEMENTATION_LOG.md` and `README.md`, then run a final `make check`.

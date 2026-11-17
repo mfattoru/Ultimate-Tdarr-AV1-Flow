@@ -160,14 +160,18 @@ one('''function runTimelineProcess(bin, argv, onLine) {
   });
 }''')
 one('async function verifyVideoTimeline(ffprobe, ffmpeg, source, output, sourceIndex, outputIndex, tracks) {', 'async function verifyVideoTimeline(ffprobe, ffmpeg, source, output, sourceIndex, outputIndex, tracks, updateWorker, durationHints, assertSourceStable, audioTimestampRepairIndices=[], validationReport=newValidationReport(), canUseQsv=true) {')
-one("  const a=await measureStreamTimeline(ffprobe,source,sourceIndex,'video');\n  const b=await measureStreamTimeline(ffprobe,output,outputIndex,'video');", '''  const timelinePairCount=1+tracks.audio.length+tracks.subtitle.length;
-  let completedTimelinePairs=0,lastTimelinePercent=90;
+one("  const a=await measureStreamTimeline(ffprobe,source,sourceIndex,'video');\n  const b=await measureStreamTimeline(ffprobe,output,outputIndex,'video');", '''  const timelineProgressPlan=durationHints?.progressPlan || createStageProgressPlan({});
+  const timelineRange=timelineProgressPlan.timelines;
+  const videoDecodeRange=timelineProgressPlan.videoDecode;
+  const audioDecodeRange=timelineProgressPlan.audioDecode;
+  const timelinePairCount=1+tracks.audio.length+tracks.subtitle.length;
+  let completedTimelinePairs=0,lastTimelinePercent=timelineRange.start;
   const scanTimelinePair=async operation=>{
     const pairIndex=completedTimelinePairs++;
     const reportPart=(part,ratio)=>{
       const progress=Math.max(0,Math.min(1,Number(ratio)||0));
       const fraction=(pairIndex+(part+progress)/2)/timelinePairCount;
-      const percentage=Math.min(96,90+6*fraction);
+      const percentage=stageProgressValue(timelineRange,fraction);
       if(percentage>=lastTimelinePercent+0.05||fraction>=1){lastTimelinePercent=percentage;reportWorkerProgress(updateWorker,{percentage,fps:0,status:"Validation: packet timelines"});}
     };
     if(typeof assertSourceStable==='function')assertSourceStable();
@@ -175,7 +179,7 @@ one("  const a=await measureStreamTimeline(ffprobe,source,sourceIndex,'video');\
     if(typeof assertSourceStable==='function')assertSourceStable();
     reportPart(1,1);
   };
-  reportWorkerProgress(updateWorker,{percentage:90,fps:0,status:"Validation: packet timelines"});
+  reportWorkerProgress(updateWorker,{percentage:timelineRange.start,fps:0,status:"Validation: packet timelines"});
   let a,b;
   await scanTimelinePair(async(sourceProgress,outputProgress)=>{
     a=await measureStreamTimeline(ffprobe,source,sourceIndex,'video',sourceProgress,durationHints?.source,'source');
@@ -274,7 +278,7 @@ async function measureStreamTimeline(ffprobe, file, streamIndex, type, onProgres
 }''')
 one("  const decode=['-v','error','-xerror','-i',output,'-map',`0:${outputIndex}`];", "  const arcDevice=process.env.TDARR_ARC_DEVICE || '/dev/dri/renderD129';\n  const decode=['-v','error','-xerror','-progress','pipe:1','-nostats','-init_hw_device',`vaapi=va:${arcDevice}`,'-init_hw_device','qsv=hw@va','-hwaccel','qsv','-hwaccel_device','hw','-hwaccel_output_format','qsv','-i',output,'-map',`0:${outputIndex}`];")
 one("  for (const [,dstIndex] of tracks.audio) decode.push('-map',`0:${dstIndex}`);", '')
-one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(updateWorker,{percentage:96,fps:0,status:"Validation: strict output video decode"});
+one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(updateWorker,{percentage:videoDecodeRange.start,fps:0,status:"Validation: strict output video decode"});
   await verifyCandidateDecodes({
     report:validationReport,canUseQsv,audioTracks:tracks.audio,sourceVideoIndex:sourceIndex,
     candidatePacketTimestampsVerified:durationHints?.strictCandidateFrames===true && a.totalPackets>0 && b.totalPackets>0 && b.missingDtsCount===0 && b.outputDtsNonIncreasingCount<=a.outputDtsNonIncreasingCount,
@@ -285,12 +289,12 @@ one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(upda
       try {
       if(mode==='timestamp-isolated'){
         const status="Validation: timestamp-isolated software decode";
-        reportWorkerProgress(updateWorker,{percentage:96,fps:0,status});
+        reportWorkerProgress(updateWorker,{percentage:videoDecodeRange.start,fps:0,status});
         return await verifyTimestampIsolatedVideo({
           ffmpeg,input:output,index:outputIndex,threads:getDecodeThreadCount(),expectedFrames:durationHints?.verifiedFrames,runProcess:runTimelineProcess,
           onProgress:(frames,total,complete,fps)=>{
             const ratio=total>0?Math.min(1,Math.max(0,frames/total)):0;
-            const data={percentage:96+3*(complete?1:ratio),status};
+            const data={percentage:stageProgressValue(videoDecodeRange,complete?1:ratio),status};
             if(Number.isFinite(fps)&&fps>0)data.fps=fps;
             reportWorkerProgress(updateWorker,data);
           }
@@ -298,10 +302,10 @@ one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(upda
       }
       const argv=mode==='qsv'?decode:withDecoderThreads(['-v','error','-xerror','-progress','pipe:1','-nostats','-i',output,'-map',`0:${outputIndex}`,'-f','null','-'],getDecodeThreadCount());
       const status=mode==='qsv'?"Validation: strict output video decode":"Validation: strict software video decode";
-      reportWorkerProgress(updateWorker,{percentage:96,fps:0,status});
+      reportWorkerProgress(updateWorker,{percentage:videoDecodeRange.start,fps:0,status});
       return await runTimelineProcess(ffmpeg,argv,null,(timeUs,fps)=>{
         const ratio=a.duration>0?Math.min(1,Math.max(0,timeUs/1000000/a.duration)):0;
-        const data={percentage:96+3*ratio,status};
+        const data={percentage:stageProgressValue(videoDecodeRange,ratio),status};
         if(Number.isFinite(fps)&&fps>0)data.fps=fps;
         reportWorkerProgress(updateWorker,data);
       });
@@ -319,7 +323,7 @@ one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(upda
       return await runTimelineProcess(ffmpeg,audioDecode,null,(timeUs,fps)=>{
         const duration=Number(durationHints?.output)||a.duration;
         const ratio=duration>0?Math.min(1,Math.max(0,timeUs/1000000/duration)):0;
-        const data={percentage:99+0.9*ratio,status:"Validation: retained audio decode"};
+        const data={percentage:stageProgressValue(audioDecodeRange,ratio),status:"Validation: retained audio decode"};
         if(Number.isFinite(fps)&&fps>0)data.fps=fps;
         reportWorkerProgress(updateWorker,data);
       });
@@ -331,7 +335,7 @@ one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(upda
       finally {if(typeof assertSourceStable==='function')assertSourceStable();}
     }
   });''')
-one('  return await verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks);', '  return await validationStage(validationReport,"timelines",()=>verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks, expected.updateWorker, {source:resolveProbeDuration(src),output:resolveProbeDuration(dst),log:expected.log,verifiedFrames:outputFrameScan?.frames,strictCandidateFrames:hasVerifiedCandidateFrameTimestamps(expected.sourceFrameScan, outputFrameScan)}, expected.assertOriginalUnchanged, expected.audioTimestampRepairIndices || [],validationReport,useQsvDecode(video[0])),"rejected");')
+one('  return await verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks);', '  return await validationStage(validationReport,"timelines",()=>verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks, expected.updateWorker, {source:resolveProbeDuration(src),output:resolveProbeDuration(dst),log:expected.log,verifiedFrames:outputFrameScan?.frames,strictCandidateFrames:hasVerifiedCandidateFrameTimestamps(expected.sourceFrameScan, outputFrameScan),progressPlan:expected.progressPlan || createStageProgressPlan({})}, expected.assertOriginalUnchanged, expected.audioTimestampRepairIndices || [],validationReport,useQsvDecode(video[0])),"rejected");')
 one('    const specific = lines.filter(l => /error|failed|unsupported|invalid|cannot|only one of them|ratecontrol|qsv|vaapi/i.test(l));\n    const chosen = specific.length > 0 ? specific.slice(-3) : lines.slice(-3);\n    return chosen.join(" | ").substring(0, 240);',
 r'''    const specific = lines.filter(l => /\b(?:error|failed|unsupported|invalid|cannot|could not|only one of them|ratecontrol)\b/i.test(l)
       && !/discarding stream metadata .* because the stream is being re-encoded/i.test(l));
@@ -704,13 +708,13 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
     log(args.variables.user.failure_reason);
     return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
   }
-  const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scanRole:"source",sourceBasic:preflightBasic,threads:getDecodeThreadCount(),expectedColor:mainVideo,expectedFrames:frameEstimate,expectedDuration:Number(mainVideo.duration || args.inputFileObj?.ffProbeData?.format?.duration || 0),assertUnchanged:assertOriginalUnchanged,onProgress:(frames,total,complete,fps,ratio)=>reportWorkerProgress(args.updateWorker,{percentage:1+7*(complete?1:Number.isFinite(ratio)?Math.min(0.99,Math.max(0,ratio)):total>0?Math.min(0.99,frames/total):0),fps,status:"Precheck: full source video scan"},initialWorkerProgressDetails)};
+  const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scanRole:"source",sourceBasic:preflightBasic,threads:getDecodeThreadCount(),expectedColor:mainVideo,expectedFrames:frameEstimate,expectedDuration:Number(mainVideo.duration || args.inputFileObj?.ffProbeData?.format?.duration || 0),assertUnchanged:assertOriginalUnchanged,onProgress:(frames,total,complete,fps,ratio)=>{const r=complete?1:Number.isFinite(ratio)?Math.min(0.99,Math.max(0,ratio)):total>0?Math.min(0.99,frames/total):0;reportWorkerProgress(args.updateWorker,{percentage:stageProgressValue(progressPlan.sourceScan,r),fps,status:"Precheck: full source video scan"},initialWorkerProgressDetails);}};
   let frameScan;
   const sourceScanStartedAt=Date.now();
   try {
     initialWorkerProgressDetails.status="Precheck: full source video scan";
     initialWorkerProgressDetails.workerLog="Full CPU source frame, color, HDR, and timestamp scan.";
-    reportWorkerProgress(args.updateWorker,{percentage:1,fps:0,status:initialWorkerProgressDetails.status},initialWorkerProgressDetails);
+    reportWorkerProgress(args.updateWorker,{percentage:progressPlan.sourceScan.start,fps:0,status:initialWorkerProgressDetails.status},initialWorkerProgressDetails);
     log("[Source precheck] Running the full CPU source frame, color, HDR, and timestamp scan before encoding.");
     frameScan=await inspectVideoFrames(ffprobeBin,inputPath,mainVideo.index,scanOptions);
     assertOriginalUnchanged();
@@ -729,7 +733,7 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
     log(args.variables.user.failure_reason);
     return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
   }
-  reportWorkerProgress(args.updateWorker,{percentage:8,fps:0,status:"Precheck: classify source color and HDR"},initialWorkerProgressDetails);
+  reportWorkerProgress(args.updateWorker,{percentage:progressPlan.sourceScan.end,fps:0,status:"Precheck: classify source color and HDR"},initialWorkerProgressDetails);
   let sourceScanFailureDetail="";
   const vCodec = (mainVideo.codec_name || "").toLowerCase();''')
 one('  // 2. Audio & Subtitle stream count & codec checks', '''  // [STAGE:decode:start]
@@ -737,9 +741,10 @@ one('  // 2. Audio & Subtitle stream count & codec checks', '''  // [STAGE:decod
   // [STAGE:decode:end]
   let outputFrameScan;
   const isStreamCopyFallback = expected.outputMarker === "ArcAV1_SeekHeal_V15";
+  const candidateFrameRange = (expected.progressPlan || createStageProgressPlan({})).candidateFrames;
   if (expected.sourceFrameScan || expected.hdr10) {
     // [STAGE:candidate_frames:start]
-    reportWorkerProgress(expected.updateWorker,{percentage:82,fps:0,status:"Validation: output frame, color, and HDR scan"});
+    reportWorkerProgress(expected.updateWorker,{percentage:candidateFrameRange.start,fps:0,status:"Validation: output frame, color, and HDR scan"});
     const expectedFrames=expected.sourceFrameScan?.frames || estimateVideoFrames(video[0],Number(dst.format?.duration || 0));
     if(typeof expected.assertOriginalUnchanged==='function')expected.assertOriginalUnchanged();
     const allowSourceDovi = isStreamCopyFallback && (expected.sourceFrameScan?.dovi || 0) > 0;
@@ -753,7 +758,7 @@ one('  // 2. Audio & Subtitle stream count & codec checks', '''  // [STAGE:decod
       outputFrameScan = cachedCandidateFrames.frameScan;
       if (typeof expected.log === 'function') expected.log(`[Validation frames] Reused ${outputFrameScan.frames} verified candidate frames.`);
     } else {
-      outputFrameScan = await inspectVideoFrames(ffprobeBin,outputPath,video[0].index,{staticMetadata:!!expected.hdr10 || !!expected.hlg || !!expected.untagged || !!expected.stripOrphanStaticHdr,timestamps:!!expected.sourceFrameScan,failFast:true,scanRole:"candidate",rejectDolbyVision:(!!expected.hdr10 || !!expected.hlg || !!expected.untagged || !!expected.stripOrphanDovi) && !allowSourceDovi,rejectHdr10Plus:(!!expected.hdr10 || !!expected.hlg || !!expected.untagged || !!expected.stripOrphanDovi || !!expected.stripOrphanStaticHdr) && !allowSourceHdr10Plus,threads:getDecodeThreadCount(),expectedColor:video[0],expectedFrames,assertUnchanged:expected.assertOriginalUnchanged,onProgress:(frames,total,complete,fps)=>reportWorkerProgress(expected.updateWorker,{percentage:82+8*(complete?1:total>0?Math.min(0.99,frames/total):0),fps,status:"Validation: output frame, color, and HDR scan"})});
+      outputFrameScan = await inspectVideoFrames(ffprobeBin,outputPath,video[0].index,{staticMetadata:!!expected.hdr10 || !!expected.hlg || !!expected.untagged || !!expected.stripOrphanStaticHdr,timestamps:!!expected.sourceFrameScan,failFast:true,scanRole:"candidate",rejectDolbyVision:(!!expected.hdr10 || !!expected.hlg || !!expected.untagged || !!expected.stripOrphanDovi) && !allowSourceDovi,rejectHdr10Plus:(!!expected.hdr10 || !!expected.hlg || !!expected.untagged || !!expected.stripOrphanDovi || !!expected.stripOrphanStaticHdr) && !allowSourceHdr10Plus,threads:getDecodeThreadCount(),expectedColor:video[0],expectedFrames,assertUnchanged:expected.assertOriginalUnchanged,onProgress:(frames,total,complete,fps)=>{const r=complete?1:total>0?Math.min(0.99,frames/total):0;reportWorkerProgress(expected.updateWorker,{percentage:stageProgressValue(candidateFrameRange,r),fps,status:"Validation: output frame, color, and HDR scan"});}});
       if (typeof expected.log === 'function') expected.log(`[Validation frames] Scanned ${outputFrameScan.frames} candidate frames.`);
       if (candFramesRef && candFramesSig) {
         saveCandidateFramesCache(candFramesRef, candFramesSig, outputFrameScan);
@@ -764,7 +769,7 @@ one('  // 2. Audio & Subtitle stream count & codec checks', '''  // [STAGE:decod
     }
     // [STAGE:candidate_frames:end]
     if(typeof expected.assertOriginalUnchanged==='function')expected.assertOriginalUnchanged();
-    reportWorkerProgress(expected.updateWorker,{percentage:90,fps:0,status:"Validation: output frame scan complete"});
+    reportWorkerProgress(expected.updateWorker,{percentage:candidateFrameRange.end,fps:0,status:"Validation: output frame scan complete"});
     if (outputFrameScan.colorInfo.conflict) throw Error("Output frame color signaling conflicts with the stream");
     if (expected.sourceFrameScan) compareVideoTimestamps(expected.sourceFrameScan,outputFrameScan);
   }
@@ -1040,7 +1045,7 @@ one('    // Stamp flow signature on all encoded and bloat-fallback files to prev
 one('encoded_by=ArcAV1_QSV','encoded_by=ArcAV1_QSV_V15')
 one('cmdArgs.push("-metadata:g", "encoded_by=ArcAV1_QSV_V15");', 'cmdArgs.push("-metadata:g", forceStreamCopy ? "encoded_by=ArcAV1_SeekHeal_V15" : useSoftwareFallback ? "encoded_by=ArcAV1_SVTAV1_HDRFallback_V15" : "encoded_by=ArcAV1_QSV_V15");')
 one('      codec: expectedVideoCodec,\n', '      codec: expectedVideoCodec,\n      requireMarker: true,\n      hdr10: hdrClass === "hdr10" || hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "hdr10plus_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10" || hdrClass === "dovi5_hdr10",\n      optionalHdrStatic: hdrClass === "hdr10",\n      hlg: hdrClass === "hlg",\n      untagged: hdrClass === "untagged",\n      stripOrphanDovi,\n      stripOrphanStaticHdr,\n      sourceClass: hdrClass,\n      sourceHdr: hdrSource,\n      sdrSource,\n      sourceFrameScan: frameScan,\n      outputMarker: isBloat ? \"ArcAV1_SeekHeal_V15\" : softwareHdrFallback ? \"ArcAV1_SVTAV1_HDRFallback_V15\" : \"ArcAV1_QSV_V15\",\n')
-one('      sourceFrameScan: frameScan,\n', '      sourceFrameScan: frameScan,\n      sourceSquarePixels: infoSquarePixels,\n      updateWorker: args.updateWorker,\n      log,\n      assertOriginalUnchanged: assertOriginalUnchanged,\n      audioTimestampRepairIndices: Array.from(audioTimestampRepairs.keys()),\n      quarantineEntry: quarantinedCandidate,\n      candidateFramesSignature: effectiveCandidateFramesSignature,\n')
+one('      sourceFrameScan: frameScan,\n', '      sourceFrameScan: frameScan,\n      sourceSquarePixels: infoSquarePixels,\n      updateWorker: args.updateWorker,\n      log,\n      assertOriginalUnchanged: assertOriginalUnchanged,\n      audioTimestampRepairIndices: Array.from(audioTimestampRepairs.keys()),\n      quarantineEntry: quarantinedCandidate,\n      candidateFramesSignature: effectiveCandidateFramesSignature,\n      progressPlan,\n')
 one('    const valResult = await validateOutput(ffprobeBin, inputPath, outputPath, {', '''    effectiveCandidateFramesSignature = buildCandidateFramesSignature(quarantinedCandidate ? quarantinedCandidate.marker === "ArcAV1_SeekHeal_V15" : isBloat);
     currentStageSignatures = (currentEncodeSignature && effectiveCandidateFramesSignature && currentDecodeSignature)
       ? { encode: currentEncodeSignature, candidateFrames: effectiveCandidateFramesSignature, decode: currentDecodeSignature }
@@ -1195,8 +1200,9 @@ one('  const tracks = {};\n  for (const type of ["audio", "subtitle"]) {', '''  
   const tracks = {};
   for (const type of ["audio", "subtitle"]) {''')
 one('        subtitleIndices: finalSubStreams.map(s => s.index),', '        subtitleIndices: finalSubStreams.map(s => s.index),\n        attachmentIndices: retainedAttachmentStreams.map(s => s.index),')
-one('      validationReport=args.variables.user.validation_report=newValidationReport();', '      validationReport=args.variables.user.validation_report=newValidationReport();\n      Object.defineProperty(validationReport,"stageLogger",{value:entry=>log(`[Validation stage] ${entry.stage}: ${entry.outcome} in ${(entry.elapsedMs/1000).toFixed(2)}s.`)});\n      reportWorkerProgress(args.updateWorker,{percentage:80,fps:0,status:"Validation: output streams and metadata"});')
-one('    return spawnSync(ffmpegBin, cmdArgs, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });', '''    const progressStart=forceStreamCopy?80:10,progressEnd=forceStreamCopy?82:80;
+one('      validationReport=args.variables.user.validation_report=newValidationReport();', '      validationReport=args.variables.user.validation_report=newValidationReport();\n      Object.defineProperty(validationReport,"stageLogger",{value:entry=>log(`[Validation stage] ${entry.stage}: ${entry.outcome} in ${(entry.elapsedMs/1000).toFixed(2)}s.`)});\n      reportWorkerProgress(args.updateWorker,{percentage:progressPlan.candidateFrames.start,fps:0,status:"Validation: output streams and metadata"});')
+one('    return spawnSync(ffmpegBin, cmdArgs, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });', '''    const encodeProgressRange=forceStreamCopy?progressPlan.remux:progressPlan.encode;
+    const progressStart=encodeProgressRange.start,progressEnd=encodeProgressRange.end;
     // Encodes stop at source size. Remux file-size limits grow only after the shared cache ledger grants capacity.
     const processSizeLimit=forceStreamCopy?reservedOutputBytes:sourceBytes;
     const processReason=forceStreamCopy
@@ -1348,6 +1354,15 @@ one('  const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scan
       }
     }
   } catch(error) { log(`[Precheck cache] Reuse unavailable: ${error.message || error}`); }
+  let progressPlan=createStageProgressPlan({
+    route:(quarantinedCandidate?.kind==="svt_av1_encode"||preflightDoviRoute==="dovi5_hdr10")?"sw_hdr":(!useQsvDecode(mainVideo)||isInterlacedFieldOrderTag(mainVideo))?"hybrid":"qsv",
+    hasSourceScan:!cachedFrameScan,
+    hasAudioPrecheck:!cachedAudioPrecheck,
+    hasEncode:!quarantinedCandidate,
+    hasRemux:!quarantinedCandidate,
+    hasCandidateFrames:true,
+    hasAudioDecode:true
+  });
   const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scanRole:"source",''')
 one('    frameScan=await inspectVideoFrames(ffprobeBin,inputPath,mainVideo.index,scanOptions);', '''    if(cachedFrameScan){
       frameScan=cachedFrameScan;
@@ -1422,6 +1437,16 @@ one('await precheckRetainedSourceAudio();', '''await precheckRetainedSourceAudio
       log(`[Quarantine] Reusing stored candidate (${candSigs ? 'encode signature matched' : 'legacy manifest compatibility'}).`);
     }
   }
+  progressPlan=createStageProgressPlan({
+    startPercent:progressPlan.audioPrecheck.end,
+    route:(softwareHdrFallback||hdrClass==="dovi5_hdr10")?"sw_hdr":needsProactiveHybrid?"hybrid":"qsv",
+    hasSourceScan:false,
+    hasAudioPrecheck:false,
+    hasEncode:!quarantinedCandidate,
+    hasRemux:!quarantinedCandidate,
+    hasCandidateFrames:Boolean(frameScan||isHdr||hdrClass==="untagged"||stripOrphanDovi||stripOrphanStaticHdr),
+    hasAudioDecode:finalAudioStreams.length>0
+  });
   if (!quarantinedCandidate && !ensureGpuDeviceAccessible()) {
     return { outputFileObj: args.inputFileObj, outputNumber: 2, variables: args.variables };
   }''')

@@ -346,12 +346,14 @@ one('  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.
   // [STAGE:precheck_audio:start]
   // Full-decode the audio tracks that will actually be kept, before reserving scratch or encoding video.
   const precheckRetainedSourceAudio = async () => {
+    const audioRange=progressPlan.audioPrecheck;
     if (finalAudioStreams.length === 0) {
       log("[Audio precheck] No retained audio tracks; source audio decode skipped.");
-      reportWorkerProgress(args.updateWorker,{percentage:10,fps:0,status:"Precheck: no retained audio tracks"},initialWorkerProgressDetails);
+      reportWorkerProgress(args.updateWorker,{percentage:audioRange.end,fps:0,status:"Precheck: no retained audio tracks"},initialWorkerProgressDetails);
       return;
     }
     log(`[Audio precheck] Full software decode of ${finalAudioStreams.length} retained source audio track(s) before the Arc encode.`);
+    const audioMid=audioRange.start+(audioRange.end-audioRange.start)*0.5;
     const decodeAudioStreams=async (streams,startPercent,endPercent) => {
       const decodeArgs=withDecoderThreads(["-v","error","-xerror","-progress","pipe:1","-nostats","-i",inputPath],getDecodeThreadCount());
       for (const stream of streams) decodeArgs.push("-map",`0:${stream.index}`);
@@ -360,7 +362,7 @@ one('  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.
       const stderr=await runTimelineProcess(ffmpegBin,decodeArgs,null,(timeUs)=>{
         const decodedSec=Number(timeUs)/1000000;
         const ratio=durationSec>0 && Number.isFinite(decodedSec)?Math.min(1,Math.max(0,decodedSec/durationSec)):0;
-        reportWorkerProgress(args.updateWorker,{percentage:startPercent+(endPercent-startPercent)*ratio,fps:0,status:"Precheck: retained audio decode"},initialWorkerProgressDetails);
+        reportWorkerProgress(args.updateWorker,{percentage:stageProgressValue({start:startPercent,end:endPercent},ratio),fps:0,status:"Precheck: retained audio decode"},initialWorkerProgressDetails);
       });
       if(isVerificationInfrastructureDiagnostic(stderr))throw Error(String(stderr).trim());
       return String(stderr || "").trim();
@@ -372,13 +374,13 @@ one('  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.
     };
     for (let position=0; position<finalAudioStreams.length; position++) {
       const stream=finalAudioStreams[position];
-      const percentStart=8+position/finalAudioStreams.length;
-      const percentEnd=8+(position+1)/finalAudioStreams.length;
+      const percentStart=audioRange.start+(audioMid-audioRange.start)*(position/finalAudioStreams.length);
+      const percentEnd=audioRange.start+(audioMid-audioRange.start)*((position+1)/finalAudioStreams.length);
       let lastAudioProgress=percentStart-1;
       log(`[Audio precheck] Scanning DTS order for retained source stream 0:${stream.index}.`);
       reportWorkerProgress(args.updateWorker,{percentage:percentStart,fps:0,status:"Precheck: audio DTS scan"},initialWorkerProgressDetails);
       const timing=await scanAudioDtsPackets(ffprobeBin,inputPath,stream.index,stream.time_base,runTimelineProcess,ratio=>{
-        const percentage=percentStart+(percentEnd-percentStart)*Math.max(0,Math.min(1,Number(ratio)||0));
+        const percentage=stageProgressValue({start:percentStart,end:percentEnd},ratio);
         if(percentage>=lastAudioProgress+0.02||percentage>=percentEnd){lastAudioProgress=percentage;reportWorkerProgress(args.updateWorker,{percentage,fps:0,status:"Precheck: audio DTS scan"},initialWorkerProgressDetails);}
       },originalSourceSizeInBytes);
       if (timing.backwardSteps===0) {
@@ -394,7 +396,7 @@ one('  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.
       log(`[Audio precheck] Source audio timestamp repair: stream 0:${stream.index}; ${timing.backwardSteps} backward DTS transition(s), ${timing.nonIncreasingSteps-timing.backwardSteps} equal transition(s) preserved, ${timing.adjustedPackets} packet(s) adjusted, maximum ${(timing.maxRepairSeconds*1000).toFixed(1)} ms (limit ${MAX_AUDIO_TIMESTAMP_REPAIR_SECONDS*1000} ms); compressed audio remains stream-copied.`);
     }
     try {
-      const diagnostic=await decodeAudioStreams(finalAudioStreams,9,10);
+      const diagnostic=await decodeAudioStreams(finalAudioStreams,audioMid,audioRange.end);
       if (isKnownAudioCorruptionDiagnostic(diagnostic)) throw new Error(diagnostic);
       for (const stream of finalAudioStreams) logTrackPassed(stream,diagnostic);
     } catch (batchError) {
@@ -404,7 +406,7 @@ one('  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.
         const stream=finalAudioStreams[position];
         const language=normalizeLang(stream.tags?.language || stream.tags?.LANGUAGE || "und");
         try {
-          const diagnostic=await decodeAudioStreams([stream],9+position/finalAudioStreams.length,9+(position+1)/finalAudioStreams.length);
+          const diagnostic=await decodeAudioStreams([stream],audioMid+(audioRange.end-audioMid)*(position/finalAudioStreams.length),audioMid+(audioRange.end-audioMid)*((position+1)/finalAudioStreams.length));
           if (isKnownAudioCorruptionDiagnostic(diagnostic)) throw new Error(diagnostic);
           logTrackPassed(stream,diagnostic);
         } catch (decodeError) {
@@ -416,13 +418,13 @@ one('  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.
       }
       throw new Error(`[Audio guard] Combined retained audio decode failed, although each stream passed separately: ${batchDetail}`);
     }
-    reportWorkerProgress(args.updateWorker,{percentage:10,fps:0,status:"Precheck: retained audio decode complete"},initialWorkerProgressDetails);
+    reportWorkerProgress(args.updateWorker,{percentage:audioRange.end,fps:0,status:"Precheck: retained audio decode complete"},initialWorkerProgressDetails);
   };
   // [STAGE:precheck_audio:end]
   // [STAGE:encode:start]
 
   // 6. Subtitle Filtering & Safe Format Normalization (eng, ita, spa, und)''')
-one('  try {\n  // Cache reservations permit concurrent jobs while coordinating available space.', '  try {\n  const audioPrecheckStartedAt=Date.now();\n  await precheckRetainedSourceAudio();\n  log(`[Audio precheck] Completed in ${((Date.now()-audioPrecheckStartedAt)/1000).toFixed(2)}s.`);\n  reportWorkerProgress(args.updateWorker,{percentage:10,fps:0,status:"Preparing: reserve cache and build output"},initialWorkerProgressDetails);\n  // Cache reservations permit concurrent jobs while coordinating available space.')
+one('  try {\n  // Cache reservations permit concurrent jobs while coordinating available space.', '  try {\n  progressPlan=createStageProgressPlan({startPercent:progressPlan.sourceScan.end,route:(softwareHdrFallback||hdrClass==="dovi5_hdr10")?"sw_hdr":needsProactiveHybrid?"hybrid":"qsv",hasSourceScan:false,hasAudioPrecheck:!(cachedAudioPrecheck&&JSON.stringify(cachedAudioPrecheck.streams)===JSON.stringify(currentAudioPrecheckStreams))&&finalAudioStreams.length>0,hasEncode:!quarantinedCandidate,hasRemux:!quarantinedCandidate,hasCandidateFrames:Boolean(frameScan||isHdr||hdrClass==="untagged"||stripOrphanDovi||stripOrphanStaticHdr),hasAudioDecode:finalAudioStreams.length>0});\n  const audioPrecheckStartedAt=Date.now();\n  await precheckRetainedSourceAudio();\n  log(`[Audio precheck] Completed in ${((Date.now()-audioPrecheckStartedAt)/1000).toFixed(2)}s.`);\n  reportWorkerProgress(args.updateWorker,{percentage:progressPlan.audioPrecheck.end,fps:0,status:"Preparing: reserve cache and build output"},initialWorkerProgressDetails);\n  // Cache reservations permit concurrent jobs while coordinating available space.')
 one('''        const isTranscodedToEac3 = ch > 2 && (c !== "eac3" || ch > 6);
         let actualCodec = "Audio";
         let finalCh = ch || 2;

@@ -968,5 +968,21 @@ test('timestamp-isolated fallback emits Validation worker progress updates from 
  const r=await run(x,args);
  assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
  const isolated=progressUpdates.filter(p=>p?.status==='Validation: timestamp-isolated software decode');
- assert.ok(isolated.some(p=>Number(p.percentage)>96),`expected frame-driven >96% progress during timestamp-isolated decode, got ${JSON.stringify(isolated)}`);
+ assert.ok(isolated.length>=2 && Number(isolated.at(-1).percentage)>Number(isolated[0].percentage),`expected advancing frame-driven progress during timestamp-isolated decode, got ${JSON.stringify(isolated)}`);
+});
+
+test('QSV encode allocates proportional progress across source scan, encode, and candidate validation monotonically',async()=>{
+ const progressUpdates=[];
+ const x=load();
+ const args=argsFor(source,x.logs);
+ args.updateWorker=payload=>progressUpdates.push(payload);
+ const r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+ const percentages=progressUpdates.map(p=>Number(p.percentage)).filter(Number.isFinite);
+ assert.ok(percentages.length>=5,'expected multi-phase worker progress updates');
+ for(let i=1;i<percentages.length;i++) assert.ok(percentages[i]>=percentages[i-1],`progress went backwards at index ${i}: ${percentages[i-1]} -> ${percentages[i]}`);
+ const srcMax=Math.max(...progressUpdates.filter(p=>p.status==='Precheck: full source video scan').map(p=>Number(p.percentage)));
+ const encMax=Math.max(...progressUpdates.filter(p=>/Encoding: Arc QSV AV1/.test(String(p.status||''))).map(p=>Number(p.percentage)));
+ assert.ok(srcMax>15,`expected source video scan budget >15% on QSV route, got ${srcMax}`);
+ assert.ok(encMax<65,`expected QSV encode end <65% leaving room for candidate scan & decode, got ${encMax}`);
 });

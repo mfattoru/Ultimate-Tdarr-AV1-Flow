@@ -294,3 +294,10 @@ test('V16.3 timestamp-isolated decode reports worker progress and mov_text->subr
  const decodeSections=Array.from(engine.matchAll(/\/\/ \[STAGE:decode:start\]([\s\S]*?)\/\/ \[STAGE:decode:end\]/g),m=>m[1]);
  assert.ok(decodeSections.some(section=>section.includes('getSubtitleTimelineFilterOptions') && section.includes('verifyTimestampIsolatedVideo')),'decode stage signature must cover timeline and timestamp-isolated validation');
 });
+
+test('V16.5 engine uses route-aware createStageProgressPlan budgets instead of fixed 10-80 encode bounds',()=>{
+ assert.ok(engine.includes('createStageProgressPlan('),'engine must build dynamic stage progress plan');
+ assert.ok(engine.includes('stageProgressValue('),'engine must map stage ratios via stageProgressValue');
+ assert.equal(engine.includes('forceStreamCopy?80:10'),false,'hardcoded 10-80 encode range must be removed');
+ assert.equal(engine.includes('1+7*(complete?1:'),false,'hardcoded 1-8% source scan range must be removed');
+});

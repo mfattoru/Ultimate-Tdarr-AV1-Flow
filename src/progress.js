@@ -171,6 +171,45 @@ const runLimitedFfmpeg = ({command,argv,durationSec,updateWorker,workerDetails,p
     Promise.resolve(growth).then(()=>resolve({status,signal,error:startError,stderr,capacityError,fileSizeLimit:limit}));
   });
 });
+const STAGE_PROGRESS_PROFILES = {
+  qsv: { sourceScan: 28, audioPrecheck: 1.5, encode: 18, remux: 2, candidateFrames: 36, timelines: 4.5, videoDecode: 9, audioDecode: 1 },
+  hybrid: { sourceScan: 26, audioPrecheck: 1.5, encode: 28, remux: 2, candidateFrames: 30, timelines: 4, videoDecode: 7.5, audioDecode: 1 },
+  sw_hdr: { sourceScan: 26, audioPrecheck: 1.5, encode: 34, remux: 2, candidateFrames: 26, timelines: 3.5, videoDecode: 6, audioDecode: 1 }
+};
+const STAGE_PROGRESS_ORDER = ['sourceScan', 'audioPrecheck', 'encode', 'remux', 'candidateFrames', 'timelines', 'videoDecode', 'audioDecode'];
+const createStageProgressPlan = (options = {}) => {
+  const weights = STAGE_PROGRESS_PROFILES[options.route] || STAGE_PROGRESS_PROFILES.qsv;
+  const start = Number.isFinite(options.startPercent) ? Math.min(99.8, Math.max(0, Number(options.startPercent))) : 1;
+  const end = Number.isFinite(options.endPercent) ? Math.min(99.9, Math.max(start, Number(options.endPercent))) : 99.9;
+  const activeFlags = {
+    sourceScan: options.hasSourceScan !== false,
+    audioPrecheck: options.hasAudioPrecheck !== false,
+    encode: options.hasEncode !== false,
+    remux: options.hasRemux !== undefined ? options.hasRemux !== false : options.hasEncode !== false,
+    candidateFrames: options.hasCandidateFrames !== false,
+    timelines: options.hasTimelines !== false,
+    videoDecode: options.hasVideoDecode !== false,
+    audioDecode: options.hasAudioDecode !== false
+  };
+  const activeWeight = STAGE_PROGRESS_ORDER.reduce((sum, key) => sum + (activeFlags[key] ? weights[key] : 0), 0);
+  const span = end - start;
+  const plan = {};
+  let cursor = start;
+  for (const key of STAGE_PROGRESS_ORDER) {
+    const width = activeWeight > 0 && activeFlags[key] ? (span * weights[key]) / activeWeight : 0;
+    const next = cursor + width;
+    plan[key] = { start: cursor, end: next };
+    cursor = next;
+  }
+  if (activeWeight > 0) plan[STAGE_PROGRESS_ORDER[STAGE_PROGRESS_ORDER.length - 1]].end = end;
+  return plan;
+};
+const stageProgressValue = (range, ratio = 0) => {
+  const start = Number.isFinite(range?.start) ? Number(range.start) : 0;
+  const end = Number.isFinite(range?.end) ? Math.max(start, Number(range.end)) : start;
+  const clamped = Number.isFinite(ratio) ? Math.min(1, Math.max(0, Number(ratio))) : 0;
+  return Math.min(99.9, end, Math.max(start, Math.round((start + clamped * (end - start)) * 10) / 10));
+};
 const runSingleQuality = async (quality, sourceSize, run) => {
   const result = await run(quality);
   if (!result.ok) return {ok:false,quality,reason:'encoder',result};
@@ -178,4 +217,4 @@ const runSingleQuality = async (quality, sourceSize, run) => {
   if (result.size<sourceSize) return {ok:true,quality,result};
   return {ok:false,quality,reason:'quality_floor',result};
 };
-module.exports={runLimitedFfmpeg,runSingleQuality,reportWorkerProgress};
+module.exports={runLimitedFfmpeg,runSingleQuality,reportWorkerProgress,createStageProgressPlan,stageProgressValue};

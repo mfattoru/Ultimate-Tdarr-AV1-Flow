@@ -116,3 +116,41 @@ test('remux progress falls back to prlimit when updateLimit is not provided and 
  assert.ok(result.capacityError instanceof Error);
  assert.ok(result.signal==='SIGTERM'||result.signal==='SIGKILL');
 });
+
+test('createStageProgressPlan allocates route-weighted contiguous budgets and redistributes skipped phases',()=>{
+ const {createStageProgressPlan,stageProgressValue}=require('../src/progress');
+ assert.equal(typeof createStageProgressPlan,'function');
+ assert.equal(typeof stageProgressValue,'function');
+
+ const qsv=createStageProgressPlan({route:'qsv'});
+ const stages=['sourceScan','audioPrecheck','encode','remux','candidateFrames','timelines','videoDecode','audioDecode'];
+ assert.equal(qsv.sourceScan.start,1);
+ assert.ok(Math.abs(qsv.audioDecode.end-99.9)<1e-6);
+ for(let i=1;i<stages.length;i++)assert.ok(Math.abs(qsv[stages[i]].start-qsv[stages[i-1]].end)<1e-6);
+ const width=r=>r.end-r.start;
+ assert.ok(width(qsv.encode)<25,`qsv encode width should be <25%, got ${width(qsv.encode)}`);
+ assert.ok(width(qsv.sourceScan)+width(qsv.candidateFrames)>=55,'CPU frame scans must carry majority of QSV job bar');
+ assert.ok(width(qsv.videoDecode)>=7,'videoDecode needs enough span for long 4K60 decodes');
+
+ const swHdr=createStageProgressPlan({route:'sw_hdr'});
+ assert.ok(width(swHdr.encode)>width(qsv.encode),'sw_hdr should allocate more bar width to encoding than qsv');
+
+ const retry=createStageProgressPlan({route:'qsv',hasSourceScan:false,hasAudioPrecheck:false,hasEncode:false,hasRemux:false});
+ assert.equal(retry.sourceScan.start,1);
+ assert.equal(retry.sourceScan.end,1);
+ assert.equal(retry.encode.end,1);
+ assert.equal(retry.candidateFrames.start,1);
+ assert.ok(Math.abs(retry.audioDecode.end-99.9)<1e-6);
+ assert.ok(width(retry.candidateFrames)>50);
+
+ const reanchored=createStageProgressPlan({route:'sw_hdr',startPercent:32.5,hasSourceScan:false,hasAudioPrecheck:false});
+ assert.equal(reanchored.encode.start,32.5);
+ assert.ok(Math.abs(reanchored.audioDecode.end-99.9)<1e-6);
+
+ assert.equal(stageProgressValue({start:10,end:28},0),10);
+ assert.equal(stageProgressValue({start:10,end:28},1),28);
+ assert.equal(stageProgressValue({start:10,end:28},-0.5),10);
+ assert.equal(stageProgressValue({start:10,end:28},2),28);
+ assert.equal(stageProgressValue({start:10,end:28},NaN),10);
+ assert.equal(stageProgressValue({start:10,end:28},0.5),19);
+});
