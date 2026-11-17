@@ -281,3 +281,37 @@ test('Video guard color and MediaInfo holds are explained as warnings instead of
   assert.match(embed.description, /original was kept/i);
   assert.match(embed.footer.text, /video color signaling/i);
 });
+
+test('rejected validation_report preserves specific subtitle loss and output timing explanations alongside quarantine state', async () => {
+  const sub = harness();
+  sub.args.originalLibraryFile = {_id: '/mnt/media/movies/Movie (2021)/Movie.mp4'};
+  sub.args.variables.user.failure_reason = '[Validation rejected] Output subtitle packet count 2188 is less than source 4377 for stream 3. Original will not be replaced.';
+  sub.args.variables.user.validation_report = {outcome: 'rejected', failure: {stage: 'timelines', code: 'validation_mismatch', sourceCorruption: false}};
+  sub.args.variables.user.quarantine_entry = {candidatePath: '/transcode_cache/candidate.mkv'};
+  await sub.run(sub.args);
+  const subEmbed = sub.requests[0].body.embeds[0];
+  assert.match(subEmbed.description, /2189 fewer subtitle packets on stream 3/);
+  assert.match(subEmbed.description, /remains in quarantine/i);
+  assert.match(subEmbed.footer.text, /subtitle output loss/i);
+
+  const timing = harness();
+  timing.args.originalLibraryFile = {_id: '/mnt/media/anime/Show/S01E16.mkv'};
+  timing.args.variables.user.failure_reason = '[Validation rejected] Output video presentation timestamp order changed at frame 5. Original retained.';
+  timing.args.variables.user.validation_report = {outcome: 'rejected', failure: {stage: 'frames', code: 'validation_mismatch', sourceCorruption: false}};
+  timing.args.variables.user.quarantine_entry = {candidatePath: '/transcode_cache/candidate2.mkv'};
+  await timing.run(timing.args);
+  const timingEmbed = timing.requests[0].body.embeds[0];
+  assert.match(timingEmbed.description, /usable timing matching the source/i);
+  assert.match(timingEmbed.description, /remains in quarantine/i);
+  assert.match(timingEmbed.footer.text, /output timing/i);
+});
+
+test('HDR guard preflight holds classify as hdr_signaling warnings even without legacy keywords', async () => {
+  const h = harness();
+  h.args.variables.user.failure_reason = '[HDR guard] Dolby Vision Profile 5 RPU Level 6 metadata appears outside verified full-range scaling; original retained.';
+  await h.run(h.args);
+  const embed = h.requests[0].body.embeds[0];
+  assert.equal(embed.color, 15105570);
+  assert.match(embed.title, /^⚠️/);
+  assert.match(embed.footer.text, /hdr signaling/i);
+});

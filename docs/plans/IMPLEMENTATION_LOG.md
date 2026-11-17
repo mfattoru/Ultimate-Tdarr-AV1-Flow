@@ -94,3 +94,14 @@
   - Isolated container live tests (`tdarr-flow-live-test-20261102`, `/test/v163-verify`, cleaned afterward):
     - `matrix65.mp4` (copied real `mov_text` + `eac3` streams from `The Matrix Resurrections (2021) WEBDL-2160p.mp4` -> `subrip`): `outputNumber: 1`, `timelines` and full validation passed (and full-movie stream `0:3` confirmed exact `2,188` non-empty `size>2` cues).
     - `watchmen10.mkv` (10s 4K60 clip from `Watchmen (2009)`): passed normally (`Non-increasing DTS transitions: source 0, candidate 0`), and with forced `timestamp-isolated` recovery emitted `33` throttled `Validation: timestamp-isolated software decode` progress updates (`96%` -> `99%`, `fps: 17.39`), `outputNumber: 1`.
+
+## 2026-11-17 — Align Discord Success & Failure Notifications with V15.3–V16.3 Behavior (V16.4)
+
+- **Scope:** In-place update across [`scripts/build_additions.py`](scripts/build_additions.py), [`src/failure_notify.js`](src/failure_notify.js), and [`flow.json`](flow.json) (plan in [`docs/plans/PLAN.md`](docs/plans/PLAN.md)).
+- **Changes implemented:**
+  - Updated `discord_success` (`scripts/build_additions.py`) to inspect `validation_report.recoveries`, reporting null-mux frame-isolated software recovery for `timestamp_isolated_decode`, preserving `"Arc verification failed; full software video verification passed."` for `qsv_decode_fallback`, and reporting both when combined.
+  - Updated `humanizeFailure` (`src/failure_notify.js`) so specific `subtitle_output_loss` and `output_timing` explanations (`[Safety check failed]` / `[Validation rejected]`) are not shadowed by generic `candidate_rejected`, preserve quarantined `fileState`, and classify all `[HDR guard]` stops (including DV Profile 5 RPU/Level preflight holds) as `hdr_signaling` warnings.
+- **Verification:**
+  - TDD Red -> Green across [`tests/success_notify.test.js`](tests/success_notify.test.js) and [`tests/failure_notify.test.js`](tests/failure_notify.test.js).
+  - `python3 scripts/stage_signatures.py --check-isolation`: all 4 isolation invariants passed with zero changes to `arc_av1_monolithic` stage hashes (`precheck_video`, `precheck_audio`, `encode`, `candidate_frames`, `decode` unchanged).
+  - `make check`: `381/381` tests passed (`96.97%` line, `77.48%` branch, `94.32%` function coverage), `git diff --check` clean.

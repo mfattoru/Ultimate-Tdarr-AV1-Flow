@@ -50,3 +50,24 @@ test('success notification never fails the flow when webhook is missing, invalid
   assert.ok(h.logs.some(m=>/Delivery failed/i.test(m)),`expected jobLog entry for ${JSON.stringify(opts)}, got ${JSON.stringify(h.logs)}`);
  }
 });
+
+test('success recovery message distinguishes timestamp_isolated_decode from qsv_decode_fallback',async()=>{
+ const iso=harness();
+ iso.args.variables.user.validation_report={outcome:'recovered',recoveries:[{code:'timestamp_isolated_decode',outcome:'passed'}]};
+ await iso.run(iso.args);
+ const isoDesc=iso.calls[0].body.embeds[0].description;
+ assert.match(isoDesc,/Verification recovery:.*frame-isolated/i);
+ assert.doesNotMatch(isoDesc,/Arc verification failed/i);
+
+ const qsv=harness();
+ qsv.args.variables.user.validation_report={outcome:'recovered',recoveries:[{code:'qsv_decode_fallback',outcome:'passed'}]};
+ await qsv.run(qsv.args);
+ assert.match(qsv.calls[0].body.embeds[0].description,/Verification recovery:.*Arc verification failed; full software video verification passed\./);
+
+ const both=harness();
+ both.args.variables.user.validation_report={outcome:'recovered',recoveries:[{code:'qsv_decode_fallback',outcome:'passed'},{code:'timestamp_isolated_decode',outcome:'passed'}]};
+ await both.run(both.args);
+ const bothDesc=both.calls[0].body.embeds[0].description;
+ assert.match(bothDesc,/Verification recovery:.*software verification/i);
+ assert.match(bothDesc,/frame-isolated timestamps/i);
+});

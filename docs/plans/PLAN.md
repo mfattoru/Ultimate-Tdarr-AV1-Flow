@@ -549,3 +549,49 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
    - Run `python3 scripts/stage_signatures.py --check-isolation` and `make check` (`build`, `test:coverage`, `git diff --check`).
    - Run an isolated live test in `tdarr-flow-live-test-20261102` verifying MP4 `mov_text -> srt` validation (against a short synthetic/cropped or real stream check in `/test/`) and `timestamp-isolated` worker progress emission, then clean up temporary container files.
    - Update `docs/architecture/FAILURE_DIAGNOSTICS.md` and `docs/plans/IMPLEMENTATION_LOG.md`, and run a final `make check`.
+
+# V16.4 Execution Plan: Align Discord Success & Failure Notifications with V15.3–V16.3 Flow Behavior
+
+## Change Categorization
+- **In-Place Notification Message Update (Bugfix / Behavior Refinement):**
+  1. **`discord_success` (`Verification recovery` line):** Currently hardcodes `'🛠️ **Verification recovery:** Arc verification failed; full software video verification passed.'` for any `validation_report.outcome === 'recovered'`. After V15.3–V16.3, encodes whose Arc QSV decode completes cleanly (`exit 0`) and recover via `timestamp_isolated_decode` receive that misleading `"Arc verification failed"` message instead of reporting null-mux timestamp-isolated verification.
+  2. **`src/failure_notify.js` (`humanizeFailure`):**
+     - `validationReport?.outcome === 'rejected'` currently short-circuits ahead of the specific `subtitle_output_loss` (`Output subtitle packet count ...`) and `output_timing` (`video presentation timestamp` / `video frame count differs`) handlers, and those later branches should also reflect `quarantined` state accurately when `quarantineEntry` is present.
+     - Line 127's `[hdr guard]` regex misses `[HDR guard]` messages lacking `ambiguous|conflict|unsupported|unverified|missing|unknown` (e.g., RPU range/level preflight stops), dropping them into generic `processing_failure` (`❌`) instead of `hdr_signaling` (`⚠️`).
+- Updating `discord_success` text and `humanizeFailure` routing modifies notification strings/classification in-place (preserving all JSON embed structure, webhook retry/redaction guarantees, `allowed_mentions`, `flowFailed` gating, and existing `hdr_color` `candidate_rejected` contract). Confirm whether to update this in-place or keep legacy wording behind a toggle.
+
+## Architectural Review
+- **Files Affected:**
+  - [`scripts/build_additions.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build_additions.py):
+    - Inspect `args.variables?.user?.validation_report?.recoveries` in `discord_success` (line 287):
+      - Extract a concise recovery message helper inside `discord_success`:
+        - When both `qsv_decode_fallback` and `timestamp_isolated_decode` passed: report `'🛠️ **Verification recovery:** Arc QSV decode fell back to software verification with frame-isolated timestamps.'`
+        - When only `timestamp_isolated_decode` passed: report `'🛠️ **Verification recovery:** Null-mux timestamp warning recovered via full frame-isolated software decode.'`
+        - Otherwise (including `qsv_decode_fallback` or legacy recovered reports with empty `recoveries`): preserve `'🛠️ **Verification recovery:** Arc verification failed; full software video verification passed.'`
+  - [`src/failure_notify.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/failure_notify.js):
+    - Evaluate specific `subtitle_output_loss` (`output subtitle packet count ...`) and `output_timing` (`video presentation timestamp` / `video frame count differs` / `non-monotonically increasing dts` when `!validationReport?.failure?.sourceCorruption`) before the generic `candidate_rejected` fallback, and make their `fileState` quarantine-aware (`quarantined ? 'The original was kept; the complete candidate remains in quarantine for revalidation.' : ...`) so `5SgR8RI` / `Po2VdJH`-class quarantined rejections show both the specific explanation and accurate quarantine state.
+    - Broaden `[HDR guard]` fallback matching (matching `[HDR guard]` generally after specific guards, keeping `'warning'` severity / `hdr_signaling` category) so DV Profile 5 RPU/Level preflight holds are classified as `hdr_signaling` (`⚠️`).
+  - [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json): rebuilt via `python3 scripts/build.py` (no change to `arc_av1_monolithic` stage signatures!).
+  - [`docs/plans/IMPLEMENTATION_LOG.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/plans/IMPLEMENTATION_LOG.md): log V16.4 verification entry.
+  - Tests: [`tests/success_notify.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/success_notify.test.js), [`tests/failure_notify.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/failure_notify.test.js).
+- **API / Data Model Updates:**
+  - None (`variables.user.validation_report` already carries `recoveries[]`, `failure`, and `outcome`; `variables.user.quarantine_entry` already carries `candidatePath`).
+  - Zero impact on `STAGE_CODE_HASHES` (only notification plugins `discord_success`, `notify_failure`, and `notify_failure_on_error` change; `arc_av1_monolithic` precheck/encode/decode hashes remain identical).
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase (Failing Tests First):**
+   - Add tests in `tests/success_notify.test.js` asserting:
+     - `validation_report.outcome === 'recovered'` with `[{ code: 'timestamp_isolated_decode', outcome: 'passed' }]` emits null-mux frame-isolated recovery text and does **not** claim `"Arc verification failed"`.
+     - `[{ code: 'qsv_decode_fallback', outcome: 'passed' }]` (and recovered reports without `recoveries`) preserves `"Arc verification failed; full software video verification passed."`.
+     - Both recoveries together report both fallback and timestamp isolation.
+   - Add tests in `tests/failure_notify.test.js` asserting:
+     - Rejected `subtitle_output_loss` and `output_timing` reasons WITH `validation_report: { outcome: 'rejected', failure: { stage: 'timelines', sourceCorruption: false } }` + `quarantine_entry` still emit their specific humanized explanation and quarantined `fileState` (while keeping existing `hdr_color` metadata conflict test returning `candidate_rejected`).
+     - `[HDR guard]` RPU preflight stop without keywords `ambiguous|conflict|...` classifies as `⚠️` `hdr_signaling`.
+   - Run `node --test tests/success_notify.test.js tests/failure_notify.test.js` to confirm expected Red failures.
+2. **Green Phase (Implementation & Build):**
+   - Update `discord_success` recovery text in `scripts/build_additions.py`.
+   - Update `humanizeFailure` in `src/failure_notify.js`.
+   - Rebuild `flow.json` via `python3 scripts/build.py`.
+3. **Verification:**
+   - Run `python3 scripts/stage_signatures.py --check-isolation` (confirming `arc_av1_monolithic` stage hashes did not change) and `make check` (`build`, `test:coverage`, `git diff --check`).
+   - Update `docs/plans/IMPLEMENTATION_LOG.md` and run a final `make check`.

@@ -3,18 +3,58 @@ const humanizeFailure = (reason,validationReport,quarantineEntry) => {
   const details = text.replace(/```/g, "'").replace(/\s+/g, ' ').trim().slice(0, 1100);
   const retained = /original (?:will not be replaced|retained)|original retained/i.test(text);
   const quarantined = Boolean(quarantineEntry && typeof quarantineEntry.candidatePath === 'string');
+  const candidateFileState = fallback => quarantined
+    ? 'The original was kept; the complete candidate remains in quarantine for revalidation.'
+    : fallback;
+  const matchCandidateRejectionDetail = () => {
+    const subtitle = text.match(/output subtitle packet count\s+(\d+)\s+is less than source\s+(\d+)\s+for stream\s+(\d+)/i);
+    if (subtitle) {
+      const outputCount = Number(subtitle[1]), sourceCount = Number(subtitle[2]), stream = Number(subtitle[3]);
+      const missing = Math.max(0, sourceCount - outputCount);
+      return {
+        category: 'subtitle_output_loss', severity: 'warning',
+        summary: `The new output has ${missing} fewer subtitle packet${missing === 1 ? '' : 's'} on stream ${stream} (${sourceCount.toLocaleString('en-US')} source → ${outputCount.toLocaleString('en-US')} output).`,
+        fileState: candidateFileState('Tdarr rejected the candidate and kept the original.'),
+        action: 'Inspect the affected subtitle track and nearby cues. This count mismatch alone does not show source corruption; do not delete or request an Arr replacement based on this check alone.',
+        details
+      };
+    }
+    if (/\[(?:safety check failed|validation rejected)\].*(?:video presentation timestamp|video frame count differs)/i.test(text)) {
+      return {
+        category: 'output_timing', severity: 'warning',
+        summary: 'Tdarr could not confirm that every output video frame has usable timing matching the source.',
+        fileState: candidateFileState('The encode candidate was discarded and the original was kept.'),
+        action: 'Review the source/output frame and timestamp counts below. This check alone does not prove source corruption and does not request an Arr replacement.',
+        details
+      };
+    }
+    if (/non[\s-]+monotonically increasing dts/i.test(text)) {
+      return {
+        category: 'output_timing', severity: 'warning',
+        summary: 'FFmpeg reported repeated or out-of-order decode timestamps while checking the generated video.',
+        fileState: candidateFileState(retained ? 'The candidate was discarded and the original was kept.' : 'Check the Tdarr job record to confirm the file state.'),
+        action: 'This points to a timestamp or muxing problem in the candidate; it does not by itself prove the source bitstream is damaged. The flow keeps the original and requests an Arr search only when a recognized source corruption is confirmed. Review the source decode details and Tdarr log.',
+        details
+      };
+    }
+    return null;
+  };
   if(validationReport?.outcome==='inconclusive')return {
     category:'validation_inconclusive',severity:'warning',
     summary:'The output verification could not complete. This result does not establish that the source or candidate is damaged.',
-    fileState:quarantined?'The original was kept; the complete candidate remains in quarantine for revalidation.':'The original was kept; the unapproved candidate was discarded.',
+    fileState:candidateFileState('The original was kept; the unapproved candidate was discarded.'),
     action:`Review the ${String(validationReport.failure?.stage || 'unknown').replace(/_/g,' ')} check and diagnostic detail. Resolve the tool or measurement problem before retrying. This result does not request an Arr replacement.`,details
   };
-  if(validationReport?.outcome==='rejected'&&!validationReport.failure?.sourceCorruption)return {
-    category:'candidate_rejected',severity:'warning',
-    summary:'The candidate did not preserve the required stream, timing, color, or decode properties.',
-    fileState:quarantined?'The original was kept; the complete candidate remains in quarantine for revalidation.':'The candidate was discarded and the original was kept.',
-    action:`Review the ${String(validationReport.failure?.stage || 'unknown').replace(/_/g,' ')} mismatch. This output rejection alone does not establish source corruption.`,details
-  };
+  if(validationReport?.outcome==='rejected'&&!validationReport.failure?.sourceCorruption){
+    const specificRejection = matchCandidateRejectionDetail();
+    if (specificRejection) return specificRejection;
+    return {
+      category:'candidate_rejected',severity:'warning',
+      summary:'The candidate did not preserve the required stream, timing, color, or decode properties.',
+      fileState:candidateFileState('The candidate was discarded and the original was kept.'),
+      action:`Review the ${String(validationReport.failure?.stage || 'unknown').replace(/_/g,' ')} mismatch. This output rejection alone does not establish source corruption.`,details
+    };
+  }
   const knownVideoDamage = /\[video guard\].*ffprobe (?:exited 0 but emitted stderr|failed \([^)]*\))/i.test(text)
     && /invalid nal unit(?: size| type)?|error splitting the input into nal units|missing picture in access unit|corrupt decoded frame|invalid data found when processing input|invalid bitstream|corrupt packet|packet corrupt|invalid obu|error parsing obu|invalid frame marker|invalid sync code|could not find ref with poc|concealing \d+.*(?:dc|ac|mv) errors|premature end of file|truncated (?:packet|frame)|unexpected end of file/i.test(text);
   const verifiedSourceDamage = /\[source media corruption\]/i.test(text);
@@ -76,42 +116,14 @@ const humanizeFailure = (reason,validationReport,quarantineEntry) => {
       details
     };
   }
-  const subtitle = text.match(/output subtitle packet count\s+(\d+)\s+is less than source\s+(\d+)\s+for stream\s+(\d+)/i);
-  if (subtitle) {
-    const outputCount = Number(subtitle[1]), sourceCount = Number(subtitle[2]), stream = Number(subtitle[3]);
-    const missing = Math.max(0, sourceCount - outputCount);
-    return {
-      category: 'subtitle_output_loss', severity: 'warning',
-      summary: `The new output has ${missing} fewer subtitle packet${missing === 1 ? '' : 's'} on stream ${stream} (${sourceCount.toLocaleString('en-US')} source → ${outputCount.toLocaleString('en-US')} output).`,
-      fileState: 'Tdarr rejected the candidate and kept the original.',
-      action: 'Inspect the affected subtitle track and nearby cues. This count mismatch alone does not show source corruption; do not delete or request an Arr replacement based on this check alone.',
-      details
-    };
-  }
+  const candidateRejection = matchCandidateRejectionDetail();
+  if (candidateRejection) return candidateRejection;
   if (/\[video guard\].*ffprobe exited 0 but emitted stderr/i.test(text)) {
     return {
       category: 'source_scan_warning', severity: 'warning',
       summary: 'The source video scan logged decoding warnings, so the flow stopped before encoding.',
       fileState: 'The original file was kept.',
       action: 'Review the diagnostic detail and test the same part in a player. Request an Arr replacement only if the source problem is independently reproducible.',
-      details
-    };
-  }
-  if (/\[safety check failed\].*(?:video presentation timestamp|video frame count differs)/i.test(text)) {
-    return {
-      category: 'output_timing', severity: 'warning',
-      summary: 'Tdarr could not confirm that every output video frame has usable timing matching the source.',
-      fileState: 'The encode candidate was discarded and the original was kept.',
-      action: 'Review the source/output frame and timestamp counts below. This check alone does not prove source corruption and does not request an Arr replacement.',
-      details
-    };
-  }
-  if (/non[\s-]+monotonically increasing dts/i.test(text)) {
-    return {
-      category: 'output_timing', severity: 'warning',
-      summary: 'FFmpeg reported repeated or out-of-order decode timestamps while checking the generated video.',
-      fileState: retained ? 'The candidate was discarded and the original was kept.' : 'Check the Tdarr job record to confirm the file state.',
-      action: 'This points to a timestamp or muxing problem in the candidate; it does not by itself prove the source bitstream is damaged. The flow keeps the original and requests an Arr search only when a recognized source corruption is confirmed. Review the source decode details and Tdarr log.',
       details
     };
   }
@@ -124,7 +136,7 @@ const humanizeFailure = (reason,validationReport,quarantineEntry) => {
       details
     };
   }
-  if (/\[hdr guard\].*(?:ambiguous|conflict|unsupported|unverified|missing|unknown)/i.test(text)) {
+  if (/\[hdr guard\]/i.test(text)) {
     return {
       category: 'hdr_signaling', severity: 'warning',
       summary: 'The source color or HDR signaling is incomplete, conflicting, or outside the verified conversion paths.',

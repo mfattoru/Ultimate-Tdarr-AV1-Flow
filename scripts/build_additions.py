@@ -284,7 +284,17 @@ new_desc_block='''  const wasEncoded=Boolean(transcodeStartTs&&transcodeEndTs);
     `✅ **Validation:** Full stream, timing, subtitle, and A/V decode checks passed`,
     `⏱️ **Processing time:** ${totalDurationStr} • ${mediumTag} scratch`
   ];
-  if(args.variables?.user?.validation_report?.outcome==='recovered')descLines.push('🛠️ **Verification recovery:** Arc verification failed; full software video verification passed.');'''
+  if(args.variables?.user?.validation_report?.outcome==='recovered'){
+    const recoveries=Array.isArray(args.variables.user.validation_report.recoveries)?args.variables.user.validation_report.recoveries:[];
+    const usedIso=recoveries.some(r=>r?.code==='timestamp_isolated_decode'&&r?.outcome==='passed');
+    const usedQsvFallback=recoveries.some(r=>r?.code==='qsv_decode_fallback'&&r?.outcome==='passed');
+    const recoveryText=usedQsvFallback&&usedIso
+      ?'Arc QSV decode fell back to software verification with frame-isolated timestamps.'
+      :usedIso
+        ?'Null-mux timestamp warning recovered via full frame-isolated software decode.'
+        :'Arc verification failed; full software video verification passed.';
+    descLines.push(`🛠️ **Verification recovery:** ${recoveryText}`);
+  }'''
 success_code=success_code[:desc_start]+new_desc_block+success_code[desc_end:]
 old_footer='text: isFallback ? "Tdarr AV1 Flow • Size Bloat Fallback Success" : (statusStr.includes("Compliant") ? "Tdarr AV1 Flow • Verified Compliant" : "Tdarr AV1 Flow • Transcode Success")'
 new_footer='text: wasQuarantined ? "Tdarr AV1 Flow • Quarantined candidate revalidated" : isFallback ? "Tdarr AV1 Flow • Seek-heal remux validated • Source video preserved" : (statusStr.includes("Compliant") ? "Tdarr AV1 Flow • Validated remux" : "Tdarr AV1 Flow • AV1 encode validated")'
