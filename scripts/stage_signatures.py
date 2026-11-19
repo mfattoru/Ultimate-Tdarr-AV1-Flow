@@ -131,6 +131,7 @@ SYMBOL_STAGE_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         "STAGE_PROGRESS_ORDER": ("ui_only",),
         "createStageProgressPlan": ("ui_only",),
         "stageProgressValue": ("ui_only",),
+        "createStallSafeProgressEmitter": ("ui_only",),
         "runLimitedFfmpeg": ("encode",),
         "runSingleQuality": ("encode",),
     },

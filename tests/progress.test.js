@@ -167,3 +167,31 @@ test('reportWorkerProgress clamps percentages monotonically within a job and res
  assert.deepEqual(updates.map(u=>u.percentage),[0.1,60.1,60.1,63.8,0.1]);
  assert.equal('resetProgress' in updates[0],false);
 });
+
+test('stageProgressValue uses 0.01% precision on narrow stages and createStallSafeProgressEmitter emits heartbeats during silent waits',async()=>{
+ const {stageProgressValue,createStallSafeProgressEmitter}=require('../src/progress');
+ assert.equal(typeof createStallSafeProgressEmitter,'function');
+ const narrow={start:28.69,end:29.43};
+ const steps=new Set();
+ for(let i=0;i<=50;i++) steps.add(stageProgressValue(narrow,i/50));
+ assert.ok(steps.size>=30,`expected >=30 distinct 0.01% values across 0.74% width, got ${steps.size}`);
+ assert.equal(stageProgressValue(narrow,0.5),29.06);
+
+ const updates=[];
+ const emitter=createStallSafeProgressEmitter({
+  updateWorker:p=>updates.push(p),
+  range:narrow,
+  status:'Precheck: audio DTS scan',
+  minStep:0.02,
+  heartbeatIntervalMs:15
+ });
+ await emitter.run(async()=>{
+  emitter.update(0.1);
+  await new Promise(resolve=>setTimeout(resolve,65));
+  emitter.update(1);
+ });
+ assert.ok(updates.length>=3,`expected ratio + heartbeat updates, got ${JSON.stringify(updates)}`);
+ for(let i=1;i<updates.length;i++) assert.ok(updates[i].percentage>=updates[i-1].percentage);
+ assert.ok(updates.slice(1,-1).some(u=>u.percentage>updates[0].percentage&&u.percentage<narrow.end),'heartbeat must nudge percentage strictly inside stage range');
+ assert.equal(updates.at(-1).percentage,29.43);
+});

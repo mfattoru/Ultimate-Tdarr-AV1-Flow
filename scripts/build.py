@@ -165,21 +165,25 @@ one("  const a=await measureStreamTimeline(ffprobe,source,sourceIndex,'video');\
   const videoDecodeRange=timelineProgressPlan.videoDecode;
   const audioDecodeRange=timelineProgressPlan.audioDecode;
   const timelinePairCount=1+tracks.audio.length+tracks.subtitle.length;
-  let completedTimelinePairs=0,lastTimelinePercent=timelineRange.start;
-  const scanTimelinePair=async operation=>{
+  let completedTimelinePairs=0;
+  const timelineEmitter=createStallSafeProgressEmitter({
+    updateWorker,
+    range:timelineRange,
+    status:"Validation: packet timelines",
+    minStep:0.02
+  });
+  const scanTimelinePair=async operation=>await timelineEmitter.run(async()=>{
     const pairIndex=completedTimelinePairs++;
     const reportPart=(part,ratio)=>{
       const progress=Math.max(0,Math.min(1,Number(ratio)||0));
       const fraction=(pairIndex+(part+progress)/2)/timelinePairCount;
-      const percentage=stageProgressValue(timelineRange,fraction);
-      if(percentage>=lastTimelinePercent+0.05||fraction>=1){lastTimelinePercent=percentage;reportWorkerProgress(updateWorker,{percentage,fps:0,status:"Validation: packet timelines"});}
+      timelineEmitter.update(fraction);
     };
     if(typeof assertSourceStable==='function')assertSourceStable();
     await operation(ratio=>reportPart(0,ratio),ratio=>reportPart(1,ratio));
     if(typeof assertSourceStable==='function')assertSourceStable();
     reportPart(1,1);
-  };
-  reportWorkerProgress(updateWorker,{percentage:timelineRange.start,fps:0,status:"Validation: packet timelines"});
+  });
   let a,b;
   await scanTimelinePair(async(sourceProgress,outputProgress)=>{
     a=await measureStreamTimeline(ffprobe,source,sourceIndex,'video',sourceProgress,durationHints?.source,'source');
@@ -289,26 +293,22 @@ one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(upda
       try {
       if(mode==='timestamp-isolated'){
         const status="Validation: timestamp-isolated software decode";
-        reportWorkerProgress(updateWorker,{percentage:videoDecodeRange.start,fps:0,status});
-        return await verifyTimestampIsolatedVideo({
+        const isolatedEmitter=createStallSafeProgressEmitter({updateWorker,range:videoDecodeRange,status,minStep:0.01,defaultFps:undefined});
+        return await isolatedEmitter.run(()=>verifyTimestampIsolatedVideo({
           ffmpeg,input:output,index:outputIndex,threads:getDecodeThreadCount(),expectedFrames:durationHints?.verifiedFrames,runProcess:runTimelineProcess,
           onProgress:(frames,total,complete,fps)=>{
             const ratio=total>0?Math.min(1,Math.max(0,frames/total)):0;
-            const data={percentage:stageProgressValue(videoDecodeRange,complete?1:ratio),status};
-            if(Number.isFinite(fps)&&fps>0)data.fps=fps;
-            reportWorkerProgress(updateWorker,data);
+            isolatedEmitter.update(complete?1:ratio,fps);
           }
-        });
+        }));
       }
       const argv=mode==='qsv'?decode:withDecoderThreads(['-v','error','-xerror','-progress','pipe:1','-nostats','-i',output,'-map',`0:${outputIndex}`,'-f','null','-'],getDecodeThreadCount());
       const status=mode==='qsv'?"Validation: strict output video decode":"Validation: strict software video decode";
-      reportWorkerProgress(updateWorker,{percentage:videoDecodeRange.start,fps:0,status});
-      return await runTimelineProcess(ffmpeg,argv,null,(timeUs,fps)=>{
+      const videoEmitter=createStallSafeProgressEmitter({updateWorker,range:videoDecodeRange,status,minStep:0.01,defaultFps:undefined});
+      return await videoEmitter.run(()=>runTimelineProcess(ffmpeg,argv,null,(timeUs,fps)=>{
         const ratio=a.duration>0?Math.min(1,Math.max(0,timeUs/1000000/a.duration)):0;
-        const data={percentage:stageProgressValue(videoDecodeRange,ratio),status};
-        if(Number.isFinite(fps)&&fps>0)data.fps=fps;
-        reportWorkerProgress(updateWorker,data);
-      });
+        videoEmitter.update(ratio,fps);
+      }));
       } catch(error) {
         decodeStatus=`failed (exit ${error?.processFailure?.status ?? error?.processFailure?.signal ?? 'unknown'})`;
         throw error;
@@ -320,13 +320,12 @@ one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(upda
       const audioDecode=withDecoderThreads(['-v','error','-xerror','-progress','pipe:1','-nostats','-i',output],getDecodeThreadCount());
       for (const dstIndex of indices) audioDecode.push('-map',`0:${dstIndex}`);
       audioDecode.push('-f','null','-');
-      return await runTimelineProcess(ffmpeg,audioDecode,null,(timeUs,fps)=>{
+      const audioEmitter=createStallSafeProgressEmitter({updateWorker,range:audioDecodeRange,status:"Validation: retained audio decode",minStep:0.01,defaultFps:undefined});
+      return await audioEmitter.run(()=>runTimelineProcess(ffmpeg,audioDecode,null,(timeUs,fps)=>{
         const duration=Number(durationHints?.output)||a.duration;
         const ratio=duration>0?Math.min(1,Math.max(0,timeUs/1000000/duration)):0;
-        const data={percentage:stageProgressValue(audioDecodeRange,ratio),status:"Validation: retained audio decode"};
-        if(Number.isFinite(fps)&&fps>0)data.fps=fps;
-        reportWorkerProgress(updateWorker,data);
-      });
+        audioEmitter.update(ratio,fps);
+      }));
     },
     checkSource:async(type,index)=>{
       const args=withDecoderThreads(['-v','error','-xerror','-i',source,'-map',`0:${index}`,'-f','null','-'],getDecodeThreadCount());

@@ -691,3 +691,69 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
    - Run `python3 scripts/stage_signatures.py --check-isolation` and `make check` (`build`, `test:coverage`, `git diff --check`).
    - Run an isolated live smoke test in `tdarr-flow-live-test-20261102` against a short cropped sample of `The Matrix Resurrections (2021) WEBDL-2160p.mp4` verifying monotonic pre-scan hashing + Dolby Level 6/9 progress emission (`pipe:3` + async export) and `.prechecks.gz` `hdrPreflight` reuse on retry, then clean up `/test` and `/dev/shm`.
    - Update `docs/plans/IMPLEMENTATION_LOG.md` and run a final `make check`.
+
+# V16.7 Execution Plan: 0.01% Stage Progress Precision & Stall-Safe Heartbeats for Narrow Stages
+
+## Change Categorization
+- **In-Place Regression Fix (V16.5 Progress Granularity + Heartbeat Guard):**
+  - Resolves `14by1kh-log.txt` (`/mnt/media/movies/Watchmen (2009)/Watchmen (2009) WEBDL-2160p.mkv`, `83.88 GB`), where V16.5's narrower `audioPrecheck` span (`~0.74%` for DTS scan) combined with `stageProgressValue`'s `0.1%` rounding collapsed `~19m` of sequential `ffprobe -show_packets` progress down to only `7` distinct `percentage` steps (~12 GB per step), tripping Tdarr's `300s` Worker Stall Detector (`workerStallDetectorInterval: 300`).
+  - Changes progress rounding resolution (`0.1% -> 0.01%`) and adds a reusable `ui_only` stall-safe timer heartbeat helper across `audioPrecheck`, `timelines`, `videoDecode`, `audioDecode`, and `runLimitedFfmpeg`, preserving all existing stage weights, cache signatures, and validation behavior.
+
+## Architectural Review
+- **1. 0.01% Precision + Reusable Stall-Safe Emitter (`src/progress.js`, `scripts/stage_signatures.py`):**
+  - Update `stageProgressValue(range, ratio)` and `runLimitedFfmpeg` percentage calculation from `0.1%` (`* 10 / 10`) to `0.01%` (`* 100 / 100`), matching Tdarr's two-decimal percentage precision and restoring `0.02%` incremental updates across narrow stages (`audioPrecheck`, `timelines`, `remux`, `audioDecode`).
+  - Add a shared `createStallSafeProgressEmitter({ updateWorker, range, status, workerDetails, minStep = 0.02, heartbeatIntervalMs = 60000 })` helper in `src/progress.js`:
+    - `update(ratio, fps = 0)`: emits `stageProgressValue(range, ratio)` whenever `percentage >= lastEmitted + minStep` (or on completion `ratio >= 1`), recording `lastEmitAt`.
+    - `run(asyncOperation)`: starts an `.unref()`'d periodic heartbeat timer every `heartbeatIntervalMs` (`60s` default); if no progress emission occurred during the interval, gently nudges `percentage` by `+0.01%` capped strictly below `range.end` (monotonic, bounded within `[range.start, range.end]`), and guarantees `clearInterval` on completion/error.
+  - Add `"createStallSafeProgressEmitter": ("ui_only",)` to `SYMBOL_STAGE_MAP["progress.js"]` in `scripts/stage_signatures.py` so UI heartbeat tuning leaves precheck/quarantine caches untouched.
+- **2. Wire Narrow Sequential Scans & Decodes Through the Shared Emitter (`scripts/build_additions.py`, `scripts/build.py`):**
+  - Replace ad-hoc thresholded callbacks and protect long sequential scans/decodes with `createStallSafeProgressEmitter` in:
+    - `precheckRetainedSourceAudio` (`audio DTS scan` + `retained audio decode`, `scripts/build_additions.py`).
+    - `verifyVideoTimeline` (`scanTimelinePair`, `runVideo` QSV/CPU, `runAudio`, `scripts/build.py`).
+- **Files Affected:**
+  - [`src/progress.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/progress.js): `0.01%` precision in `stageProgressValue` and `runLimitedFfmpeg`, plus `createStallSafeProgressEmitter`.
+  - [`scripts/stage_signatures.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/stage_signatures.py): map `createStallSafeProgressEmitter` as `("ui_only",)`.
+  - [`scripts/build_additions.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build_additions.py): use `createStallSafeProgressEmitter` in `precheckRetainedSourceAudio`.
+  - [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py): use `createStallSafeProgressEmitter` in `scanTimelinePair` / validation `runVideo` / `runAudio`.
+  - [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json) & [`docs/plans/IMPLEMENTATION_LOG.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/plans/IMPLEMENTATION_LOG.md).
+  - Tests: [`tests/progress.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/progress.test.js), [`tests/integration.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/integration.test.js).
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase (Failing Tests First):**
+   - `tests/progress.test.js`: assert `stageProgressValue({ start: 28.69, end: 29.43 }, ratio)` produces `0.01%`-granular monotonic steps (`> 25` distinct values over a narrow `0.74%` span, exact to 2 decimals) and test `createStallSafeProgressEmitter` emits `minStep` progress updates plus bounded monotonic timer heartbeats (`< range.end`) during silent child waits and cleans up its timer cleanly.
+   - `tests/integration.test.js`: assert a `qsv` audio DTS precheck across `0.74%` width emits fine-grained (`>= 10` distinct) `"Precheck: audio DTS scan"` percentages monotonically without collapsing to `0.1%` jumps.
+   - Run `node --test tests/progress.test.js tests/integration.test.js` to confirm expected Red failures.
+2. **Green Phase (Implementation & Build):**
+   - Implement `0.01%` precision + `createStallSafeProgressEmitter` in `src/progress.js`, register in `scripts/stage_signatures.py`, wire into `scripts/build_additions.py` and `scripts/build.py`, and rebuild `flow.json`.
+3. **Verification:**
+   - Run `python3 scripts/stage_signatures.py --check-isolation` and `make check` (`build`, `test:coverage`, `git diff --check`).
+   - Run a quick isolated smoke test in `tdarr-flow-live-test-20261102` against a short sample from `Watchmen (2009) WEBDL-2160p.mkv` verifying `>= 10` distinct fine-grained updates during `"Precheck: audio DTS scan"` and monotonic `percentage` across the full run, then clean up container scratch files.
+   - Update `docs/plans/IMPLEMENTATION_LOG.md` and run a final `make check`.
+
+# V16.8 Execution Plan: Stall-Safe Heartbeats Across All Packet Timeline Pairs
+
+## Change Categorization
+- **In-Place Bug Fix / Progress Hardening (Non-Breaking):**
+  - Follows up on `eZCjlc4-log.txt` (`/mnt/media/movies/Elvis (2022)/Elvis (2022) Remux-2160p.mkv`, `79.34 GB`, `571,905` frames), which ran under V16.6 and was killed by Tdarr's Worker Stall Detector `11m 28s` into `[Validation stage] timelines`.
+  - V16.7 wrapped the video packet pair inside `timelineEmitter.run(...)`, but subsequent `scanTimelinePair(...)` calls for **audio streams, text/ASS/SSA subtitles, and `verifyPgsSegmentsBatch` (PGS subtitles)** in `verifyVideoTimeline` still only invoke `timelineEmitter.update(...)` outside `timelineEmitter.run(...)`, leaving huge TrueHD/DTS-HD/PGS timeline scans without a `60s` heartbeat.
+  - This change keeps all validation tolerances, stream checks, signatures, and outputs identical in-place and ensures every `scanTimelinePair` call executes under an active `createStallSafeProgressEmitter` heartbeat timer.
+
+## Architectural Review
+- **1. Wrap `scanTimelinePair` Execution in `timelineEmitter.run(...)` (`scripts/build.py`):**
+  - Inside `verifyVideoTimeline` (`scripts/build.py`), move `timelineEmitter.run(...)` directly into `scanTimelinePair` so every call (`video`, `audio`, `ass`/`ssa` `readSubtitlePackets`, other `subtitle` `measureStreamTimeline`, and `verifyPgsSegmentsBatch`) automatically runs under the `60s` monotonic heartbeat timer (`createStallSafeProgressEmitter` preserves `lastEmitted` across `.run(...)` calls on the same `timelineEmitter` instance and guarantees `clearInterval` in `finally`).
+  - Remove the redundant outer `timelineEmitter.run(...)` wrapper around the video `scanTimelinePair(...)` call since `scanTimelinePair` itself now manages `timelineEmitter.run(...)`.
+- **Files Affected:**
+  - [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py): wrap `scanTimelinePair` body with `timelineEmitter.run(...)` instead of only the video pair.
+  - [`tests/integration.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/integration.test.js): add a regression test verifying that a slow/silent audio or subtitle timeline scan during `Validation: packet timelines` receives periodic monotonic heartbeat progress updates before completion.
+  - [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json) & [`docs/plans/IMPLEMENTATION_LOG.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/plans/IMPLEMENTATION_LOG.md).
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase (Failing Test First):**
+   - Add a test in `tests/integration.test.js` simulating a slow/silent `ffprobe` audio or subtitle packet scan during `Validation: packet timelines` and asserting `timelineEmitter` emits monotonic heartbeat updates before completion (expected to fail while only the video pair runs inside `timelineEmitter.run(...)`).
+   - Run `node --test tests/integration.test.js` to confirm the Red failure.
+2. **Green Phase (Implementation & Build):**
+   - Update `scanTimelinePair` in `scripts/build.py` so every pair executes inside `timelineEmitter.run(...)`.
+   - Rebuild `flow.json` via `python3 scripts/build.py`.
+3. **Verification:**
+   - Run `python3 scripts/stage_signatures.py --check-isolation` and `make check` (`build`, `test:coverage`, `git diff --check`).
+   - Update `docs/plans/IMPLEMENTATION_LOG.md` and run a final `make check`.

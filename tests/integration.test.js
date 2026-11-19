@@ -19,11 +19,28 @@ child.execFileSync('ffmpeg',['-v','error','-i',source,'-map','0:0','-map','0:1',
 child.execFileSync('ffmpeg',['-v','error','-i',multiAudioSource,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',multiAudioCandidate],{stdio:'ignore'});
 assert.ok(fs.statSync(multiAudioCandidate).size < fs.statSync(multiAudioSource).size);
 function argsFor(file,logs=[]) { const f={_id:file,container:'mkv',file_size:fs.statSync(file).size/1024/1024}; return {inputFileObj:{...f},originalLibraryFile:{...f},workDir:dir,variables:{user:{min_cache_free_mb:1}},ffmpegPath:'ffmpeg',librarySettings:{folder:dir},jobLog:m=>logs.push(String(m))}; }
-function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,qsvLongTimestampLines=false,matchedVideoDtsTies=false,matchedSubFramePtsTie=false,sourceFieldOrder=null,candidateFieldOrder=null,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,candidateMissingSar=false,mediaInfoPixelAspectRatio,candidateMediaInfoPixelAspectRatio,hdr=false,dovi5Test=false,colorOverride=null,mediaInfoOverride=null,candidateSideData=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,unlinkHardlinkDuringSourceScan=null,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate,codeOverride=null}={}) {
+function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,qsvLongTimestampLines=false,matchedVideoDtsTies=false,matchedSubFramePtsTie=false,audioDtsDenseScan=false,onSlowAudioTimeline=null,sourceFieldOrder=null,candidateFieldOrder=null,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,candidateMissingSar=false,mediaInfoPixelAspectRatio,candidateMediaInfoPixelAspectRatio,hdr=false,dovi5Test=false,colorOverride=null,mediaInfoOverride=null,candidateSideData=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,unlinkHardlinkDuringSourceScan=null,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate,codeOverride=null}={}) {
   const calls=[],commands=[],logs=[],audioDecodeCommands=[]; let initialProbe=true,moverSimulated=false,doviExtractCalls=0;
   const fakeFs=new Proxy(fs,{get(t,p){if(p==='unlinkSync' && denyIso)return name=>{if(String(name).endsWith('.iso'))throw Error('simulated ISO permission error');return t.unlinkSync(name)};if(p==='accessSync')return (name,...args)=>(name==='/dev/dri/renderD129'||(dovi5Test&&name==='/usr/share/vulkan/icd.d/intel_icd.json'))?undefined:t.accessSync(name,...args);return t[p]}});
   const fakeChild={...child,
     spawn(cmd,args,opts){
+      if(onSlowAudioTimeline&&cmd==='ffprobe'&&args.includes('-show_packets')&&args.includes('packet=pts_time,dts_time,duration_time,pos')&&args.includes('-select_streams')&&args[args.indexOf('-select_streams')+1]==='1'&&args[args.length-1]===inputPath){
+        const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
+        const proc=new EventEmitter();proc.stdout=new PassThrough();proc.stderr=new PassThrough();proc.kill=()=>{};
+        const out=child.execFileSync(cmd,args,{encoding:'utf8'});
+        Promise.resolve(onSlowAudioTimeline()).then(()=>{
+          proc.stdout.end(out);proc.stderr.end();proc.emit('close',0,null);
+        });
+        return proc;
+      }
+      if(audioDtsDenseScan&&cmd==='ffprobe'&&args.includes('-show_packets')&&args.includes('packet=pts_time,dts_time,pos')&&args.includes(inputPath)){
+        const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
+        const proc=new EventEmitter();proc.stdout=new PassThrough();proc.stderr=new PassThrough();proc.kill=()=>{};
+        const fileSize=fs.statSync(inputPath).size;
+        const lines=Array.from({length:60},(_,i)=>`pts_time=${(i*0.02).toFixed(6)}|dts_time=${(i*0.02).toFixed(6)}|pos=${Math.round((i+1)/60*fileSize)}`);
+        queueMicrotask(()=>{proc.stdout.end(lines.join('\n')+'\n');proc.stderr.end();proc.emit('close',0,null);});
+        return proc;
+      }
       if(dovi5Test&&cmd==='ffmpeg'&&args.includes('hevc')&&args.includes('-')){
         doviExtractCalls++;
         const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
@@ -1059,4 +1076,62 @@ test('Dolby Vision Profile 5 emits live extraction progress on first pass and re
  assert.equal(r2.outputNumber,2);
  assert.equal(second.doviExtractCalls(),0,'quarantined retry must reuse cached Level 6/9 metadata instead of re-extracting');
  assert.ok(second.logs.some(line=>line.includes('[HDR preflight] Reused cached Dolby Vision Profile 5 Level 6/9 metadata (96 frames).')));
+});
+
+test('QSV audio DTS packet precheck emits fine-grained 0.01%-precision percentages without collapsing to 0.1% steps',async()=>{
+ const updates=[];
+ const x=load({audioDtsDenseScan:true});
+ const args=argsFor(source,x.logs);
+ args.updateWorker=u=>updates.push(u);
+ const r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+ const dtsPcts=new Set(updates.filter(u=>u?.status==='Precheck: audio DTS scan').map(u=>Number(u.percentage)));
+ assert.ok(dtsPcts.size>=10,`expected >=10 distinct Precheck: audio DTS scan percentages across 0.74% span, got ${JSON.stringify([...dtsPcts])}`);
+});
+
+test('audio packet timeline validation runs inside createStallSafeProgressEmitter and emits monotonic heartbeats while waiting',async()=>{
+ const origSetInterval=globalThis.setInterval;
+ const origClearInterval=globalThis.clearInterval;
+ const origDateNow=Date.now;
+ let nowOffsetMs=0;
+ let nextTimerId=100000;
+ const activeHeartbeats=new Map();
+ Date.now=()=>origDateNow()+nowOffsetMs;
+ globalThis.setInterval=(fn,ms,...rest)=>{
+  if(ms===60000){
+   const id=nextTimerId++;
+   activeHeartbeats.set(id,fn);
+   return {id,unref(){return this;}};
+  }
+  return origSetInterval(fn,ms,...rest);
+ };
+ globalThis.clearInterval=handle=>{
+  if(handle&&typeof handle==='object'&&typeof handle.id==='number') activeHeartbeats.delete(handle.id);
+  else return origClearInterval(handle);
+ };
+ try {
+  const updates=[];
+  let updatesDuringSlowAudio=[];
+  const x=load({
+   onSlowAudioTimeline:async()=>{
+    const before=updates.length;
+    nowOffsetMs+=65000;
+    for(const fn of activeHeartbeats.values()) fn();
+    nowOffsetMs+=65000;
+    for(const fn of activeHeartbeats.values()) fn();
+    updatesDuringSlowAudio=updates.slice(before).filter(u=>u?.status==='Validation: packet timelines');
+   }
+  });
+  const args=argsFor(source,x.logs);
+  args.updateWorker=u=>updates.push(u);
+  const r=await run(x,args);
+  assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+  assert.equal(activeHeartbeats.size,0,'all 60s heartbeat timers must be cleared after job completes');
+  assert.ok(updatesDuringSlowAudio.length>=2,`expected >=2 Validation: packet timelines heartbeat updates during slow audio packet scan, got ${JSON.stringify(updatesDuringSlowAudio)}`);
+  assert.ok(Number(updatesDuringSlowAudio[1].percentage)>Number(updatesDuringSlowAudio[0].percentage),`expected advancing monotonic timeline heartbeats, got ${JSON.stringify(updatesDuringSlowAudio)}`);
+ } finally {
+  Date.now=origDateNow;
+  globalThis.setInterval=origSetInterval;
+  globalThis.clearInterval=origClearInterval;
+ }
 });

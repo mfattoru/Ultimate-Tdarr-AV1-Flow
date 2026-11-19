@@ -358,12 +358,18 @@ one('  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.
       const decodeArgs=withDecoderThreads(["-v","error","-xerror","-progress","pipe:1","-nostats","-i",inputPath],getDecodeThreadCount());
       for (const stream of streams) decodeArgs.push("-map",`0:${stream.index}`);
       decodeArgs.push("-f","null","-");
-      reportWorkerProgress(args.updateWorker,{percentage:startPercent,fps:0,status:"Precheck: retained audio decode"},initialWorkerProgressDetails);
-      const stderr=await runTimelineProcess(ffmpegBin,decodeArgs,null,(timeUs)=>{
+      const decodeEmitter=createStallSafeProgressEmitter({
+        updateWorker:args.updateWorker,
+        range:{start:startPercent,end:endPercent},
+        status:"Precheck: retained audio decode",
+        workerDetails:initialWorkerProgressDetails,
+        minStep:0.01
+      });
+      const stderr=await decodeEmitter.run(()=>runTimelineProcess(ffmpegBin,decodeArgs,null,(timeUs)=>{
         const decodedSec=Number(timeUs)/1000000;
         const ratio=durationSec>0 && Number.isFinite(decodedSec)?Math.min(1,Math.max(0,decodedSec/durationSec)):0;
-        reportWorkerProgress(args.updateWorker,{percentage:stageProgressValue({start:startPercent,end:endPercent},ratio),fps:0,status:"Precheck: retained audio decode"},initialWorkerProgressDetails);
-      });
+        decodeEmitter.update(ratio);
+      }));
       if(isVerificationInfrastructureDiagnostic(stderr))throw Error(String(stderr).trim());
       return String(stderr || "").trim();
     };
@@ -376,13 +382,15 @@ one('  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.
       const stream=finalAudioStreams[position];
       const percentStart=audioRange.start+(audioMid-audioRange.start)*(position/finalAudioStreams.length);
       const percentEnd=audioRange.start+(audioMid-audioRange.start)*((position+1)/finalAudioStreams.length);
-      let lastAudioProgress=percentStart-1;
       log(`[Audio precheck] Scanning DTS order for retained source stream 0:${stream.index}.`);
-      reportWorkerProgress(args.updateWorker,{percentage:percentStart,fps:0,status:"Precheck: audio DTS scan"},initialWorkerProgressDetails);
-      const timing=await scanAudioDtsPackets(ffprobeBin,inputPath,stream.index,stream.time_base,runTimelineProcess,ratio=>{
-        const percentage=stageProgressValue({start:percentStart,end:percentEnd},ratio);
-        if(percentage>=lastAudioProgress+0.02||percentage>=percentEnd){lastAudioProgress=percentage;reportWorkerProgress(args.updateWorker,{percentage,fps:0,status:"Precheck: audio DTS scan"},initialWorkerProgressDetails);}
-      },originalSourceSizeInBytes);
+      const dtsEmitter=createStallSafeProgressEmitter({
+        updateWorker:args.updateWorker,
+        range:{start:percentStart,end:percentEnd},
+        status:"Precheck: audio DTS scan",
+        workerDetails:initialWorkerProgressDetails,
+        minStep:0.02
+      });
+      const timing=await dtsEmitter.run(()=>scanAudioDtsPackets(ffprobeBin,inputPath,stream.index,stream.time_base,runTimelineProcess,ratio=>dtsEmitter.update(ratio),originalSourceSizeInBytes));
       if (timing.backwardSteps===0) {
         if (timing.nonIncreasingSteps>0) log(`[Audio precheck] Source audio stream 0:${stream.index} has ${timing.nonIncreasingSteps} equal DTS transition(s) at time base ${stream.time_base}; these are preserved without repair.`);
         continue;

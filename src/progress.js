@@ -102,7 +102,7 @@ const runLimitedFfmpeg = ({command,argv,durationSec,updateWorker,workerDetails,p
     const us=Number(record.out_time_us), duration=Number(durationSec),fps=sampleFps(record.frame,record.fps);
     if (record.out_time_us!==undefined && Number.isFinite(us) && us>=0 && Number.isFinite(duration) && duration>0) {
       const ratio=Math.min(1,Math.max(0,us/1000000/duration));
-      const percentage=Math.min(99.9,end,Math.max(start,Math.round((start+ratio*(end-start))*10)/10));
+      const percentage=Math.min(99.9,end,Math.max(start,Math.round((start+ratio*(end-start))*100)/100));
       const data={percentage}; if(Number.isFinite(fps)&&fps>0)data.fps=fps;
       emit(data,ratio);
     }
@@ -217,7 +217,54 @@ const stageProgressValue = (range, ratio = 0) => {
   const start = Number.isFinite(range?.start) ? Number(range.start) : 0;
   const end = Number.isFinite(range?.end) ? Math.max(start, Number(range.end)) : start;
   const clamped = Number.isFinite(ratio) ? Math.min(1, Math.max(0, Number(ratio))) : 0;
-  return Math.min(99.9, end, Math.max(start, Math.round((start + clamped * (end - start)) * 10) / 10));
+  return Math.min(99.9, end, Math.max(start, Math.round((start + clamped * (end - start)) * 100) / 100));
+};
+/** Emit 0.01%-granular monotonic stage progress and keep Tdarr worker updates alive during long child waits. */
+const createStallSafeProgressEmitter = ({
+  updateWorker,
+  range,
+  status,
+  workerDetails,
+  minStep = 0.02,
+  heartbeatIntervalMs = 60000,
+  defaultFps = 0
+} = {}) => {
+  const start = Number.isFinite(range?.start) ? Number(range.start) : 0;
+  const end = Number.isFinite(range?.end) ? Math.max(start, Number(range.end)) : start;
+  const step = Number.isFinite(minStep) && minStep > 0 ? Number(minStep) : 0.02;
+  const intervalMs = Number.isFinite(heartbeatIntervalMs) && heartbeatIntervalMs > 0 ? Number(heartbeatIntervalMs) : 60000;
+  const round2 = value => Math.round(value * 100) / 100;
+  const ceilingBeforeEnd = end > start ? Math.max(start, round2(end - 0.01)) : end;
+  let lastEmitted = start, lastEmitAt = Date.now(), hasEmitted = false;
+  const emitPercent = (percentage, fps) => {
+    const bounded = Math.min(99.9, end, Math.max(start, lastEmitted, round2(percentage)));
+    lastEmitted = bounded;
+    lastEmitAt = Date.now();
+    hasEmitted = true;
+    const data = { percentage: bounded, status };
+    if (Number.isFinite(fps) && fps > 0) data.fps = fps;
+    else if (defaultFps !== undefined) data.fps = defaultFps;
+    reportWorkerProgress(updateWorker, data, workerDetails);
+  };
+  return {
+    update(ratio = 0, fps = 0) {
+      const clamped = Number.isFinite(ratio) ? Math.min(1, Math.max(0, Number(ratio))) : 0;
+      const next = stageProgressValue({ start, end }, clamped);
+      if (!hasEmitted || next >= lastEmitted + step || clamped >= 1) emitPercent(next, fps);
+    },
+    async run(operation) {
+      if (!hasEmitted) emitPercent(start, 0);
+      const timer = typeof updateWorker === 'function' ? setInterval(() => {
+        if (Date.now() - lastEmitAt < intervalMs) return;
+        const nudged = Math.min(ceilingBeforeEnd, round2(lastEmitted + 0.01));
+        if (nudged > lastEmitted) emitPercent(nudged, 0);
+        else emitPercent(lastEmitted, 0);
+      }, intervalMs) : null;
+      if (timer?.unref) timer.unref();
+      try { return await operation(); }
+      finally { if (timer) clearInterval(timer); }
+    }
+  };
 };
 const runSingleQuality = async (quality, sourceSize, run) => {
   const result = await run(quality);
@@ -226,4 +273,4 @@ const runSingleQuality = async (quality, sourceSize, run) => {
   if (result.size<sourceSize) return {ok:true,quality,result};
   return {ok:false,quality,reason:'quality_floor',result};
 };
-module.exports={runLimitedFfmpeg,runSingleQuality,reportWorkerProgress,createStageProgressPlan,stageProgressValue};
+module.exports={runLimitedFfmpeg,runSingleQuality,reportWorkerProgress,createStageProgressPlan,stageProgressValue,createStallSafeProgressEmitter};

@@ -132,3 +132,25 @@
   - `python3 scripts/stage_signatures.py --check-isolation`: all 4 isolation invariants passed.
   - `make check`: `390/390` tests passed (`96.80%` line, `77.59%` branch, `94.74%` function coverage), `git diff --check` clean.
   - Isolated container smoke test in `tdarr-flow-live-test-20261102` on a 10s cropped sample of `The Matrix Resurrections (2021)` (`matrix-dv5-10s.mp4`, `dovi5_hdr10`): exited with `outputNumber: 1`, `monotonic: true` across `103` worker updates (`0.1% -> 99.9%`), including `5` `"Precheck: Dolby Vision metadata"` updates (`0.5% -> 0.98%`). Temporary container files were cleaned up cleanly.
+
+## 2026-11-17 — 0.01% Stage Progress Precision & Stall-Safe Heartbeats for Narrow Stages (V16.7)
+
+- **Scope:** In-place fix for V16.5 regression exposed by `14by1kh-log.txt` across [`src/progress.js`](src/progress.js), [`scripts/stage_signatures.py`](scripts/stage_signatures.py), [`scripts/build_additions.py`](scripts/build_additions.py), [`scripts/build.py`](scripts/build.py), and [`flow.json`](flow.json) (plan in [`docs/plans/PLAN.md`](docs/plans/PLAN.md)).
+- **Changes implemented:**
+  - Updated `stageProgressValue` and `runLimitedFfmpeg` in `src/progress.js` from `0.1%` rounding (`* 10 / 10`) to `0.01%` rounding (`* 100 / 100`) so narrow-span sequential scans (`audioPrecheck`, `timelines`, `audioDecode`, `remux`) emit smooth `0.02%`-step updates instead of stalling between `0.1%` jumps.
+  - Added reusable `createStallSafeProgressEmitter` (`src/progress.js`, tagged `ui_only` in `scripts/stage_signatures.py`) combining `0.01%`-granular updates with a bounded `60s` fallback heartbeat (`+0.01%` strictly below stage `end`, `<= ceilingBeforeEnd`) and wired it through `precheckRetainedSourceAudio`, `verifyVideoTimeline`, `runVideo` (QSV, CPU, and timestamp-isolated), and validation `runAudio`.
+- **Verification:**
+  - TDD Red -> Green across [`tests/progress.test.js`](tests/progress.test.js) and [`tests/integration.test.js`](tests/integration.test.js).
+  - `python3 scripts/stage_signatures.py --check-isolation`: all 4 isolation invariants passed.
+  - `make check`: `392/392` tests passed (`96.82%` line, `76.61%` branch, `94.86%` function coverage), `git diff --check` clean.
+  - Isolated container smoke test in `tdarr-flow-live-test-20261102` on `watchmen-10s.mkv`: exited with `outputNumber: 1`, `monotonic: true` across `289` worker updates (`0.1% -> 99.9%`), expanding `"Precheck: audio DTS scan"` from `7–9` `0.1%` jumps to `37` distinct `0.01%`-granular updates (`28.692 -> 29.43`). Temporary container files were cleaned up cleanly.
+
+## 2026-11-18 — Stall-Safe Heartbeats Across All Packet Timeline Pairs (V16.8)
+
+- **Scope:** In-place progress hardening follow-up from `eZCjlc4-log.txt` across [`scripts/build.py`](scripts/build.py), [`flow.json`](flow.json), and [`tests/integration.test.js`](tests/integration.test.js) (plan in [`docs/plans/PLAN.md`](docs/plans/PLAN.md)).
+- **Changes implemented:**
+  - Moved `timelineEmitter.run(...)` inside `scanTimelinePair` in `verifyVideoTimeline` (`scripts/build.py`) and unwrapped the outer video-only wrapper, so audio, ASS/SSA/text subtitle, and batched PGS (`verifyPgsSegmentsBatch`) packet scans run under `createStallSafeProgressEmitter`'s `60s` monotonic heartbeat timer just like video packet scans.
+- **Verification:**
+  - TDD Red -> Green in [`tests/integration.test.js`](tests/integration.test.js) (slow audio packet timeline scan test failed before the edit with zero heartbeats and passed after with monotonic `"Validation: packet timelines"` heartbeats and clean timer teardown).
+  - `python3 scripts/stage_signatures.py --check-isolation`: all 4 isolation invariants passed.
+  - `make check`: `393/393` tests passed (`96.82%` line, `77.06%` branch, `94.86%` function coverage), `git diff --check` clean.
