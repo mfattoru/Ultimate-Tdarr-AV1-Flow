@@ -170,7 +170,7 @@ one("  const a=await measureStreamTimeline(ffprobe,source,sourceIndex,'video');\
     updateWorker,
     range:timelineRange,
     status:"Validation: packet timelines",
-    minStep:0.02
+    minStep:0.01
   });
   const scanTimelinePair=async operation=>await timelineEmitter.run(async()=>{
     const pairIndex=completedTimelinePairs++;

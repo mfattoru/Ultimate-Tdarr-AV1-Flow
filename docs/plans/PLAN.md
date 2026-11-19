@@ -757,3 +757,46 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
 3. **Verification:**
    - Run `python3 scripts/stage_signatures.py --check-isolation` and `make check` (`build`, `test:coverage`, `git diff --check`).
    - Update `docs/plans/IMPLEMENTATION_LOG.md` and run a final `make check`.
+
+
+# V16.9 Execution Plan: Single-Pass Batched Audio DTS Precheck & Non-Exhausting Progress Heartbeats
+
+## Change Categorization
+- **In-Place V16.7 Regression Fix & Performance Hardening (Non-Breaking):**
+  - Resolves `5eERNkc-log.txt` (`/mnt/media/movies/Encanto (2021)/Encanto (2021) Remux-2160p.mkv`, `56.85 GB`, `5` retained audio tracks) and `PCWroFV-log.txt` (`/mnt/media/movies/Elvis (2022)/Elvis (2022) Remux-2160p.mkv`, `79.34 GB`, `3` retained audio tracks), both of which ran V16.7 and were killed by Tdarr's Worker Stall Detector during `[Audio precheck] Scanning DTS order`.
+  - **Root causes fixed:**
+    1. Per-track subdivision of the `0.74%` DTS scan budget left only `~0.148%` (`Encanto`) and `~0.247%` (`Elvis`) per track, so `createStallSafeProgressEmitter`'s `60s` `+0.01%` heartbeat exhausted `ceilingBeforeEnd` after ~`14m` / ~`24m` and flatlined at the exact same `percentage` until Tdarr killed both jobs at `20m 59s` and `28m 38s`.
+    2. `precheckRetainedSourceAudio` re-demuxed the entire `60–80 GB` MKV sequentially `N` times (`ffprobe -select_streams <idx>` once per retained audio track).
+  - Preserves all DTS repair decisions, validation contracts, Discord/Arr behavior, and existing `scanAudioDtsPackets` API in-place.
+
+## Architectural Review
+- **1. Single-Pass Batched Audio DTS Scanner (`src/audio_timing.js`, `scripts/stage_signatures.py`):**
+  - Add `scanAudioDtsPacketsBatch(ffprobe, file, streams, runProcess, onProgress, fileSizeHint = 0)` (mapped to `("precheck_audio",)` in `scripts/stage_signatures.py`):
+    - Multi-stream (`streams.length > 1`): executes a single `ffprobe -select_streams a -show_packets -show_entries packet=stream_index,dts_time,pos` pass using fast `indexOf` compact-field extraction, routing each packet to the matching retained stream's `createAudioDtsAnalyzer` while ignoring non-retained streams and throttling byte-position progress updates (`>= 0.0005` or `500 ms`).
+    - Single-stream (`streams.length === 1`): preserves `-select_streams <idx>` and `packet=pts_time,dts_time,pos` for full test/mock compatibility.
+    - Empty (`[]`): returns an empty `Map` without spawning `ffprobe`.
+- **2. Non-Exhausting Heartbeats & Wider Precheck/Timeline Budgets (`src/progress.js`, `scripts/build_additions.py`, `scripts/build.py`):**
+  - Rebalance `STAGE_PROGRESS_PROFILES` (`qsv`, `hybrid`, `sw_hdr`) to give `audioPrecheck: 4` and `timelines: 6` / `5.5` / `5` (summing to `100` per route).
+  - Update `createStallSafeProgressEmitter` defaults to `minStep = 0.01`, `heartbeatIntervalMs = 120000`, and add `0.0001%` micro-nudge fallback up to `round4(end - 0.0001)` when `ceilingBeforeEnd` (`round2(end - 0.01)`) is reached on long silent/slow waits.
+  - Wire `precheckRetainedSourceAudio` (`scripts/build_additions.py`) through a single `dtsEmitter.run(() => scanAudioDtsPacketsBatch(...))` call and set `timelineEmitter` `minStep: 0.01` (`scripts/build.py`).
+- **Files Affected:**
+  - [`src/audio_timing.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/audio_timing.js)
+  - [`src/progress.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/progress.js)
+  - [`scripts/stage_signatures.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/stage_signatures.py)
+  - [`scripts/build_additions.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build_additions.py)
+  - [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py)
+  - [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json) & [`docs/plans/IMPLEMENTATION_LOG.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/plans/IMPLEMENTATION_LOG.md)
+  - Tests: [`tests/audio_timing.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/audio_timing.test.js), [`tests/progress.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/progress.test.js), [`tests/integration.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/integration.test.js)
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase (Failing Tests First):**
+   - `tests/audio_timing.test.js`: unit tests for multi-stream, single-stream, and empty `scanAudioDtsPacketsBatch`.
+   - `tests/progress.test.js`: tests for `STAGE_PROGRESS_PROFILES` (`audioPrecheck >= 3.5`, `timelines >= 5`, total weight `100`) and `createStallSafeProgressEmitter` `120000ms` / `0.01` defaults + `0.0001%` micro-nudge continuation past `ceilingBeforeEnd`.
+   - `tests/integration.test.js`: update existing timeline heartbeat test to `ms === 120000` and add multi-audio (`eng` + `spa`) test verifying single batched `ffprobe -select_streams a` DTS scan and `>= 1.5%` `"Precheck: audio DTS scan"` width.
+   - Run `node --test tests/audio_timing.test.js tests/progress.test.js tests/integration.test.js` to confirm Red failures.
+2. **Green Phase (Implementation & Build):**
+   - Apply edits in `src/audio_timing.js`, `scripts/stage_signatures.py`, `src/progress.js`, `scripts/build_additions.py`, and `scripts/build.py`, then run `python3 scripts/build.py`.
+3. **Verification:**
+   - Run `python3 scripts/stage_signatures.py --check-isolation` and `make check`.
+   - Run an isolated live container smoke test in `tdarr-flow-live-test-20261102` on a 10s multi-audio clip (`elvis-10s.mkv`) verifying single batched DTS scan across `0:1, 0:2, 0:7`, `outputNumber: 1`, `monotonic: true`, and full cleanup of `/test/v169-check`.
+   - Append V16.9 to `docs/plans/IMPLEMENTATION_LOG.md` and run final `python3 scripts/stage_signatures.py --check-isolation && make check`.

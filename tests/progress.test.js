@@ -121,13 +121,21 @@ test('createStageProgressPlan allocates route-weighted contiguous budgets and re
  const {createStageProgressPlan,stageProgressValue}=require('../src/progress');
  assert.equal(typeof createStageProgressPlan,'function');
  assert.equal(typeof stageProgressValue,'function');
+ const width=r=>r.end-r.start;
+ for(const route of ['qsv','hybrid','sw_hdr']){
+  const full=createStageProgressPlan({route,startPercent:0,endPercent:99.9});
+  const total=Object.values(full).reduce((sum,r)=>sum+width(r),0);
+  const weightOf=r=>(width(r)/total)*100;
+  assert.ok(weightOf(full.audioPrecheck)>=3.5,`${route} audioPrecheck weight should be >=3.5, got ${weightOf(full.audioPrecheck)}`);
+  assert.ok(weightOf(full.timelines)>=5,`${route} timelines weight should be >=5, got ${weightOf(full.timelines)}`);
+  assert.ok(Math.abs(total-99.9)<1e-6,`${route} widths must sum to 99.9, got ${total}`);
+ }
 
  const qsv=createStageProgressPlan({route:'qsv'});
  const stages=['sourceScan','audioPrecheck','encode','remux','candidateFrames','timelines','videoDecode','audioDecode'];
  assert.equal(qsv.sourceScan.start,1);
  assert.ok(Math.abs(qsv.audioDecode.end-99.9)<1e-6);
  for(let i=1;i<stages.length;i++)assert.ok(Math.abs(qsv[stages[i]].start-qsv[stages[i-1]].end)<1e-6);
- const width=r=>r.end-r.start;
  assert.ok(width(qsv.encode)<25,`qsv encode width should be <25%, got ${width(qsv.encode)}`);
  assert.ok(width(qsv.sourceScan)+width(qsv.candidateFrames)>=55,'CPU frame scans must carry majority of QSV job bar');
  assert.ok(width(qsv.videoDecode)>=7,'videoDecode needs enough span for long 4K60 decodes');
@@ -194,4 +202,54 @@ test('stageProgressValue uses 0.01% precision on narrow stages and createStallSa
  for(let i=1;i<updates.length;i++) assert.ok(updates[i].percentage>=updates[i-1].percentage);
  assert.ok(updates.slice(1,-1).some(u=>u.percentage>updates[0].percentage&&u.percentage<narrow.end),'heartbeat must nudge percentage strictly inside stage range');
  assert.equal(updates.at(-1).percentage,29.43);
+});
+
+
+test('createStallSafeProgressEmitter defaults to 120s/0.01% and continues micro-nudging past ceilingBeforeEnd',async()=>{
+ const {createStallSafeProgressEmitter}=require('../src/progress');
+ const origSetInterval=globalThis.setInterval;
+ const origClearInterval=globalThis.clearInterval;
+ const origDateNow=Date.now;
+ let nowOffsetMs=0;
+ let nextId=5000;
+ const timers=new Map();
+ Date.now=()=>origDateNow()+nowOffsetMs;
+ globalThis.setInterval=(fn,ms,...rest)=>{
+  const id=nextId++;
+  timers.set(id,{fn,ms});
+  return {id,unref(){return this;}};
+ };
+ globalThis.clearInterval=h=>{
+  if(h&&typeof h==='object'&&typeof h.id==='number') timers.delete(h.id);
+  else return origClearInterval(h);
+ };
+ try {
+  const updates=[];
+  const narrow={start:28.69,end:28.72};
+  const emitter=createStallSafeProgressEmitter({
+   updateWorker:p=>updates.push(p),
+   range:narrow,
+   status:'Precheck: audio DTS scan'
+  });
+  await emitter.run(async()=>{
+   assert.equal(timers.size,1);
+   const [timer]=[...timers.values()];
+   assert.equal(timer.ms,120000,'default heartbeatIntervalMs must be 120000');
+   for(let i=0;i<6;i++){
+    nowOffsetMs+=125000;
+    timer.fn();
+   }
+   emitter.update(1);
+  });
+  assert.equal(timers.size,0);
+  const pcts=updates.map(u=>Number(u.percentage));
+  assert.ok(pcts.length>=8,`expected >=8 updates, got ${JSON.stringify(pcts)}`);
+  for(let i=1;i<pcts.length;i++) assert.ok(pcts[i]>pcts[i-1],`heartbeat must keep strictly advancing past ceilingBeforeEnd: ${pcts[i-1]} -> ${pcts[i]}`);
+  assert.ok(pcts.slice(1,-1).some(p=>p>28.71&&p<28.72),`expected micro-nudge between 28.71 and 28.72, got ${JSON.stringify(pcts)}`);
+  assert.equal(pcts.at(-1),28.72);
+ } finally {
+  Date.now=origDateNow;
+  globalThis.setInterval=origSetInterval;
+  globalThis.clearInterval=origClearInterval;
+ }
 });

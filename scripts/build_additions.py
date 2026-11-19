@@ -378,19 +378,19 @@ one('  const finalAudioStreams = candidateAudio.filter(s => !prunedAudioIndices.
       const language=normalizeLang(stream.tags?.language || stream.tags?.LANGUAGE || "und");
       log(`[Audio precheck] Audio source stream 0:${stream.index} (${language}) passed full decode.`);
     };
+    log(`[Audio precheck] Scanning DTS order for ${finalAudioStreams.length} retained source stream(s) (${finalAudioStreams.map(s=>`0:${s.index}`).join(", ")}).`);
+    const dtsEmitter=createStallSafeProgressEmitter({
+      updateWorker:args.updateWorker,
+      range:{start:audioRange.start,end:audioMid},
+      status:"Precheck: audio DTS scan",
+      workerDetails:initialWorkerProgressDetails,
+      minStep:0.01
+    });
+    const dtsTimings=await dtsEmitter.run(()=>scanAudioDtsPacketsBatch(ffprobeBin,inputPath,finalAudioStreams.map(s=>({index:s.index,timeBase:s.time_base})),runTimelineProcess,ratio=>dtsEmitter.update(ratio),originalSourceSizeInBytes));
     for (let position=0; position<finalAudioStreams.length; position++) {
       const stream=finalAudioStreams[position];
-      const percentStart=audioRange.start+(audioMid-audioRange.start)*(position/finalAudioStreams.length);
-      const percentEnd=audioRange.start+(audioMid-audioRange.start)*((position+1)/finalAudioStreams.length);
-      log(`[Audio precheck] Scanning DTS order for retained source stream 0:${stream.index}.`);
-      const dtsEmitter=createStallSafeProgressEmitter({
-        updateWorker:args.updateWorker,
-        range:{start:percentStart,end:percentEnd},
-        status:"Precheck: audio DTS scan",
-        workerDetails:initialWorkerProgressDetails,
-        minStep:0.02
-      });
-      const timing=await dtsEmitter.run(()=>scanAudioDtsPackets(ffprobeBin,inputPath,stream.index,stream.time_base,runTimelineProcess,ratio=>dtsEmitter.update(ratio),originalSourceSizeInBytes));
+      const timing=dtsTimings.get(stream.index);
+      if (!timing) throw new Error(`[Audio guard] Missing DTS timing scan result for source stream 0:${stream.index}.`);
       if (timing.backwardSteps===0) {
         if (timing.nonIncreasingSteps>0) log(`[Audio precheck] Source audio stream 0:${stream.index} has ${timing.nonIncreasingSteps} equal DTS transition(s) at time base ${stream.time_base}; these are preserved without repair.`);
         continue;

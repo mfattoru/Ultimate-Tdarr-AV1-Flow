@@ -154,3 +154,16 @@
   - TDD Red -> Green in [`tests/integration.test.js`](tests/integration.test.js) (slow audio packet timeline scan test failed before the edit with zero heartbeats and passed after with monotonic `"Validation: packet timelines"` heartbeats and clean timer teardown).
   - `python3 scripts/stage_signatures.py --check-isolation`: all 4 isolation invariants passed.
   - `make check`: `393/393` tests passed (`96.82%` line, `77.06%` branch, `94.86%` function coverage), `git diff --check` clean.
+
+## 2026-11-19 — Single-Pass Batched Audio DTS Precheck & Non-Exhausting Heartbeats (V16.9)
+
+- **Scope:** In-place V16.7 regression fix and performance hardening exposed by `5eERNkc-log.txt` and `PCWroFV-log.txt` across [`src/audio_timing.js`](src/audio_timing.js), [`src/progress.js`](src/progress.js), [`scripts/stage_signatures.py`](scripts/stage_signatures.py), [`scripts/build_additions.py`](scripts/build_additions.py), [`scripts/build.py`](scripts/build.py), [`flow.json`](flow.json), and tests (plan in [`docs/plans/PLAN.md`](docs/plans/PLAN.md)).
+- **Changes implemented:**
+  - Added `scanAudioDtsPacketsBatch` (`src/audio_timing.js`, mapped to `precheck_audio` in `scripts/stage_signatures.py`) to inspect all retained audio streams in a single `ffprobe -select_streams a -show_packets` pass (`packet=stream_index,dts_time,pos`) using fast `indexOf` compact-field slicing and throttled byte-position progress (`0.0005` / `500 ms`), while preserving `packet=pts_time,dts_time,pos` for single-stream sources.
+  - Replaced `precheckRetainedSourceAudio`'s per-stream sequential `scanAudioDtsPackets` loop (`scripts/build_additions.py`) with a single `dtsEmitter.run(() => scanAudioDtsPacketsBatch(...))` call, eliminating `N`-pass `60–80 GB` MKV re-reads and keeping the full `audioPrecheck` DTS budget unified instead of fragmenting it `1/N` per track.
+  - Rebalanced `STAGE_PROGRESS_PROFILES` (`src/progress.js`) to allocate `audioPrecheck: 4` and `timelines: 6 / 5.5 / 5`, updated `createStallSafeProgressEmitter` defaults to `minStep = 0.01` and `heartbeatIntervalMs = 120000`, added `0.0001%` micro-nudges past `round2(end - 0.01)` so slow/silent scans never repeat identical percentages before completion, and set `timelineEmitter` `minStep: 0.01` (`scripts/build.py`).
+- **Verification:**
+  - TDD Red -> Green across [`tests/audio_timing.test.js`](tests/audio_timing.test.js), [`tests/progress.test.js`](tests/progress.test.js), and [`tests/integration.test.js`](tests/integration.test.js).
+  - `python3 scripts/stage_signatures.py --check-isolation`: all 4 isolation invariants passed.
+  - `make check`: `397/397` tests passed (`96.89%` line, `77.21%` branch, `94.94%` function coverage), `git diff --check` clean.
+  - Isolated container smoke test in `tdarr-flow-live-test-20261102` on a 10s multi-audio clip from `Elvis (2022) Remux-2160p.mkv` (`elvis-10s.mkv`, 3 retained audio streams + 5 subtitles): exited with `outputNumber: 1`, `monotonic: true` across `391` updates (`0.1% -> 99.9%`), `dtsScanCount: 1` (`[Audio precheck] Scanning DTS order for 3 retained source stream(s) (0:1, 0:2, 0:7)`), and `106` distinct `"Precheck: audio DTS scan"` updates across `26.71% -> 28.69%`; temporary scratch cleaned up afterward.

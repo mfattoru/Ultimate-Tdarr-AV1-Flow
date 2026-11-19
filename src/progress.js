@@ -181,9 +181,9 @@ const runLimitedFfmpeg = ({command,argv,durationSec,updateWorker,workerDetails,p
   });
 });
 const STAGE_PROGRESS_PROFILES = {
-  qsv: { sourceScan: 28, audioPrecheck: 1.5, encode: 18, remux: 2, candidateFrames: 36, timelines: 4.5, videoDecode: 9, audioDecode: 1 },
-  hybrid: { sourceScan: 26, audioPrecheck: 1.5, encode: 28, remux: 2, candidateFrames: 30, timelines: 4, videoDecode: 7.5, audioDecode: 1 },
-  sw_hdr: { sourceScan: 26, audioPrecheck: 1.5, encode: 34, remux: 2, candidateFrames: 26, timelines: 3.5, videoDecode: 6, audioDecode: 1 }
+  qsv: { sourceScan: 26, audioPrecheck: 4, encode: 17, remux: 2, candidateFrames: 34, timelines: 6, videoDecode: 9, audioDecode: 2 },
+  hybrid: { sourceScan: 24, audioPrecheck: 4, encode: 27, remux: 2, candidateFrames: 28, timelines: 5.5, videoDecode: 7.5, audioDecode: 2 },
+  sw_hdr: { sourceScan: 24, audioPrecheck: 4, encode: 33, remux: 2, candidateFrames: 24, timelines: 5, videoDecode: 6, audioDecode: 2 }
 };
 const STAGE_PROGRESS_ORDER = ['sourceScan', 'audioPrecheck', 'encode', 'remux', 'candidateFrames', 'timelines', 'videoDecode', 'audioDecode'];
 const createStageProgressPlan = (options = {}) => {
@@ -225,19 +225,21 @@ const createStallSafeProgressEmitter = ({
   range,
   status,
   workerDetails,
-  minStep = 0.02,
-  heartbeatIntervalMs = 60000,
+  minStep = 0.01,
+  heartbeatIntervalMs = 120000,
   defaultFps = 0
 } = {}) => {
   const start = Number.isFinite(range?.start) ? Number(range.start) : 0;
   const end = Number.isFinite(range?.end) ? Math.max(start, Number(range.end)) : start;
-  const step = Number.isFinite(minStep) && minStep > 0 ? Number(minStep) : 0.02;
-  const intervalMs = Number.isFinite(heartbeatIntervalMs) && heartbeatIntervalMs > 0 ? Number(heartbeatIntervalMs) : 60000;
+  const step = Number.isFinite(minStep) && minStep > 0 ? Number(minStep) : 0.01;
+  const intervalMs = Number.isFinite(heartbeatIntervalMs) && heartbeatIntervalMs > 0 ? Number(heartbeatIntervalMs) : 120000;
   const round2 = value => Math.round(value * 100) / 100;
+  const round4 = value => Math.round(value * 10000) / 10000;
   const ceilingBeforeEnd = end > start ? Math.max(start, round2(end - 0.01)) : end;
+  const microCeiling = end > start ? Math.max(start, round4(end - 0.0001)) : end;
   let lastEmitted = start, lastEmitAt = Date.now(), hasEmitted = false;
   const emitPercent = (percentage, fps) => {
-    const bounded = Math.min(99.9, end, Math.max(start, lastEmitted, round2(percentage)));
+    const bounded = Math.min(99.9, end, Math.max(start, lastEmitted, round4(percentage)));
     lastEmitted = bounded;
     lastEmitAt = Date.now();
     hasEmitted = true;
@@ -256,9 +258,13 @@ const createStallSafeProgressEmitter = ({
       if (!hasEmitted) emitPercent(start, 0);
       const timer = typeof updateWorker === 'function' ? setInterval(() => {
         if (Date.now() - lastEmitAt < intervalMs) return;
-        const nudged = Math.min(ceilingBeforeEnd, round2(lastEmitted + 0.01));
-        if (nudged > lastEmitted) emitPercent(nudged, 0);
-        else emitPercent(lastEmitted, 0);
+        const nudged2 = Math.min(ceilingBeforeEnd, round2(lastEmitted + 0.01));
+        if (nudged2 > lastEmitted) {
+          emitPercent(nudged2, 0);
+        } else {
+          const nudged4 = Math.min(microCeiling, round4(lastEmitted + 0.0001));
+          emitPercent(nudged4 > lastEmitted ? nudged4 : lastEmitted, 0);
+        }
       }, intervalMs) : null;
       if (timer?.unref) timer.unref();
       try { return await operation(); }

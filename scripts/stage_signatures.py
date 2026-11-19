@@ -120,6 +120,7 @@ SYMBOL_STAGE_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         "parseAudioDtsLine": ("precheck_audio",),
         "audioTimestampRepairBsf": ("encode",),
         "scanAudioDtsPackets": ("precheck_audio",),
+        "scanAudioDtsPacketsBatch": ("precheck_audio",),
     },
     "progress.js": {
         "progressFs": ("ui_only",),

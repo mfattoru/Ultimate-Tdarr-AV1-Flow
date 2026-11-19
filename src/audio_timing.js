@@ -79,7 +79,7 @@ const scanAudioDtsPackets = async (ffprobe, file, streamIndex, timeBase, runProc
   // A coarse fallback can still identify an order regression. It must never
   // authorize a repair because the packet's exact mux tick is unknown.
   const analyzer = createAudioDtsAnalyzer(tickSeconds || 0.000001);
-  let lastRatio=0;
+  let lastRatio=0, lastReportedRatio=-1, lastReportAt=0;
   await runProcess(ffprobe, ['-v','error','-select_streams',String(streamIndex),'-show_packets','-show_entries','packet=pts_time,dts_time,pos','-of','compact=p=0:nk=0',file], line => {
     const dts = parseAudioDtsLine(line);
     if (dts !== null || /(?:^|\|)dts_time=/.test(String(line || ''))) analyzer.push(dts);
@@ -88,13 +88,94 @@ const scanAudioDtsPackets = async (ffprobe, file, streamIndex, timeBase, runProc
       const position=match && match[1]!=='N/A'?Number(match[1]):NaN;
       if (Number.isFinite(position) && position>=0) {
         lastRatio=Math.max(lastRatio,Math.max(0,Math.min(1,position/Number(fileSizeHint))));
-        try { onProgress(lastRatio); } catch (_) {}
+        const now=Date.now();
+        if (lastRatio-lastReportedRatio>=0.0005 || now-lastReportAt>=500) {
+          lastReportedRatio=lastRatio;
+          lastReportAt=now;
+          try { onProgress(lastRatio); } catch (_) {}
+        }
       }
     }
   });
   if (typeof onProgress==='function' && lastRatio<1) try { onProgress(1); } catch (_) {}
   const result=analyzer.finish();
   return tickSeconds ? {...result,timeBaseKnown:true} : {...result,timeBaseKnown:false,withinLimit:false,repairable:false};
+};
+
+/** Scan DTS order across one or more retained audio streams in a single container pass. */
+const scanAudioDtsPacketsBatch = async (ffprobe, file, streams, runProcess, onProgress, fileSizeHint=0) => {
+  if (!Array.isArray(streams) || streams.length === 0) return new Map();
+  const entries = new Map();
+  for (const stream of streams) {
+    const idx = Number(stream?.index);
+    if (!Number.isSafeInteger(idx) || idx < 0) throw new Error('Audio DTS stream index is invalid');
+    const tickSeconds = timeBaseToSeconds(stream?.timeBase);
+    entries.set(idx, {
+      index: idx,
+      tickSeconds,
+      analyzer: createAudioDtsAnalyzer(tickSeconds || 0.000001)
+    });
+  }
+  const readCompactField = (text, key) => {
+    const token = `${key}=`;
+    let pos = 0;
+    while (true) {
+      const found = text.indexOf(token, pos);
+      if (found < 0) return undefined;
+      if (found === 0 || text.charCodeAt(found - 1) === 124) {
+        const valStart = found + token.length;
+        const bar = text.indexOf('|', valStart);
+        return bar < 0 ? text.slice(valStart) : text.slice(valStart, bar);
+      }
+      pos = found + 1;
+    }
+  };
+  const singleStream = streams.length === 1 ? entries.values().next().value : null;
+  const argv = singleStream
+    ? ['-v','error','-select_streams',String(singleStream.index),'-show_packets','-show_entries','packet=pts_time,dts_time,pos','-of','compact=p=0:nk=0',file]
+    : ['-v','error','-select_streams','a','-show_packets','-show_entries','packet=stream_index,dts_time,pos','-of','compact=p=0:nk=0',file];
+  let lastRatio=0, lastReportedRatio=-1, lastReportAt=0;
+  const fileSize = Number(fileSizeHint) > 0 ? Number(fileSizeHint) : 0;
+  await runProcess(ffprobe, argv, line => {
+    const text = String(line || '');
+    let targetEntry = singleStream;
+    if (!targetEntry) {
+      const rawIdx = readCompactField(text, 'stream_index');
+      if (rawIdx !== undefined && rawIdx.trim() !== '') {
+        const idx = Number(rawIdx);
+        if (Number.isSafeInteger(idx)) targetEntry = entries.get(idx);
+      }
+    }
+    if (targetEntry) {
+      const dtsRaw = readCompactField(text, 'dts_time');
+      if (dtsRaw !== undefined) {
+        const trimmed = dtsRaw.trim();
+        targetEntry.analyzer.push(trimmed === '' || trimmed === 'N/A' ? null : trimmed);
+      }
+    }
+    if (typeof onProgress === 'function' && fileSize > 0) {
+      const posRaw = readCompactField(text, 'pos');
+      if (posRaw !== undefined && posRaw !== 'N/A') {
+        const position = Number(posRaw);
+        if (Number.isFinite(position) && position >= 0) {
+          lastRatio = Math.max(lastRatio, Math.min(1, position / fileSize));
+          const now = Date.now();
+          if (lastRatio - lastReportedRatio >= 0.0005 || now - lastReportAt >= 500) {
+            lastReportedRatio = lastRatio;
+            lastReportAt = now;
+            try { onProgress(lastRatio); } catch (_) {}
+          }
+        }
+      }
+    }
+  });
+  if (typeof onProgress === 'function' && lastRatio < 1) try { onProgress(1); } catch (_) {}
+  const results = new Map();
+  for (const [idx, entry] of entries) {
+    const result = entry.analyzer.finish();
+    results.set(idx, entry.tickSeconds ? {...result, timeBaseKnown:true} : {...result, timeBaseKnown:false, withinLimit:false, repairable:false});
+  }
+  return results;
 };
 
 if (typeof module !== 'undefined') Object.assign(module.exports, {
@@ -104,5 +185,6 @@ if (typeof module !== 'undefined') Object.assign(module.exports, {
   analyzeAudioDtsTimeline,
   parseAudioDtsLine,
   audioTimestampRepairBsf,
-  scanAudioDtsPackets
+  scanAudioDtsPackets,
+  scanAudioDtsPacketsBatch
 });

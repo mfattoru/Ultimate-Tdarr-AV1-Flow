@@ -110,3 +110,80 @@ test('a non-increasing source without a known stream time base cannot be repaire
   assert.equal(result.timeBaseKnown,false);
   assert.equal(result.repairable,false);
 });
+
+
+test('batched audio DTS packet scanner checks multiple retained streams in one pass and skips unretained streams',async()=>{
+  const {scanAudioDtsPacketsBatch}=require('../src/audio_timing');
+  const calls=[];const progress=[];
+  const result=await scanAudioDtsPacketsBatch(
+    'ffprobe',
+    'source.mkv',
+    [
+      {index:1,timeBase:'1/1000'},
+      {index:2,timeBase:'1/1000'},
+      {index:7,timeBase:'0/0'}
+    ],
+    async(bin,argv,onLine)=>{
+      calls.push({bin,argv});
+      const lines=[
+        'stream_index=1|dts_time=0.000|pos=100',
+        'stream_index=1|dts_time=0.000|pos=200',
+        'stream_index=2|dts_time=2.058|pos=300',
+        'stream_index=5|dts_time=99.000|pos=400',
+        'stream_index=2|dts_time=2.026|pos=500',
+        'stream_index=7|dts_time=2.000|pos=700',
+        'stream_index=7|dts_time=1.900|pos=800',
+        'stream_index=2|dts_time=N/A|pos=900'
+      ];
+      for(const line of lines) onLine(line);
+    },
+    ratio=>progress.push(ratio),
+    1000
+  );
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].bin,'ffprobe');
+  assert.equal(calls[0].argv[calls[0].argv.indexOf('-select_streams')+1],'a');
+  assert.ok(calls[0].argv.includes('packet=stream_index,dts_time,pos'));
+  assert.equal(result.size,3);
+
+  const s1=result.get(1);
+  assert.equal(s1.packetCount,2);
+  assert.equal(s1.backwardSteps,0);
+  assert.equal(s1.nonIncreasingSteps,1);
+  assert.equal(s1.timeBaseKnown,true);
+
+  const s2=result.get(2);
+  assert.equal(s2.packetCount,3);
+  assert.equal(s2.backwardSteps,1);
+  assert.equal(s2.missingDts,1);
+  assert.equal(s2.repairable,false);
+
+  const s7=result.get(7);
+  assert.equal(s7.nonIncreasingSteps,1);
+  assert.equal(s7.timeBaseKnown,false);
+  assert.equal(s7.repairable,false);
+  assert.equal(result.has(5),false);
+
+  assert.equal(progress.at(-1),1);
+  for(let i=1;i<progress.length;i++) assert.ok(progress[i]>=progress[i-1]);
+});
+
+test('batched audio DTS packet scanner preserves single-stream args and handles empty streams',async()=>{
+  const {scanAudioDtsPacketsBatch}=require('../src/audio_timing');
+  let singleCalls=0;let emptyCalls=0;
+  const emptyResult=await scanAudioDtsPacketsBatch('ffprobe','source.mkv',[],async()=>{emptyCalls++;});
+  assert.equal(emptyCalls,0);
+  assert.equal(emptyResult.size,0);
+
+  let seenArgv;
+  const singleResult=await scanAudioDtsPacketsBatch('ffprobe','source.mkv',[{index:3,timeBase:'1/1000'}],async(bin,argv,onLine)=>{
+    singleCalls++;seenArgv=argv;
+    onLine('pts_time=0.000|dts_time=0.000|pos=50');
+    onLine('pts_time=0.010|dts_time=0.010|pos=100');
+  },undefined,100);
+  assert.equal(singleCalls,1);
+  assert.equal(seenArgv[seenArgv.indexOf('-select_streams')+1],'3');
+  assert.ok(seenArgv.includes('packet=pts_time,dts_time,pos'));
+  assert.equal(singleResult.get(3).packetCount,2);
+  assert.equal(singleResult.get(3).timeBaseKnown,true);
+});
