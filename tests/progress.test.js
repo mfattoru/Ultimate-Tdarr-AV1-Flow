@@ -253,3 +253,40 @@ test('createStallSafeProgressEmitter defaults to 120s/0.01% and continues micro-
   globalThis.clearInterval=origClearInterval;
  }
 });
+
+test('createStallSafeProgressEmitter resetOnStart re-anchors saturated stage range on fallback retries',async()=>{
+ const {createStallSafeProgressEmitter}=require('../src/progress');
+ const updates=[];
+ const cb=payload=>updates.push(payload);
+ const range={start:89.01,end:97.92};
+
+ const qsv=createStallSafeProgressEmitter({updateWorker:cb,range,status:'Validation: strict output video decode',minStep:0.01});
+ await qsv.run(async()=>{
+  qsv.update(0.5);
+  qsv.update(1);
+ });
+ assert.equal(updates.at(-1).percentage,97.92);
+
+ // Default emitter without resetOnStart stays clamped at 97.92
+ const clampedStart=updates.length;
+ const clamped=createStallSafeProgressEmitter({updateWorker:cb,range,status:'No-reset emitter',minStep:0.01});
+ await clamped.run(async()=>{
+  clamped.update(0.25);
+ });
+ assert.ok(updates.slice(clampedStart).every(u=>u.percentage===97.92));
+
+ // Fallback emitter with resetOnStart=true resets cleanly to 89.01 and progresses monotonically within retry
+ const resetStart=updates.length;
+ const isolated=createStallSafeProgressEmitter({updateWorker:cb,range,status:'Validation: timestamp-isolated software decode',minStep:0.01,resetOnStart:true});
+ await isolated.run(async()=>{
+  isolated.update(0.5,140);
+  isolated.update(0.2,120); // must remain monotonic within retry itself
+  isolated.update(1,145);
+ });
+ const retryUpdates=updates.slice(resetStart);
+ assert.equal(retryUpdates[0].percentage,89.01);
+ assert.equal('resetProgress' in retryUpdates[0],false);
+ assert.ok(retryUpdates[1].percentage>89.01 && retryUpdates[1].percentage<97.92);
+ assert.equal(retryUpdates.at(-1).percentage,97.92);
+ for(let i=1;i<retryUpdates.length;i++) assert.ok(retryUpdates[i].percentage>=retryUpdates[i-1].percentage);
+});

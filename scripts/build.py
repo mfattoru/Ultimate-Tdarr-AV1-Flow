@@ -174,14 +174,18 @@ one("  const a=await measureStreamTimeline(ffprobe,source,sourceIndex,'video');\
   });
   const scanTimelinePair=async operation=>await timelineEmitter.run(async()=>{
     const pairIndex=completedTimelinePairs++;
+    let p0=0,p1=0;
     const reportPart=(part,ratio)=>{
       const progress=Math.max(0,Math.min(1,Number(ratio)||0));
-      const fraction=(pairIndex+(part+progress)/2)/timelinePairCount;
+      if(part===0)p0=Math.max(p0,progress);
+      else p1=Math.max(p1,progress);
+      const fraction=(pairIndex+(p0+p1)/2)/timelinePairCount;
       timelineEmitter.update(fraction);
     };
     if(typeof assertSourceStable==='function')assertSourceStable();
     await operation(ratio=>reportPart(0,ratio),ratio=>reportPart(1,ratio));
     if(typeof assertSourceStable==='function')assertSourceStable();
+    reportPart(0,1);
     reportPart(1,1);
   });
   let a,b;
@@ -210,90 +214,42 @@ one('''async function measureStreamTimeline(ffprobe, file, streamIndex, type) {
   return {first,last,duration:last-first,packets:count,empty:false};
 }''', '''// [STAGE:decode:start]
 async function measureStreamTimeline(ffprobe, file, streamIndex, type, onProgress, durationHint, role='file', options={}) {
-  let first=Infinity, last=-Infinity, count=0, packetCount=0, invalid=0, missingPtsCount=0, missingTimestampCount=0;
-  let previousDts=null,outputDtsNonIncreasingCount=0,missingDtsCount=0;
-  const ignoreEmptySubtitleMaxBytes=type==='subtitle'&&Number.isSafeInteger(options?.ignoreEmptySubtitleMaxBytes)&&options.ignoreEmptySubtitleMaxBytes>0?options.ignoreEmptySubtitleMaxBytes:0;
-  const packetEntries=ignoreEmptySubtitleMaxBytes>0?'packet=pts_time,dts_time,duration_time,pos,size':'packet=pts_time,dts_time,duration_time,pos';
-  const missingPtsPackets=[],missingTimestampPackets=[];
-  let missingPtsBitmap=Buffer.alloc(0),missingTimestampBitmap=Buffer.alloc(0);
-  const markMissingPacket=(bitmap,ordinal)=>{
-    const byteIndex=Math.floor(ordinal/8);
-    if(byteIndex>=bitmap.length){
-      const grown=Buffer.alloc(Math.max(byteIndex+1,bitmap.length?bitmap.length*2:1024));
-      bitmap.copy(grown);
-      bitmap=grown;
-    }
-    bitmap[byteIndex]|=1<<(ordinal%8);
-    return bitmap;
-  };
-  let fileBytes=0,lastPosition=0,lastRatio=0,lastReported=-1,lastReportAt=0,hasPacketPosition=false;
-  try { fileBytes=fs.statSync(file).size; } catch (_) {}
-  const emitProgress=(packet)=>{
-    if(typeof onProgress!=='function')return;
-    const position=Number(packet.position),pts=Number(packet.pts);
-    if(Number.isFinite(position)&&position>=0){lastPosition=Math.max(lastPosition,position);hasPacketPosition=true;}
-    let ratio=fileBytes>0&&hasPacketPosition?lastPosition/fileBytes:(Number.isFinite(pts)&&durationHint>0?pts/durationHint:0);
-    ratio=Math.max(lastRatio,Math.max(0,Math.min(1,Number.isFinite(ratio)?ratio:0)));
-    lastRatio=ratio;
-    const now=Date.now();
-    if(ratio-lastReported>=0.002||now-lastReportAt>=1000||ratio>=1){lastReported=ratio;lastReportAt=now;try{onProgress(ratio);}catch(_){}}
-  };
-  await runTimelineProcess(ffprobe, ['-v','error','-select_streams',String(streamIndex),'-show_packets','-show_entries',packetEntries,'-of','compact=p=0:nk=0',file], line => {
-    const ptsMatch=line.match(/(?:^|\\|)pts_time=([^|]+)/), dtsMatch=line.match(/(?:^|\\|)dts_time=([^|]+)/), durMatch=line.match(/(?:^|\\|)duration_time=([^|]+)/), posMatch=line.match(/(?:^|\\|)pos=([^|]+)/), sizeMatch=ignoreEmptySubtitleMaxBytes>0?line.match(/(?:^|\\|)size=([^|]+)/):null;
-    if (!ptsMatch && !dtsMatch) return;
-    const packetOrdinal=packetCount++;
-    const pts=ptsMatch && ptsMatch[1] !== 'N/A' ? Number(ptsMatch[1]) : NaN;
-    const dts=dtsMatch && dtsMatch[1] !== 'N/A' ? Number(dtsMatch[1]) : NaN;
-    const packetSize=sizeMatch && sizeMatch[1] !== 'N/A' ? Number(sizeMatch[1]) : NaN;
-    if (Number.isFinite(dts)) {
-      if (previousDts!==null && dts<=previousDts) outputDtsNonIncreasingCount++;
-      previousDts=dts;
-    } else missingDtsCount++;
-    if(!Number.isFinite(pts)){
-      missingPtsCount++;
-      if(missingPtsPackets.length<1024)missingPtsPackets.push(packetOrdinal);
-      if(type==='audio')missingPtsBitmap=markMissingPacket(missingPtsBitmap,packetOrdinal);
-    }
-    if(!Number.isFinite(pts)&&!Number.isFinite(dts)){
-      missingTimestampCount++;
-      if(missingTimestampPackets.length<1024)missingTimestampPackets.push(packetOrdinal);
-      if(type==='audio')missingTimestampBitmap=markMissingPacket(missingTimestampBitmap,packetOrdinal);
-    }
-    const duration=durMatch && durMatch[1] !== 'N/A' ? Number(durMatch[1]) : 0;
-    emitProgress({pts:Number.isFinite(pts)?pts:dts,position:posMatch&&posMatch[1]!=='N/A'?Number(posMatch[1]):NaN});
-    if (ignoreEmptySubtitleMaxBytes>0 && Number.isFinite(packetSize) && packetSize<=ignoreEmptySubtitleMaxBytes) return;
-    const timelineTime=type==='audio'&&!Number.isFinite(pts)?dts:pts;
-    if (!Number.isFinite(timelineTime)) { invalid++; return; }
-    first=Math.min(first,timelineTime);
-    last=Math.max(last,timelineTime+(Number.isFinite(duration)&&duration>0?duration:0));
-    count++;
-  });
-  if(typeof onProgress==='function')try{onProgress(1);}catch(_){}
-  if (invalid && type!=='audio') {
-    const firstMissing=(missingTimestampPackets[0] ?? missingPtsPackets[0]);
-    const packetText=firstMissing===undefined?'':' (first at packet '+(firstMissing+1)+')';
-    throw validationUnavailable(`${type} ${role} stream ${streamIndex} has ${invalid} packets without a usable ${type==='audio'?'PTS or DTS':'PTS'}${packetText}`);
-  }
-  if (count===0 && type==='subtitle') return {empty:true};
-  if (count===0 && type==='audio' && packetCount>0) throw validationUnavailable(`audio ${role} stream ${streamIndex} has no packets with usable PTS or DTS`);
-  if (count===0 || !Number.isFinite(first) || !Number.isFinite(last) || (type==='video' && (count<2 || !(last>first)))) throw validationUnavailable(`${type} ${role} stream ${streamIndex} timeline is unavailable or too short to verify`);
-  const bitmapBytes=Math.ceil(packetCount/8);
-  return {first,last,duration:last-first,packets:count,totalPackets:packetCount,outputDtsNonIncreasingCount,missingDtsCount,missingPtsCount,missingPtsPackets,missingPtsTruncated:missingPtsCount>missingPtsPackets.length,missingPtsBitmap:missingPtsBitmap.subarray(0,bitmapBytes),missingTimestampCount,missingTimestampPackets,missingTimestampsTruncated:missingTimestampCount>missingTimestampPackets.length,missingTimestampBitmap:missingTimestampBitmap.subarray(0,bitmapBytes),empty:false};
+  const results=await measureStreamTimelinesBatch(
+    ffprobe,
+    file,
+    [{index:streamIndex,type,ignoreEmptySubtitleMaxBytes:options?.ignoreEmptySubtitleMaxBytes}],
+    runTimelineProcess,
+    onProgress,
+    durationHint,
+    role
+  );
+  return results.get(streamIndex);
 }''')
 one("  const decode=['-v','error','-xerror','-i',output,'-map',`0:${outputIndex}`];", "  const arcDevice=process.env.TDARR_ARC_DEVICE || '/dev/dri/renderD129';\n  const decode=['-v','error','-xerror','-progress','pipe:1','-nostats','-init_hw_device',`vaapi=va:${arcDevice}`,'-init_hw_device','qsv=hw@va','-hwaccel','qsv','-hwaccel_device','hw','-hwaccel_output_format','qsv','-i',output,'-map',`0:${outputIndex}`];")
 one("  for (const [,dstIndex] of tracks.audio) decode.push('-map',`0:${dstIndex}`);", '')
-one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(updateWorker,{percentage:videoDecodeRange.start,fps:0,status:"Validation: strict output video decode"});
+one('  await runTimelineProcess(ffmpeg,decode);', '''  const candidatePacketTimestampsVerified=durationHints?.strictCandidateFrames===true && a.totalPackets>0 && b.totalPackets>0 && b.missingDtsCount===0 && b.outputDtsNonIncreasingCount<=a.outputDtsNonIncreasingCount;
+  const proactiveTimestampIsolated=candidatePacketTimestampsVerified && b.outputDtsNonIncreasingCount>0;
+  let videoAttemptCount=0,audioAttemptCount=0;
+  if(proactiveTimestampIsolated && typeof durationHints?.log==='function'){
+    durationHints.log(`[Validation decode] Candidate has ${b.outputDtsNonIncreasingCount} verified matched DTS tie(s) (source ${a.outputDtsNonIncreasingCount}); bypassing null-mux decode for direct timestamp-isolated software decode.`);
+  }
+  const initialVideoDecodeStatus=proactiveTimestampIsolated
+    ?"Validation: timestamp-isolated software decode"
+    :canUseQsv?"Validation: strict output video decode":"Validation: strict software video decode";
+  reportWorkerProgress(updateWorker,{percentage:videoDecodeRange.start,fps:0,status:initialVideoDecodeStatus});
   await verifyCandidateDecodes({
     report:validationReport,canUseQsv,audioTracks:tracks.audio,sourceVideoIndex:sourceIndex,
-    candidatePacketTimestampsVerified:durationHints?.strictCandidateFrames===true && a.totalPackets>0 && b.totalPackets>0 && b.missingDtsCount===0 && b.outputDtsNonIncreasingCount<=a.outputDtsNonIncreasingCount,
+    candidatePacketTimestampsVerified,
+    proactiveTimestampIsolated,
     isCorruption:type=>type==='video'?isKnownVideoCorruptionDiagnostic:isKnownAudioCorruptionDiagnostic,
     runVideo:async mode=>{
       const decodeStartedAt=Date.now();
       let decodeStatus='completed (exit 0)';
+      const isRetry=videoAttemptCount++>0;
       try {
       if(mode==='timestamp-isolated'){
         const status="Validation: timestamp-isolated software decode";
-        const isolatedEmitter=createStallSafeProgressEmitter({updateWorker,range:videoDecodeRange,status,minStep:0.01,defaultFps:undefined});
+        const isolatedEmitter=createStallSafeProgressEmitter({updateWorker,range:videoDecodeRange,status,minStep:0.01,defaultFps:undefined,resetOnStart:isRetry});
         return await isolatedEmitter.run(()=>verifyTimestampIsolatedVideo({
           ffmpeg,input:output,index:outputIndex,threads:getDecodeThreadCount(),expectedFrames:durationHints?.verifiedFrames,runProcess:runTimelineProcess,
           onProgress:(frames,total,complete,fps)=>{
@@ -304,7 +260,7 @@ one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(upda
       }
       const argv=mode==='qsv'?decode:withDecoderThreads(['-v','error','-xerror','-progress','pipe:1','-nostats','-i',output,'-map',`0:${outputIndex}`,'-f','null','-'],getDecodeThreadCount());
       const status=mode==='qsv'?"Validation: strict output video decode":"Validation: strict software video decode";
-      const videoEmitter=createStallSafeProgressEmitter({updateWorker,range:videoDecodeRange,status,minStep:0.01,defaultFps:undefined});
+      const videoEmitter=createStallSafeProgressEmitter({updateWorker,range:videoDecodeRange,status,minStep:0.01,defaultFps:undefined,resetOnStart:isRetry});
       return await videoEmitter.run(()=>runTimelineProcess(ffmpeg,argv,null,(timeUs,fps)=>{
         const ratio=a.duration>0?Math.min(1,Math.max(0,timeUs/1000000/a.duration)):0;
         videoEmitter.update(ratio,fps);
@@ -320,7 +276,14 @@ one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(upda
       const audioDecode=withDecoderThreads(['-v','error','-xerror','-progress','pipe:1','-nostats','-i',output],getDecodeThreadCount());
       for (const dstIndex of indices) audioDecode.push('-map',`0:${dstIndex}`);
       audioDecode.push('-f','null','-');
-      const audioEmitter=createStallSafeProgressEmitter({updateWorker,range:audioDecodeRange,status:"Validation: retained audio decode",minStep:0.01,defaultFps:undefined});
+      const isRetry=audioAttemptCount++>0;
+      const retryTrackCount=tracks.audio.length;
+      const retryPos=isRetry && retryTrackCount>0 ? Math.min(retryTrackCount-1,audioAttemptCount-2) : 0;
+      const audioSpan=audioDecodeRange.end-audioDecodeRange.start;
+      const trackRange=isRetry && retryTrackCount>1
+        ? {start:audioDecodeRange.start+(audioSpan*retryPos)/retryTrackCount,end:audioDecodeRange.start+(audioSpan*(retryPos+1))/retryTrackCount}
+        : audioDecodeRange;
+      const audioEmitter=createStallSafeProgressEmitter({updateWorker,range:trackRange,status:"Validation: retained audio decode",minStep:0.01,defaultFps:undefined,resetOnStart:audioAttemptCount===2});
       return await audioEmitter.run(()=>runTimelineProcess(ffmpeg,audioDecode,null,(timeUs,fps)=>{
         const duration=Number(durationHints?.output)||a.duration;
         const ratio=duration>0?Math.min(1,Math.max(0,timeUs/1000000/duration)):0;
@@ -328,10 +291,18 @@ one('  await runTimelineProcess(ffmpeg,decode);', '''  reportWorkerProgress(upda
       }));
     },
     checkSource:async(type,index)=>{
-      const args=withDecoderThreads(['-v','error','-xerror','-i',source,'-map',`0:${index}`,'-f','null','-'],getDecodeThreadCount());
+      const args=withDecoderThreads(['-v','error','-xerror','-i',source,'-map',`0:${index}`,'-progress','pipe:1','-nostats','-f','null','-'],getDecodeThreadCount());
+      const sourceRange=type==='video'?videoDecodeRange:audioDecodeRange;
+      const sourceStatus=type==='video'?"Validation: verifying source video stream":"Validation: verifying source audio stream";
+      const sourceEmitter=createStallSafeProgressEmitter({updateWorker,range:sourceRange,status:sourceStatus,minStep:0.01,defaultFps:undefined,resetOnStart:true});
+      const sourceDuration=Number(durationHints?.source)||a.duration;
       if(typeof assertSourceStable==='function')assertSourceStable();
-      try {return await runTimelineProcess(ffmpeg,args);}
-      finally {if(typeof assertSourceStable==='function')assertSourceStable();}
+      try {
+        return await sourceEmitter.run(()=>runTimelineProcess(ffmpeg,args,null,(timeUs,fps)=>{
+          const ratio=sourceDuration>0?Math.min(1,Math.max(0,timeUs/1000000/sourceDuration)):0;
+          sourceEmitter.update(ratio,fps);
+        }));
+      } finally {if(typeof assertSourceStable==='function')assertSourceStable();}
     }
   });''')
 one('  return await verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks);', '  return await validationStage(validationReport,"timelines",()=>verifyVideoTimeline(ffprobeBin, expected.ffmpegBin || "ffmpeg", sourcePath, outputPath, sourceVideo.index, video[0].index, tracks, expected.updateWorker, {source:resolveProbeDuration(src),output:resolveProbeDuration(dst),log:expected.log,verifiedFrames:outputFrameScan?.frames,strictCandidateFrames:hasVerifiedCandidateFrameTimestamps(expected.sourceFrameScan, outputFrameScan),progressPlan:expected.progressPlan || createStageProgressPlan({})}, expected.assertOriginalUnchanged, expected.audioTimestampRepairIndices || [],validationReport,useQsvDecode(video[0])),"rejected");')
@@ -790,7 +761,7 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
     log(args.variables.user.failure_reason);
     return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
   }
-  const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scanRole:"source",sourceBasic:preflightBasic,threads:getDecodeThreadCount(),expectedColor:mainVideo,expectedFrames:frameEstimate,expectedDuration:Number(mainVideo.duration || args.inputFileObj?.ffProbeData?.format?.duration || 0),assertUnchanged:assertOriginalUnchanged,onProgress:(frames,total,complete,fps,ratio)=>{const r=complete?1:Number.isFinite(ratio)?Math.min(0.99,Math.max(0,ratio)):total>0?Math.min(0.99,frames/total):0;reportWorkerProgress(args.updateWorker,{percentage:stageProgressValue(progressPlan.sourceScan,r),fps,status:"Precheck: full source video scan"},initialWorkerProgressDetails);}};
+  const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scanRole:"source",allowIntroMasteringSplice:true,sourceBasic:preflightBasic,threads:getDecodeThreadCount(),expectedColor:mainVideo,expectedFrames:frameEstimate,expectedDuration:Number(mainVideo.duration || args.inputFileObj?.ffProbeData?.format?.duration || 0),assertUnchanged:assertOriginalUnchanged,onProgress:(frames,total,complete,fps,ratio)=>{const r=complete?1:Number.isFinite(ratio)?Math.min(0.99,Math.max(0,ratio)):total>0?Math.min(0.99,frames/total):0;reportWorkerProgress(args.updateWorker,{percentage:stageProgressValue(progressPlan.sourceScan,r),fps,status:"Precheck: full source video scan"},initialWorkerProgressDetails);}};
   let frameScan;
   const sourceScanStartedAt=Date.now();
   try {
@@ -912,7 +883,7 @@ one('  // 2. Audio & Subtitle stream count & codec checks', '''  // [STAGE:decod
 
   // 2. Audio & Subtitle stream count & codec checks''')
 one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedByKey]).includes("ArcAV1_QSV"));','''  const isEncodedByUs = false;
-  let hdrClass, hdrSource, sdrSource, hdrLightOverride = null, hdrMasterOverride = null;
+  let hdrClass, hdrSource, sdrSource, hdrLightOverride = null, hdrMasterOverride = null, introMasteringNormalized = null;
   let stripOrphanDovi = false, stripOrphanStaticHdr = false;
   delete args.variables.user.hdr_conversion;
   try {
@@ -931,7 +902,7 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
       if (!effectiveRange) throw new Error("Untagged SDR YUV range could not be inferred safely");
       sdrSource.color_range=effectiveRange;
       log(`[Color] Input transfer, primaries, and matrix are unspecified; using ${effectiveRange==='tv'?'TV limited':'PC full'} range for the untagged SDR YUV encode.`);
-    } else if (preflightDoviRoute === "orphan_dovi_sdr" && isExplicitSdrColorTriplet(mainVideo, infoVideos[0]) && !frameScan.dovi && !frameScan.hdr10plus && !frameScan.otherDynamic && !frameScan.staticInfo?.conflict) {
+    } else if (preflightDoviRoute === "orphan_dovi_sdr" && isExplicitSdrColorTriplet(mainVideo, infoVideos[0]) && !frameScan.dovi && !frameScan.hdr10plus && !frameScan.otherDynamic && !frameScan.staticInfo?.conflict && !frameScan.staticInfo?.introSplice) {
       validateEffectiveSdrTransfer(mainVideo, infoVideos[0], frameScan);
       validateSdrFrameSignaling("sdr", frameScan, mainVideo);
       sdrSource = effectiveSdrSource(mainVideo, infoVideos[0], frameScan);
@@ -953,6 +924,7 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
         hdrSource = mainVideo;
         validateHlg(hdrSource,hdrSource);
       } else if (hdrClass === "dovi5_hdr10") {
+        if (frameScan.staticInfo?.introSplice) throw Error("Conflicting or changing static HDR metadata in decoded frames");
         if (preflightDoviRoute==="dovi5_hdr10" && preflightHdrSource) {
           hdrSource=preflightHdrSource;
           hdrMasterOverride=preflightHdrMasterOverride;
@@ -970,19 +942,41 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
       } else {
         const canUseDolbyLevel6 = hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10";
         const doviProfile=route=>/^dovi(7|81)_hdr10(?:plus_hdr10)?$/.exec(String(route || ''))?.[1] || '';
-        if(doviProfile(preflightDoviRoute) && doviProfile(preflightDoviRoute)===doviProfile(hdrClass) && preflightHdrSource) {
+        if(doviProfile(preflightDoviRoute) && doviProfile(preflightDoviRoute)===doviProfile(hdrClass) && preflightHdrSource && !frameScan.staticInfo?.introSplice) {
           hdrSource=preflightHdrSource;
           hdrLightOverride=preflightHdrLightOverride;
         } else {
-          const mediaInfoHdrSeed=hdrClass==="hdr10"?seedHdrMetadataFromMediaInfo(mainVideo,infoVideos[0]):{video:mainVideo,added:[],contentLightOverride:null};
+          const mediaInfoHdrSeed=hdrClass==="hdr10"?seedHdrMetadataFromMediaInfo(mainVideo,infoVideos[0],frameScan.staticInfo):{video:mainVideo,added:[],contentLightOverride:null};
           if(mediaInfoHdrSeed.added.length)log(`[HDR metadata] Filled missing FFprobe side data from stream-sourced MediaInfo fields: ${mediaInfoHdrSeed.added.join(", ")}. Candidate metadata must still match these values.`);
           hdrSource = mergeHdrMetadata(mediaInfoHdrSeed.video,readHdrFrames(ffprobeBin,inputPath,mainVideo.index),{allowMissingLight:canUseDolbyLevel6 || hdrClass==="hdr10plus_hdr10",allowMissingAll:hdrClass==="hdr10"});
+          const introNorm = normalizeIntroMasteringSplice(hdrSource, frameScan);
+          if (introNorm.normalized) {
+            const n = introNorm.normalized;
+            hdrSource = introNorm.metadata;
+            if (introNorm.masteringDisplayArg) hdrMasterOverride = introNorm.masteringDisplayArg;
+            introMasteringNormalized = n;
+            const durPart = n.introDurationSec !== null ? ` / ${n.introDurationSec.toFixed(3)}s` : "";
+            const parts = [];
+            if (n.mainMaxLuminance !== null) {
+              const lumChanged = n.introMinLuminance !== n.mainMinLuminance
+                ? `${n.introMinLuminance}-${n.introMaxLuminance} -> ${n.mainMinLuminance}-${n.mainMaxLuminance} cd/m^2`
+                : `${n.introMaxLuminance} -> ${n.mainMaxLuminance} cd/m^2`;
+              parts.push(`mastering ${lumChanged}`);
+            }
+            if (n.mainLight) {
+              parts.push(`CLL ${n.introLight.max_content}/${n.introLight.max_average} -> ${n.mainLight.max_content}/${n.mainLight.max_average}`);
+            }
+            const label = (n.mainMaxLuminance !== null && n.mainLight)
+              ? "HDR10 static splice"
+              : n.mainLight ? "content-light splice" : "mastering display splice";
+            log(`[HDR metadata] Normalized leading intro ${label} (${n.introFrames} frame(s)${durPart}: ${parts.join(", ")}) across ${n.postSpliceFrames} main frame(s).`);
+          }
           const resolved = await resolveHdrLight(hdrSource,hdrClass,() => extractDolbyLevel6(ffmpegBin,inputPath,mainVideo.index,frameScan.frames,false,false,{
             expectedDuration:Number(mainVideo.duration || args.inputFileObj?.ffProbeData?.format?.duration || 0),
             onProgress:info=>reportWorkerProgress(args.updateWorker,{percentage:progressPlan.sourceScan.end,fps:Number(info?.fps || 0),status:"Precheck: Dolby Vision metadata"},initialWorkerProgressDetails)
           }));
           if (resolved.warning) log(`[HDR warning] ${resolved.warning}`);
-          hdrSource = resolved.metadata; hdrLightOverride = resolved.override || mediaInfoHdrSeed.contentLightOverride;
+          hdrSource = resolved.metadata; hdrLightOverride = resolved.override || introNorm.contentLightArg || mediaInfoHdrSeed.contentLightOverride;
         }
         const sourceStaticReqs = hdrFrameMetadataRequirements(hdrSource, hdrClass === "hdr10");
         checkHdrFrameStatic(hdrSource, frameScan, !canUseDolbyLevel6 && sourceStaticReqs.requireLight, sourceStaticReqs.requireMastering);
@@ -1010,6 +1004,21 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
       if (hdrClass === "dovi5_hdr10") {
         args.variables.user.hdr_conversion = "Dolby Vision Profile 5 to verified HDR10 (libplacebo IPT-PQ->BT.2020 PQ; Dolby Vision dynamic metadata removed)";
         log(`[HDR] ${args.variables.user.hdr_conversion}`);
+      }
+      if (introMasteringNormalized) {
+        const noteParts = [];
+        if (introMasteringNormalized.mainMaxLuminance !== null) {
+          noteParts.push(introMasteringNormalized.introMinLuminance !== introMasteringNormalized.mainMinLuminance
+            ? `${introMasteringNormalized.introMinLuminance}-${introMasteringNormalized.introMaxLuminance} -> ${introMasteringNormalized.mainMinLuminance}-${introMasteringNormalized.mainMaxLuminance} cd/m^2`
+            : `${introMasteringNormalized.introMaxLuminance} -> ${introMasteringNormalized.mainMaxLuminance} cd/m^2`);
+        }
+        if (introMasteringNormalized.mainLight) {
+          noteParts.push(`CLL ${introMasteringNormalized.introLight.max_content}/${introMasteringNormalized.introLight.max_average} -> ${introMasteringNormalized.mainLight.max_content}/${introMasteringNormalized.mainLight.max_average}`);
+        }
+        const spliceNote = `intro ${introMasteringNormalized.mainLight && introMasteringNormalized.mainMaxLuminance === null ? "CLL" : "HDR"} splice normalized (${noteParts.join(", ")})`;
+        args.variables.user.hdr_conversion = args.variables.user.hdr_conversion
+          ? `${args.variables.user.hdr_conversion}; ${spliceNote}`
+          : `HDR10 ${spliceNote}`;
       }
     }
   } catch (err) {
@@ -1157,6 +1166,7 @@ e=e[:a]+'''  log(`[Arc AV1] Processing ${inputPath} using ${qualityLabel} ${qual
     if (result.status !== 0 && !needsProactiveHybrid && !softwareHdrFallback && decodeFailure) {
       log(`[Arc AV1] Full GPU decode failed at ICQ ${q}: ${extractFfmpegError(result.stderr)}. Trying CPU decode with Arc encode.`);
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+      reportWorkerProgress(args.updateWorker,{percentage:progressPlan.encode.start,fps:0,status:`Retrying: Hybrid Arc QSV AV1 at ICQ ${q}`,resetProgress:true});
       result = await runFfmpeg(true, false);
       pipelineMode = `Hybrid (CPU Decode + Arc QSV AV1 Encode)`;
       if (reachedLimit(result)) { log(`[Size guard] ${qualityLabel} ${q} encode hit the source-size cap.`); return {ok:true,size:sourceBytes,ffmpeg:result}; }
@@ -1357,6 +1367,12 @@ one('  if (res.status !== 0 || !fs.existsSync(outputPath)) {', '''  if (res.qual
       log(`[Size guard] No smaller output at ${qualityLabel} ${attempt.quality}; skipping source-video remux because this HDR conversion must remove dynamic metadata. Original retained.`);
       return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
     }
+    if(introMasteringNormalized){
+      try { if(fs.existsSync(outputPath))fs.unlinkSync(outputPath); } catch(_) {}
+      cleanupChapters();
+      log(`[Size guard] No smaller output at ${qualityLabel} ${attempt.quality}; skipping source-video remux because the leading intro mastering-display splice must not be stream-copied. Original retained.`);
+      return {outputFileObj:args.inputFileObj,outputNumber:2,variables:args.variables};
+    }
     log(`[Size guard] No smaller output at ${qualityLabel} ${attempt.quality}; trying a source-video stream-copy remux with seek healing.`);
     try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
     const remuxRes = await runFfmpeg(false, true);
@@ -1402,7 +1418,7 @@ e=(src/'precheck_cache.js').read_text()+'\n'+e
 e='const STAGE_CODE_HASHES=__STAGE_CODE_HASHES_JSON__;\n'+e
 one('  const needsProactiveHybrid = hdrClass === "dovi5_hdr10"', '  // [STAGE:encode:start]\n  const needsProactiveHybrid = hdrClass === "dovi5_hdr10"')
 one('    pipelineMode = "Size Bloat Fallback (Original Video Stream-Copy + Seek Healed)";', '    // [STAGE:encode:end]\n    pipelineMode = "Size Bloat Fallback (Original Video Stream-Copy + Seek Healed)";')
-one('  const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scanRole:"source",', '''  // [STAGE:precheck_video:start]
+one('  const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scanRole:"source",allowIntroMasteringSplice:true,', '''  // [STAGE:precheck_video:start]
   // Stage-scoped signatures isolate source precheck, encode, candidate frame scan, and decode checks.
   let progressPlan=createStageProgressPlan({
     route:(quarantinedCandidate?.kind==="svt_av1_encode"||preflightDoviRoute==="dovi5_hdr10")?"sw_hdr":(!useQsvDecode(mainVideo)||isInterlacedFieldOrderTag(mainVideo))?"hybrid":"qsv",
@@ -1413,7 +1429,7 @@ one('  const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scan
     hasCandidateFrames:true,
     hasAudioDecode:true
   });
-  const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scanRole:"source",''')
+  const scanOptions={staticMetadata:true,timestamps:true,failFast:true,scanRole:"source",allowIntroMasteringSplice:true,''')
 one('    frameScan=await inspectVideoFrames(ffprobeBin,inputPath,mainVideo.index,scanOptions);', '''    if(cachedFrameScan){
       frameScan=cachedFrameScan;
       log(`[Source precheck] Reused ${frameScan.frames} verified source frames from quarantine.`);

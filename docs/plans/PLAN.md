@@ -800,3 +800,127 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
    - Run `python3 scripts/stage_signatures.py --check-isolation` and `make check`.
    - Run an isolated live container smoke test in `tdarr-flow-live-test-20261102` on a 10s multi-audio clip (`elvis-10s.mkv`) verifying single batched DTS scan across `0:1, 0:2, 0:7`, `outputNumber: 1`, `monotonic: true`, and full cleanup of `/test/v169-check`.
    - Append V16.9 to `docs/plans/IMPLEMENTATION_LOG.md` and run final `python3 scripts/stage_signatures.py --check-isolation && make check`.
+
+# V16.10 Execution Plan: Single-Pass Parallel Packet Timeline Validation & Fast Frame-Scan Parsing
+
+## Change Categorization
+- **In-Place Performance Optimization (Non-Breaking):**
+  - Preserves every validation check, tolerance, error message, output format, and cache behavior identically while cutting multi-track `Validation: packet timelines` I/O by 6–8× and eliminating per-frame `RegExp` / array allocations in `recordHdrFrame` / `collectHdrFrameStatic` / `inspectVideoFrames`.
+
+## Architectural Review
+- **1. Single-Pass Batched Parallel Packet Timelines (`src/validation.js`, `scripts/build.py`, `scripts/build_additions.py`):**
+  - Add `measureStreamTimelinesBatch(ffprobe, file, targets, runProcess, onProgress, durationHint, role = 'file')` to `src/validation.js` (`"*" -> ("decode",)`):
+    - Single target preserves `-select_streams <idx>` and `packet=pts_time,dts_time,duration_time,pos[,size]`.
+    - Multi-target runs a single `-show_packets` pass over `packet=stream_index,pts_time,dts_time,duration_time,pos[,size]`, demultiplexing packets in one pass across requested video, audio, and plain subtitle streams, preserving identical missing-PTS/DTS bitsets, error messages, and `pos`-based throttled progress.
+  - In `verifyVideoTimeline` (`scripts/build.py` + `scripts/build_additions.py`), classify retained tracks upfront, run source and candidate `measureStreamTimelinesBatch` concurrently via `Promise.allSettled`, run copied ASS/SSA `readSubtitlePackets` in parallel via `Promise.allSettled`, and keep `scanTimelinePair` reporting smooth combined progress (`let p0 = 0, p1 = 0`). Keep `measureStreamTimeline` as a single-stream delegating wrapper for full API compatibility.
+- **2. Zero-RegExp Single-Pass Frame Parsing (`src/policy.js`):**
+  - Refactor `recordHdrFrame`, `collectHdrFrameStatic`, and `inspectVideoFrames` line scanning to use `indexOf('|')` / nested `readCompactField` scanning without per-frame `new RegExp(...)`, `.matchAll()`, or duplicate `.split('|')` array allocations, with no new top-level symbols in `src/policy.js`.
+- **Files Affected:**
+  - [`src/validation.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/validation.js)
+  - [`src/policy.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/policy.js)
+  - [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py)
+  - [`scripts/build_additions.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build_additions.py)
+  - [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json) & [`docs/plans/IMPLEMENTATION_LOG.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/plans/IMPLEMENTATION_LOG.md)
+  - Tests: [`tests/validation.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/validation.test.js), [`tests/policy.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/policy.test.js), [`tests/integration.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/integration.test.js)
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase:** Add unit/regression tests in `tests/validation.test.js`, `tests/policy.test.js`, and `tests/integration.test.js`; confirm `measureStreamTimelinesBatch` and timeline scan count assertions fail before implementation.
+2. **Green Phase:** Implement `measureStreamTimelinesBatch` (`src/validation.js`), batched parallel `verifyVideoTimeline` (`scripts/build.py`, `scripts/build_additions.py`), and fast `recordHdrFrame` / `collectHdrFrameStatic` / `inspectVideoFrames` (`src/policy.js`); rebuild `flow.json`.
+3. **Verification:** Run `python3 scripts/stage_signatures.py --check-isolation`, `make check`, and an isolated `tdarr-flow-live-test-20261102` smoke test on `elvis-10s.mkv`, then log to `docs/plans/IMPLEMENTATION_LOG.md` and run a final check.
+
+
+---
+
+# V16.11 Execution Plan — Fallback Progress Reset & Proactive Timestamp-Isolated Decode
+
+## Root Cause Analysis (`CysNZar-log.txt`, V16.10)
+- `Elvis (2022) Remux-2160p.mkv` had 9,778 verified matched source/candidate video DTS ties (`Non-increasing DTS transitions: source 9778, candidate 9778; missing DTS: source 0, candidate 0`).
+- During `video_decode`, `runVideo('qsv')` ran `-f null -` for `1484.99s` (`24m 45s`) across `videoDecodeRange` (`~89.01% -> 97.92%`), pushing `reportWorkerProgress`'s per-job `maxPercent` to `97.92%` before emitting non-monotonic DTS diagnostics.
+- `verifyCandidateDecodes` then invoked `runVideo('timestamp-isolated')`, reusing the same `videoDecodeRange` (`89.01% -> 97.92%`). Because `reportWorkerProgress` clamps monotonically unless `resetProgress: true` is passed, every progress update and heartbeat for `56m 26s` was clamped flat to `97.92%`, triggering Tdarr's Worker Stall Detector.
+
+## Architectural Review
+- **Part A — Clean Progress Reset on Explicit Fallbacks & Retries (`src/progress.js`, `scripts/build.py`, `scripts/build_additions.py`, `scripts/build_validation.py`):**
+  - Add `resetOnStart = false` option to `createStallSafeProgressEmitter` (`src/progress.js`, `ui_only` — zero stage cache hash impact; no new top-level symbols) so the first emission passes `resetProgress: true` to `reportWorkerProgress`, re-anchoring `maxPercent` cleanly to `range.start` while preserving strict monotonicity inside the retry run.
+  - Wire explicit fallback resets across all 6 retry sites:
+    1. `runVideo` (`scripts/build.py`): `videoAttemptCount++ > 0` passes `resetOnStart: true` on `qsv -> timestamp-isolated`, `qsv -> software`, and `software -> timestamp-isolated`.
+    2. `runAudio` (`scripts/build.py`): `audioAttemptCount++ > 0` slices `audioDecodeRange` across retained tracks and passes `resetOnStart: audioAttemptCount === 2` on the first per-track isolation fallback.
+    3. `checkSource` (`scripts/build.py`): add `-progress pipe:1 -nostats` and wrap in `createStallSafeProgressEmitter` with `resetOnStart: true`.
+    4. `precheckRetainedSourceAudio` (`scripts/build_additions.py`): pass `resetOnStart = position === 0` to `decodeAudioStreams` when falling back to per-track isolation.
+    5. `runSingleQuality` hybrid retry (`scripts/build.py`): reset progress to `progressPlan.encode.start` before `runFfmpeg(true, false)`.
+    6. `encodeSvtFallback` (`scripts/build_validation.py`): reset progress to `progressPlan.encode.start` before SVT-AV1 CRF 28 green-y clamp retry.
+- **Part B — Proactive `timestamp-isolated` Decode on Verified Matched DTS Ties (`src/validation.js`, `scripts/build.py`):**
+  - Compute `proactiveTimestampIsolated = candidatePacketTimestampsVerified && b.outputDtsNonIncreasingCount > 0` in `verifyVideoTimeline` (`scripts/build.py`) and pass to `verifyCandidateDecodes` (`src/validation.js`).
+  - When enabled and `candidatePacketTimestampsVerified` holds, bypass doomed `qsv`/`software` `-f null -` passes and run `runVideo('timestamp-isolated')` directly, recording `timestamp_isolated_decode` recovery in `report.recoveries`.
+- **Files Affected:**
+  - [`src/progress.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/progress.js)
+  - [`src/validation.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/validation.js)
+  - [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py)
+  - [`scripts/build_additions.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build_additions.py)
+  - [`scripts/build_validation.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build_validation.py)
+  - [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json) & [`docs/plans/IMPLEMENTATION_LOG.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/plans/IMPLEMENTATION_LOG.md)
+  - Tests: [`tests/progress.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/progress.test.js), [`tests/validation.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/validation.test.js), [`tests/integration.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/integration.test.js)
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase:** Add unit and integration tests for `createStallSafeProgressEmitter({ resetOnStart: true })`, proactive `timestamp-isolated` bypass, and reactive fallback progress resets; verify failure before code changes.
+2. **Green Phase:** Implement `resetOnStart` (`src/progress.js`), `proactiveTimestampIsolated` (`src/validation.js`), and retry resets/proactive routing (`scripts/build.py`, `scripts/build_additions.py`, `scripts/build_validation.py`); rebuild `flow.json`.
+3. **Verification:** Run `python3 scripts/stage_signatures.py --check-isolation`, `make check`, and an isolated `tdarr-flow-live-test-20261102` smoke test, then append results to [`docs/plans/IMPLEMENTATION_LOG.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/plans/IMPLEMENTATION_LOG.md) and run a final check.
+
+
+---
+
+# V16.12 Execution Plan — Bounded Intro-Splice HDR10 Mastering Display Normalizer
+
+## Problem & Classification
+- **Change Type:** Feature addition (in-place, user-approved), keeping default strict behavior across all existing callers and candidate validation (`allowIntroMasteringSplice = false` by default; enabled ONLY for `scanRole === "source"`).
+- **Root Case (`KMhUS4Q-log.txt`):** UHD Blu-ray remuxes such as *Batman Begins (2005) Remux-2160p Proper.mkv* splice a short leading intro segment (frames 1–48 / `2.002s` at `max_luminance = 4000 cd/m^2`) ahead of a uniform main feature (`max_luminance = 1000 cd/m^2`, identical Display P3 primaries, `min_luminance = 0.0050 cd/m^2`, `MaxCLL 992 / MaxFALL 226`).
+- **Verified FFmpeg Behavior (`tdarr-flow-live-test-20261102`):** Passing `-mastering_display "G(...)B(...)R(...)WP(...)L(...)"` as an input option before `-i` (already wired via `hdrMasterOverride`) overrides per-frame mastering display SEI uniformly across full GPU `av1_qsv`, hybrid `av1_qsv`, and `libsvtav1` without `sidedata=mode=delete` or dropping to CPU decode.
+
+## Architectural Review
+- **1. Bounded Source Intro-Splice Detection (`src/policy.js`):**
+  - Update `recordHdrFrame(line, scan)` to pass `(scan.frames, frameTs)` into `collectHdrFrameStatic(line, info, frameIndex, timestamp)`.
+  - In `collectHdrFrameStatic`, capture `info.firstFrameTs` before the early `side_datum/` check and, ONLY when `info.allowIntroSplice === true`, defer a single leading `max_luminance`-only transition within `introFrames <= 300` and `introDurationSec <= 5.0` (fallback `introFrames <= 150` if timestamps absent), while still setting `conflict = true` immediately on any 2nd transition, non-`max_luminance` mastering change, or `Content light level` change.
+  - In `inspectVideoFrames`, initialize `allowIntroSplice` only when requested, enforce post-scan dominance (`postSpliceFrames >= introFrames * 3` and `introFrames / scan.frames <= 0.01` when `scan.frames >= 1000`), and strip temporary scratch properties (`allowIntroSplice`, `firstFrameTs`, `masteringFrames`).
+  - Update `isSdrWithOrphanStaticHdr` to reject `scan.staticInfo.introSplice`, and allow `seedHdrMetadataFromMediaInfo` (`staticInfo` param) to accept MediaInfo's frame-0 `4000` master alongside a deferred `1000` feature master when `introSplice` is active.
+- **2. Feature-Master Normalization (`src/policy.js`, `scripts/stage_signatures.py`, `scripts/build.py`):**
+  - Add `normalizeIntroMasteringSplice(source, scan)` in `src/policy.js` (mapped to `("precheck_video", "encode", "decode")` in `scripts/stage_signatures.py`) to verify invariants, replace frame-0 intro mastering metadata with the main feature mastering metadata (rejecting any 3rd stream value), and format `masteringDisplayArg` for `hdrMasterOverride`.
+  - Wire `allowIntroMasteringSplice: true` into source precheck `scanOptions` ONLY, invoke `normalizeIntroMasteringSplice` on HDR10-family routes (rejecting `orphan_dovi_sdr` and `dovi5_hdr10` if `introSplice` is present, skipping seek-heal stream-copy remux at quality floor when `introMasteringNormalized` is set), and log the normalized transition to job logs and `args.variables.user.hdr_conversion`.
+- **Files Affected:**
+  - [`src/policy.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/policy.js)
+  - [`scripts/stage_signatures.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/stage_signatures.py)
+  - [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py)
+  - [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json) & [`docs/plans/IMPLEMENTATION_LOG.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/plans/IMPLEMENTATION_LOG.md)
+  - Tests: [`tests/flow_test_runtime.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/flow_test_runtime.js), [`tests/policy.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/policy.test.js), [`tests/integration.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/integration.test.js)
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase:** Export `testNormalizeIntroMasteringSplice` in `tests/flow_test_runtime.js`, add unit/integration tests in `tests/policy.test.js` and `tests/integration.test.js`, and verify failure before implementation.
+2. **Green Phase:** Implement intro-splice detection and normalization in `src/policy.js`, stage map entry in `scripts/stage_signatures.py`, and source/encode/remux wiring in `scripts/build.py`; rebuild `flow.json`.
+3. **Verification:** Run `python3 scripts/stage_signatures.py --check-isolation`, `make check`, and an isolated `tdarr-flow-live-test-20261102` end-to-end encode test on a 12s clip from *Batman Begins (2005)*; append results to `docs/plans/IMPLEMENTATION_LOG.md` and run a final check.
+
+
+---
+
+# V16.13 Execution Plan — Extend Bounded Intro-Splice Normalizer to Content Light Level & Mastering Luminance
+
+## Problem & Classification
+- **Change Type:** Feature extension (in-place, user-approved), keeping strict default behavior (`allowIntroMasteringSplice = false` by default and on all candidate validation).
+- **Root Case (`Hpck2U3-log.txt`):** UHD Blu-ray remuxes such as *The Mummy (1999) Remux-2160p Proper.mkv* share the same 48-frame (`2.002s`) seamless-branching studio intro splice as *Batman Begins (2005)*, except `Content light level metadata` (`MaxCLL`/`MaxFALL`) switches (`1033/345 -> 982/312`) at frame 49 while Mastering Display stays uniform (`Display P3, 0.0000 - 1000 cd/m^2`). Other discs can also switch `min_luminance`, `max_luminance`, and/or `MaxCLL`/`MaxFALL` together at that single intro splice boundary.
+- **Verified FFmpeg Behavior (`tdarr-flow-live-test-20261102`):** Passing `-content_light 982,312` before `-i` (already wired via `hdrLightOverride`) overrides all `73/73` decoded frames uniformly to `982/312` in **Full QSV Hardware** mode without `sidedata=mode=delete`.
+
+## Architectural Review
+- **1. Combined Mastering-Luminance & CLL Intro-Splice Detection (`src/policy.js`):**
+  - Update `collectHdrFrameStatic` so `masterChanged` (`hdrMasterFields`) and `lightChanged` (`max_content`, `max_average`) are evaluated together per frame when `info.allowIntroSplice === true`.
+  - Require chromaticity fields (`red_x`, `red_y`, `green_x`, `green_y`, `blue_x`, `blue_y`, `white_point_x`, `white_point_y`) to remain identical while allowing a single transition of `min_luminance`/`max_luminance` (`0 <= min <= max`, `max > 0`) and/or integer `Content light level` (`1 <= avg <= max <= 65535`) within the leading `introFrames <= 300`, `introDurationSec <= 5.0` window (fallback `<= 150` frames if timestamps absent). Any 2nd transition, split-frame transition, invalid luminance/CLL, or chromaticity change fails immediately.
+  - Update `inspectVideoFrames` cleanup to remove `lightFrames`, and update `seedHdrMetadataFromMediaInfo` to accept symmetric frame-0 MediaInfo CLL vs post-splice feature CLL when `introSplice.introLight` is verified.
+- **2. Feature-Master & Feature-CLL Normalization (`src/policy.js`, `scripts/build.py`):**
+  - Extend `normalizeIntroMasteringSplice(source, scan)` (keeping the existing mapped symbol name) to return `{ metadata, masteringDisplayArg, contentLightArg, normalized }` handling mastering-only, CLL-only, or combined intro splices while cross-checking stream metadata (rejecting any 3rd value).
+  - In `scripts/build.py`, apply `hdrLightOverride = resolved.override || introNorm.contentLightArg || mediaInfoHdrSeed.contentLightOverride;` so feature CLL takes precedence over frame-0 MediaInfo CLL, log `[HDR metadata] Normalized leading intro HDR10 static splice (...)`, and record CLL/luminance normalization in `args.variables.user.hdr_conversion`.
+- **Files Affected:**
+  - [`src/policy.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/policy.js)
+  - [`scripts/build.py`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/scripts/build.py)
+  - [`flow.json`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/flow.json) & [`docs/plans/IMPLEMENTATION_LOG.md`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/docs/plans/IMPLEMENTATION_LOG.md)
+  - Tests: [`tests/policy.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/policy.test.js), [`tests/integration.test.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/tests/integration.test.js)
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase:** Update/add tests in `tests/policy.test.js` and `tests/integration.test.js` for CLL-only and combined mastering+CLL intro splices, split/late/2nd-flip/invalid-CLL rejections, and confirm failure before production edits.
+2. **Green Phase:** Update `collectHdrFrameStatic`, `seedHdrMetadataFromMediaInfo`, `inspectVideoFrames`, and `normalizeIntroMasteringSplice` (`src/policy.js`) and HDR routing (`scripts/build.py`); rebuild `flow.json`.
+3. **Verification:** Run `python3 scripts/stage_signatures.py --check-isolation`, `make check`, and an isolated `tdarr-flow-live-test-20261102` end-to-end test on a 12s clip from *The Mummy (1999)*, then log to `docs/plans/IMPLEMENTATION_LOG.md` and run a final check.

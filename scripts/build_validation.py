@@ -52,6 +52,7 @@ validation_replacement='''    let validationReport;
         softwareHdrFallback=true;quality=28;qualityLabel="SVT-AV1 CRF";
         pipelineMode="Software SVT-AV1 HDR encode (QSV green-y clamp fallback)";
         log("[Arc AV1] QSV produced the known green-y mastering clamp; retrying once with SVT-AV1 CRF 28, then applying full candidate validation again.");
+        reportWorkerProgress(args.updateWorker,{percentage:progressPlan.encode.start,fps:0,status:"Encoding: SVT-AV1 at CRF 28 (green-y clamp retry)",resetProgress:true});
         const result=await runFfmpeg(needsProactiveHybrid,false,true);
         if(result.error)throw result.error;
         if(result.capacityError)throw result.capacityError;

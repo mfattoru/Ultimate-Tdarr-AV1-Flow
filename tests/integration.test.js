@@ -19,15 +19,18 @@ child.execFileSync('ffmpeg',['-v','error','-i',source,'-map','0:0','-map','0:1',
 child.execFileSync('ffmpeg',['-v','error','-i',multiAudioSource,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0','-c:a','copy','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',multiAudioCandidate],{stdio:'ignore'});
 assert.ok(fs.statSync(multiAudioCandidate).size < fs.statSync(multiAudioSource).size);
 function argsFor(file,logs=[]) { const f={_id:file,container:'mkv',file_size:fs.statSync(file).size/1024/1024}; return {inputFileObj:{...f},originalLibraryFile:{...f},workDir:dir,variables:{user:{min_cache_free_mb:1}},ffmpegPath:'ffmpeg',librarySettings:{folder:dir},jobLog:m=>logs.push(String(m))}; }
-function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,qsvLongTimestampLines=false,matchedVideoDtsTies=false,matchedSubFramePtsTie=false,audioDtsDenseScan=false,onSlowAudioTimeline=null,sourceFieldOrder=null,candidateFieldOrder=null,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,candidateMissingSar=false,mediaInfoPixelAspectRatio,candidateMediaInfoPixelAspectRatio,hdr=false,dovi5Test=false,colorOverride=null,mediaInfoOverride=null,candidateSideData=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,unlinkHardlinkDuringSourceScan=null,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate,codeOverride=null}={}) {
-  const calls=[],commands=[],logs=[],audioDecodeCommands=[],audioDtsScanCommands=[]; let initialProbe=true,moverSimulated=false,doviExtractCalls=0;
+function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFailure=false,qsvTimestampExitZero=false,qsvLongTimestampLines=false,qsvEmitFullProgress=false,matchedVideoDtsTies=false,matchedSubFramePtsTie=false,audioDtsDenseScan=false,onSlowAudioTimeline=null,sourceFieldOrder=null,candidateFieldOrder=null,cpuValidationFailure=false,dropCandidateAudio=false,alwaysLarge=false,failEncoding=false,failRemux=false,remuxBloat=false,missingPrlimit=false,limitOnFirst=false,uhd=false,mediainfo=true,missingSourceSar=false,candidateMissingSar=false,mediaInfoPixelAspectRatio,candidateMediaInfoPixelAspectRatio,hdr=false,dovi5Test=false,colorOverride=null,mediaInfoOverride=null,candidateSideData=null,extraVideo=false,extraVideoFrames=1,denyIso=false,sourceCorruption=false,sourceCorruptionDiagnostic='[Source media corruption] [h264] Invalid NAL unit size (999 > 8)',forceSourceAudioBatchFailure=false,corruptSourceAudioStream='0:2',moveDuringSourceScan=false,changeMovedContent=false,unlinkHardlinkDuringSourceScan=null,subtitleDtsRegression=false,inputPath=source,smallerOutput=candidate,codeOverride=null}={}) {
+  const calls=[],commands=[],logs=[],audioDecodeCommands=[],audioDtsScanCommands=[],timelineScanCommands=[]; let initialProbe=true,moverSimulated=false,doviExtractCalls=0;
   const fakeFs=new Proxy(fs,{get(t,p){if(p==='unlinkSync' && denyIso)return name=>{if(String(name).endsWith('.iso'))throw Error('simulated ISO permission error');return t.unlinkSync(name)};if(p==='accessSync')return (name,...args)=>(name==='/dev/dri/renderD129'||(dovi5Test&&name==='/usr/share/vulkan/icd.d/intel_icd.json'))?undefined:t.accessSync(name,...args);return t[p]}});
   const fakeChild={...child,
     spawn(cmd,args,opts){
       if(cmd==='ffprobe'&&args.includes('-show_packets')&&(args.includes('packet=pts_time,dts_time,pos')||args.includes('packet=stream_index,dts_time,pos'))&&args.includes(inputPath)){
         audioDtsScanCommands.push({args:[...args]});
       }
-      if(onSlowAudioTimeline&&cmd==='ffprobe'&&args.includes('-show_packets')&&args.includes('packet=pts_time,dts_time,duration_time,pos')&&args.includes('-select_streams')&&args[args.indexOf('-select_streams')+1]==='1'&&args[args.length-1]===inputPath){
+      if(cmd==='ffprobe'&&args.includes('-show_packets')&&!args.includes('-show_data')&&args.some(a=>String(a).startsWith('packet=')&&String(a).includes('duration_time'))){
+        timelineScanCommands.push({args:[...args]});
+      }
+      if(onSlowAudioTimeline&&cmd==='ffprobe'&&args.includes('-show_packets')&&args[args.length-1]===inputPath&&((args.includes('packet=pts_time,dts_time,duration_time,pos')&&args.includes('-select_streams')&&args[args.indexOf('-select_streams')+1]==='1')||args.includes('packet=stream_index,pts_time,dts_time,duration_time,pos'))){
         const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
         const proc=new EventEmitter();proc.stdout=new PassThrough();proc.stderr=new PassThrough();proc.kill=()=>{};
         const out=child.execFileSync(cmd,args,{encoding:'utf8'});
@@ -96,13 +99,19 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
         queueMicrotask(()=>{process.stdout.end(lines.join('\n')+'\n');process.stderr.end();process.emit('close',0,null);});
         return process;
       }
-      if(matchedVideoDtsTies&&cmd==='ffprobe'&&args.includes('-show_packets')&&args.includes('packet=pts_time,dts_time,duration_time,pos')&&args.includes('-select_streams')&&args[args.indexOf('-select_streams')+1]==='0'){
+      if(matchedVideoDtsTies&&cmd==='ffprobe'&&args.includes('-show_packets')&&((args.includes('packet=pts_time,dts_time,duration_time,pos')&&args.includes('-select_streams')&&args[args.indexOf('-select_streams')+1]==='0')||args.includes('packet=stream_index,pts_time,dts_time,duration_time,pos'))){
         const {EventEmitter}=require('node:events');const {PassThrough}=require('node:stream');
         const process=new EventEmitter();process.stdout=new PassThrough();process.stderr=new PassThrough();process.kill=()=>{};
+        const batched=args.includes('packet=stream_index,pts_time,dts_time,duration_time,pos');
         const lines=[];
         for(let i=0;i<96;i++){
           const pts=(i/24).toFixed(6),dts=((i===11?10:i)/24).toFixed(6);
-          lines.push(`pts_time=${pts}|dts_time=${dts}|duration_time=0.041667|pos=${1024+i*512}`);
+          lines.push(`${batched?'stream_index=0|':''}pts_time=${pts}|dts_time=${dts}|duration_time=0.041667|pos=${1024+i*512}`);
+        }
+        if(batched){
+          const target=args[args.length-1];
+          const extra=child.execFileSync('ffprobe',['-v','error','-select_streams','a','-show_packets','-show_entries','packet=stream_index,pts_time,dts_time,duration_time,pos','-of','compact=p=0:nk=0',target],{encoding:'utf8'}).trim();
+          if(extra) lines.push(extra);
         }
         queueMicrotask(()=>{process.stdout.end(lines.join('\n')+'\n');process.stderr.end();process.emit('close',0,null);});
         return process;
@@ -121,7 +130,7 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
         const qsvStderr=qsvTimestampFailure
           ?(qsvLongTimestampLines?longTimestampStderr:qsvTimestampExitZero?'libva info: VA-API version 1.22.0\n[null @ 0x55cac3600580] Application provided invalid, non monotonically increasing dts to muxer in stream 0: 5 >= 5\n':'[null @ 0x1234] Application provided invalid, non monotonically increasing dts to muxer in stream 0: 5 >= 5')
           :'Device creation failed: unavailable Arc device';
-        queueMicrotask(()=>{process.stdout.end();process.stderr.end(args.includes('-hwaccel')?qsvStderr:'Cannot allocate memory');process.emit('close',(qsvTimestampExitZero&&args.includes('-hwaccel'))?0:1,null);});
+        queueMicrotask(()=>{if(qsvEmitFullProgress&&args.includes('-hwaccel'))process.stdout.write('out_time_us=2000000\nfps=24\nprogress=continue\nout_time_us=4000000\nfps=24\nprogress=end\n');process.stdout.end();process.stderr.end(args.includes('-hwaccel')?qsvStderr:'Cannot allocate memory');process.emit('close',(qsvTimestampExitZero&&args.includes('-hwaccel'))?0:1,null);});
         return process;
       }
       if(cmd==='ffmpeg'&&args.includes('-frames:v')&&extraVideo){
@@ -253,7 +262,7 @@ function load({sourceDiagnosticChunks,qsvValidationFailure=false,qsvTimestampFai
   };
   const m={exports:{}}; const req=n=>n==='fs'?fakeFs:n==='child_process'?fakeChild:require(n);
   runFlowCode(['require','module','exports'],codeOverride || code,[req,m,m.exports]);
-  return {fn:m.exports,calls,commands,logs,audioDecodeCommands,audioDtsScanCommands,moverSimulated:()=>moverSimulated,doviExtractCalls:()=>doviExtractCalls};
+  return {fn:m.exports,calls,commands,logs,audioDecodeCommands,audioDtsScanCommands,timelineScanCommands,moverSimulated:()=>moverSimulated,doviExtractCalls:()=>doviExtractCalls};
 }
 async function run(x,args) {try{return await x.fn(args);}finally{const h=args.variables?.user?.cache_reservation;if(h){await x.fn.releaseForTest(h);delete args.variables.user.cache_reservation;}}}
 
@@ -331,19 +340,22 @@ test('a null-mux timestamp diagnostic retries with isolated timestamps after cle
  assert.equal(args.variables.user.validation_report.recoveries[0].code,'timestamp_isolated_decode');
  assert.ok(x.audioDecodeCommands.some(c=>c.input!==source&&c.args.includes('settb=expr=1/1000000,setpts=N')));
 });
-test('matched source/candidate DTS ties with verified frame PTS recover via timestamp-isolated decode',async()=>{
+test('matched source/candidate DTS ties with verified frame PTS route proactively to timestamp-isolated decode without QSV retry waste',async()=>{
  const x=load({qsvTimestampFailure:true,qsvTimestampExitZero:true,matchedVideoDtsTies:true}),args=argsFor(source,x.logs),r=await run(x,args);
  assert.equal(r.outputNumber,1);
  assert.equal(args.variables.user.validation_report.outcome,'recovered');
  assert.equal(args.variables.user.validation_report.recoveries[0].code,'timestamp_isolated_decode');
  assert.ok(x.logs.some(line=>line.includes('Non-increasing DTS transitions: source 1, candidate 1; missing DTS: source 0, candidate 0.')));
+ assert.equal(x.logs.some(line=>line.includes('[Validation decode] qsv ')),false,'QSV null-mux decode must be bypassed when matched DTS ties are already verified');
+ assert.ok(x.logs.some(line=>line.includes('bypassing null-mux decode for direct timestamp-isolated software decode')));
  assert.ok(x.audioDecodeCommands.some(c=>c.input!==source&&c.args.includes('settb=expr=1/1000000,setpts=N')));
 });
 test('long truncated QSV null-mux DTS diagnostics still recover via timestamp-isolated decode',async()=>{
- const x=load({qsvTimestampFailure:true,qsvTimestampExitZero:true,qsvLongTimestampLines:true,matchedVideoDtsTies:true}),args=argsFor(source,x.logs),r=await run(x,args);
+ const x=load({qsvTimestampFailure:true,qsvTimestampExitZero:true,qsvLongTimestampLines:true}),args=argsFor(source,x.logs),r=await run(x,args);
  assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
  assert.equal(args.variables.user.validation_report.outcome,'recovered');
  assert.equal(args.variables.user.validation_report.recoveries[0].code,'timestamp_isolated_decode');
+ assert.ok(x.logs.some(line=>line.includes('[Validation decode] qsv completed')));
  assert.ok(x.audioDecodeCommands.some(c=>c.input!==source&&c.args.includes('settb=expr=1/1000000,setpts=N')));
 });
 test('missing FFprobe source SAR with square MediaInfo PAR emits container -aspect on seek-heal remux and validates un-tagged stream-copy candidates',async()=>{
@@ -1161,4 +1173,141 @@ test('multi-audio source runs a single batched DTS ffprobe pass across a >=1.5% 
  for(let i=1;i<updates.length;i++) if(Number.isFinite(Number(updates[i].percentage))&&Number.isFinite(Number(updates[i-1].percentage))) assert.ok(Number(updates[i].percentage)>=Number(updates[i-1].percentage));
  const span=Math.max(...precheckPcts)-Math.min(...precheckPcts);
  assert.ok(span>=1.5,`expected audioPrecheck progress span >=1.5%, got ${span}`);
+});
+
+
+test('multi-stream video + 2 retained audio + SRT validates timelines in only 2 batched ffprobe passes',async()=>{
+ const multiSrc=path.join(dir,'batched-timeline-src.mkv');
+ const multiOut=path.join(dir,'batched-timeline-out.mkv');
+ const srt=path.join(dir,'batched-timeline.srt');
+ fs.writeFileSync(srt,'1\n00:00:01,000 --> 00:00:02,000\nLine one\n\n2\n00:00:02,500 --> 00:00:03,200\nLine two\n');
+ child.execFileSync('ffmpeg',['-v','error','-i',source,'-i',srt,'-map','0:0','-map','0:1','-map','0:1','-map','1:0','-c:v','copy','-c:a','copy','-c:s','srt','-metadata:s:a:0','language=eng','-metadata:s:a:1','language=spa','-metadata:s:s:0','language=eng','-y',multiSrc],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',multiSrc,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0','-c:a','copy','-c:s','copy','-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',multiOut],{stdio:'ignore'});
+ assert.ok(fs.statSync(multiOut).size<fs.statSync(multiSrc).size);
+
+ const updates=[];
+ const x=load({inputPath:multiSrc,smallerOutput:multiOut});
+ const args=argsFor(multiSrc,x.logs);
+ args.updateWorker=u=>updates.push(u);
+ const r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+ assert.equal(x.timelineScanCommands.length,2,`expected 2 batched timeline scans (1 source + 1 candidate) across 4 streams, got ${x.timelineScanCommands.length}`);
+ for(const scan of x.timelineScanCommands){
+  assert.equal(scan.args.includes('-select_streams'),false,'batched timeline scan must not filter to a single stream');
+  assert.ok(scan.args.some(a=>String(a).startsWith('packet=stream_index,pts_time,dts_time,duration_time,pos')));
+ }
+ const pcts=updates.map(u=>Number(u.percentage)).filter(Number.isFinite);
+ for(let i=1;i<pcts.length;i++) assert.ok(pcts[i]>=pcts[i-1],`progress went backwards: ${pcts[i-1]} -> ${pcts[i]}`);
+});
+
+test('reactive timestamp-isolated fallback resets progress to videoDecode start after QSV reaches videoDecode end',async()=>{
+ const progressUpdates=[];
+ const x=load({qsvTimestampFailure:true,qsvTimestampExitZero:true,qsvEmitFullProgress:true});
+ const args=argsFor(source,x.logs);
+ args.updateWorker=payload=>progressUpdates.push(payload);
+ const r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+ const qsvUpdates=progressUpdates.filter(p=>p?.status==='Validation: strict output video decode');
+ const isolatedUpdates=progressUpdates.filter(p=>p?.status==='Validation: timestamp-isolated software decode');
+ assert.ok(qsvUpdates.length>=2,`expected QSV progress updates, got ${JSON.stringify(qsvUpdates)}`);
+ assert.ok(isolatedUpdates.length>=2,`expected timestamp-isolated updates, got ${JSON.stringify(isolatedUpdates)}`);
+ const qsvMax=Math.max(...qsvUpdates.map(p=>Number(p.percentage)));
+ assert.ok(Number(isolatedUpdates[0].percentage)<qsvMax,`fallback must reset below saturated QSV max (${qsvMax}), got ${isolatedUpdates[0].percentage}`);
+ assert.ok(Number(isolatedUpdates.at(-1).percentage)>Number(isolatedUpdates[0].percentage),`expected advancing progress during reactive fallback, got ${JSON.stringify(isolatedUpdates)}`);
+});
+
+test('software decode fallback resets progress to videoDecode start after QSV reaches videoDecode end',async()=>{
+ const progressUpdates=[];
+ const x=load({qsvValidationFailure:true,qsvEmitFullProgress:true});
+ const args=argsFor(source,x.logs);
+ args.updateWorker=payload=>progressUpdates.push(payload);
+ const r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason);
+ const qsvUpdates=progressUpdates.filter(p=>p?.status==='Validation: strict output video decode');
+ const swUpdates=progressUpdates.filter(p=>p?.status==='Validation: strict software video decode');
+ assert.ok(qsvUpdates.length>=2);
+ assert.ok(swUpdates.length>=2);
+ const qsvMax=Math.max(...qsvUpdates.map(p=>Number(p.percentage)));
+ assert.ok(Number(swUpdates[0].percentage)<qsvMax,`software fallback must reset below QSV max (${qsvMax}), got ${swUpdates[0].percentage}`);
+ assert.ok(Number(swUpdates.at(-1).percentage)>Number(swUpdates[0].percentage),`expected advancing progress during software fallback, got ${JSON.stringify(swUpdates)}`);
+});
+
+test('bounded HDR10 intro-splice normalizes leading 4000-nit frames to 1000-nit feature master via -mastering_display on GPU route and rejects spliced candidates',async()=>{
+ const introSeg=path.join(dir,'intro-4000.mkv'),mainSeg=path.join(dir,'main-1000.mkv'),concatList=path.join(dir,'splice-concat.txt');
+ const spliceSrc=path.join(dir,'splice-src.mkv'),spliceOut=path.join(dir,'splice-out.mkv'),badSvtIntro=path.join(dir,'bad-svt-intro.mkv'),badSvtMain=path.join(dir,'bad-svt-main.mkv'),badSvtConcat=path.join(dir,'bad-svt-concat.txt'),badSpliceOut=path.join(dir,'bad-splice-out.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=24:duration=2','-f','lavfi','-i','sine=frequency=440:duration=2','-map','0:v:0','-map','1:a:0','-c:v','libx265','-preset','ultrafast','-crf','10','-x265-params','log-level=error:pools=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(40000000,50):max-cll=992,226','-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-c:a','aac','-y',introSeg],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=24:duration=8','-f','lavfi','-i','sine=frequency=440:duration=8','-map','0:v:0','-map','1:a:0','-c:v','libx265','-preset','ultrafast','-crf','10','-x265-params','log-level=error:pools=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50):max-cll=992,226','-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-c:a','aac','-y',mainSeg],{stdio:'ignore'});
+ fs.writeFileSync(concatList,`file '${introSeg}'\nfile '${mainSeg}'\n`);
+ child.execFileSync('ffmpeg',['-v','error','-f','concat','-safe','0','-i',concatList,'-c','copy','-y',spliceSrc],{stdio:'ignore'});
+ const uniform10s=path.join(dir,'uniform-1000-10s.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=24:duration=10','-f','lavfi','-i','sine=frequency=440:duration=10','-map','0:v:0','-map','1:a:0','-c:v','libx265','-preset','ultrafast','-crf','10','-x265-params','log-level=error:pools=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50):max-cll=992,226','-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-c:a','aac','-y',uniform10s],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',uniform10s,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0:mastering-display=G(0.265,0.69)B(0.15,0.06)R(0.68,0.32)WP(0.3127,0.329)L(1000,0.005):content-light=992,226','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',spliceOut],{stdio:'ignore'});
+
+ const frame0MediaInfo={
+  HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10',
+  MasteringDisplay_ColorPrimaries:'Display P3',MasteringDisplay_ColorPrimaries_Source:'Stream',
+  MasteringDisplay_Luminance:'min: 0.0050 cd/m2, max: 4000 cd/m2',MasteringDisplay_Luminance_Source:'Stream',
+  MaxCLL:'992 cd/m2',MaxCLL_Source:'Stream',MaxFALL:'226 cd/m2',MaxFALL_Source:'Stream'
+ };
+ const x=load({hdr:true,inputPath:spliceSrc,smallerOutput:spliceOut,mediaInfoOverride:frame0MediaInfo});
+ const args=argsFor(spliceSrc,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason||x.logs.slice(-8).join('\n'));
+ const encodeCmd=x.commands.find(c=>c.args.includes('av1_qsv'));
+ assert.ok(encodeCmd,'expected av1_qsv encode command');
+ const mdFlagIdx=encodeCmd.args.indexOf('-mastering_display');
+ assert.ok(mdFlagIdx>=0&&mdFlagIdx<encodeCmd.args.indexOf('-i'),'-mastering_display must precede -i');
+ assert.equal(encodeCmd.args[mdFlagIdx+1],'G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)');
+ assert.equal(encodeCmd.args.some(a=>String(a).includes('type=MASTERING_DISPLAY_METADATA')),false,'must keep full GPU decode without stripping -mastering_display via sidedata filter');
+ assert.ok(x.logs.some(line=>line.includes('[HDR metadata] Normalized leading intro mastering display splice')));
+ assert.match(String(args.variables.user.hdr_conversion||''),/4000 -> 1000/);
+
+ // Candidate validation itself must STILL reject a candidate that retained the splice
+ child.execFileSync('ffmpeg',['-v','error','-i',introSeg,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0:mastering-display=G(0.265,0.69)B(0.15,0.06)R(0.68,0.32)WP(0.3127,0.329)L(4000,0.005):content-light=992,226','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-y',badSvtIntro],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',mainSeg,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0:mastering-display=G(0.265,0.69)B(0.15,0.06)R(0.68,0.32)WP(0.3127,0.329)L(1000,0.005):content-light=992,226','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-y',badSvtMain],{stdio:'ignore'});
+ fs.writeFileSync(badSvtConcat,`file '${badSvtIntro}'\nfile '${badSvtMain}'\n`);
+ child.execFileSync('ffmpeg',['-v','error','-f','concat','-safe','0','-i',badSvtConcat,'-c','copy','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',badSpliceOut],{stdio:'ignore'});
+ const bad=load({hdr:true,inputPath:spliceSrc,smallerOutput:badSpliceOut,mediaInfoOverride:frame0MediaInfo});
+ const badArgs=argsFor(spliceSrc,bad.logs),badRes=await run(bad,badArgs);
+ assert.equal(badRes.outputNumber,2,'candidate retaining a mastering splice must fail validation');
+ assert.match(String(badArgs.variables.user.failure_reason||''),/Conflicting or changing static HDR metadata/);
+});
+
+test('bounded HDR10 CLL intro-splice normalizes leading MaxCLL/MaxFALL frames via -content_light and rejects spliced candidates',async()=>{
+ const introSeg=path.join(dir,'cll-intro.mkv'),mainSeg=path.join(dir,'cll-main.mkv'),concatList=path.join(dir,'cll-concat.txt');
+ const cllSrc=path.join(dir,'cll-splice-src.mkv'),uniform10s=path.join(dir,'cll-uniform-10s.mkv'),cllOut=path.join(dir,'cll-splice-out.mkv');
+ const badSvtIntro=path.join(dir,'cll-bad-svt-intro.mkv'),badSvtMain=path.join(dir,'cll-bad-svt-main.mkv'),badSvtConcat=path.join(dir,'cll-bad-svt-concat.txt'),badCllOut=path.join(dir,'cll-bad-splice-out.mkv');
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=24:duration=2','-f','lavfi','-i','sine=frequency=440:duration=2','-map','0:v:0','-map','1:a:0','-c:v','libx265','-preset','ultrafast','-crf','10','-x265-params','log-level=error:pools=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,0):max-cll=1033,345','-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-c:a','aac','-y',introSeg],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=24:duration=8','-f','lavfi','-i','sine=frequency=440:duration=8','-map','0:v:0','-map','1:a:0','-c:v','libx265','-preset','ultrafast','-crf','10','-x265-params','log-level=error:pools=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,0):max-cll=982,312','-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-c:a','aac','-y',mainSeg],{stdio:'ignore'});
+ fs.writeFileSync(concatList,`file '${introSeg}'\nfile '${mainSeg}'\n`);
+ child.execFileSync('ffmpeg',['-v','error','-f','concat','-safe','0','-i',concatList,'-c','copy','-y',cllSrc],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=24:duration=10','-f','lavfi','-i','sine=frequency=440:duration=10','-map','0:v:0','-map','1:a:0','-c:v','libx265','-preset','ultrafast','-crf','10','-x265-params','log-level=error:pools=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,0):max-cll=982,312','-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-c:a','aac','-y',uniform10s],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',uniform10s,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0:mastering-display=G(0.265,0.69)B(0.15,0.06)R(0.68,0.32)WP(0.3127,0.329)L(1000,0):content-light=982,312','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',cllOut],{stdio:'ignore'});
+
+ const frame0MediaInfo={
+  HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10',
+  MasteringDisplay_ColorPrimaries:'Display P3',MasteringDisplay_ColorPrimaries_Source:'Stream',
+  MasteringDisplay_Luminance:'min: 0.0000 cd/m2, max: 1000 cd/m2',MasteringDisplay_Luminance_Source:'Stream',
+  MaxCLL:'1033 cd/m2',MaxCLL_Source:'Stream',MaxFALL:'345 cd/m2',MaxFALL_Source:'Stream'
+ };
+ const x=load({hdr:true,inputPath:cllSrc,smallerOutput:cllOut,mediaInfoOverride:frame0MediaInfo});
+ const args=argsFor(cllSrc,x.logs),r=await run(x,args);
+ assert.equal(r.outputNumber,1,args.variables.user.failure_reason||x.logs.slice(-8).join('\n'));
+ const encodeCmd=x.commands.find(c=>c.args.includes('av1_qsv'));
+ assert.ok(encodeCmd,'expected av1_qsv encode command');
+ const clFlagIdx=encodeCmd.args.indexOf('-content_light');
+ assert.ok(clFlagIdx>=0&&clFlagIdx<encodeCmd.args.indexOf('-i'),'-content_light must precede -i');
+ assert.equal(encodeCmd.args[clFlagIdx+1],'982,312');
+ assert.equal(encodeCmd.args.includes('-mastering_display'),false,'CLL-only splice must not unnecessarily override -mastering_display');
+ assert.equal(encodeCmd.args.some(a=>String(a).includes('type=MASTERING_DISPLAY_METADATA')),false);
+ assert.ok(x.logs.some(line=>line.includes('[HDR metadata] Normalized leading intro')));
+ assert.match(String(args.variables.user.hdr_conversion||''),/1033\/345 -> 982\/312/);
+
+ child.execFileSync('ffmpeg',['-v','error','-i',introSeg,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0:mastering-display=G(0.265,0.69)B(0.15,0.06)R(0.68,0.32)WP(0.3127,0.329)L(1000,0):content-light=1033,345','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-y',badSvtIntro],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',mainSeg,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0:mastering-display=G(0.265,0.69)B(0.15,0.06)R(0.68,0.32)WP(0.3127,0.329)L(1000,0):content-light=982,312','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-y',badSvtMain],{stdio:'ignore'});
+ fs.writeFileSync(badSvtConcat,`file '${badSvtIntro}'\nfile '${badSvtMain}'\n`);
+ child.execFileSync('ffmpeg',['-v','error','-f','concat','-safe','0','-i',badSvtConcat,'-c','copy','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',badCllOut],{stdio:'ignore'});
+ const bad=load({hdr:true,inputPath:cllSrc,smallerOutput:badCllOut,mediaInfoOverride:frame0MediaInfo});
+ const badArgs=argsFor(cllSrc,bad.logs),badRes=await run(bad,badArgs);
+ assert.equal(badRes.outputNumber,2,'candidate retaining a CLL splice must fail validation');
+ assert.match(String(badArgs.variables.user.failure_reason||''),/Conflicting or changing static HDR metadata/);
 });

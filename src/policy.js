@@ -290,7 +290,7 @@ const isExplicitSdrColorTriplet = (video, info) => {
 };
 const isSdrWithOrphanStaticHdr = (video, info, scan) => {
   if (!isExplicitSdrColorTriplet(video, info)) return false;
-  if (!scan || scan.dovi || scan.hdr10plus || scan.otherDynamic || !scan.staticInfo || scan.staticInfo.conflict) return false;
+  if (!scan || scan.dovi || scan.hdr10plus || scan.otherDynamic || !scan.staticInfo || scan.staticInfo.conflict || scan.staticInfo.introSplice) return false;
   const side=video?.side_data_list || [];
   if (side.some(s => isDynamicHdrSignal(s.side_data_type) || /dovi configuration/i.test(String(s.side_data_type || '')))) return false;
   const hasStreamStatic=side.some(s => /mastering display metadata|content light level metadata/i.test(String(s.side_data_type || '')));
@@ -402,32 +402,73 @@ const mergeHdrMetadata = (video, frames, options={}) => {
 };
 const recordHdrFrame = (line, scan) => {
   const text=String(line);
-  const isFrame=/(?:^|\|)frame(?:\||$)/i.test(text)
-    || /(?:^|\|)(?:interlaced_frame|best_effort_timestamp_time)=/.test(text);
+  const len=text.length;
+  const checkSideData=text.indexOf('side_data_type=')>=0;
+  const checkColor=Boolean(scan.colorInfo);
+  let isFrame=false, interlacedVal=null, tsRaw=null;
+  let hasDovi=false, hasHdr10Plus=false, hasOtherDynamic=false;
+  let cTransfer, cPrimaries, cSpace, cRange;
+  for (let segStart=0; segStart<=len; ) {
+    let segEnd=text.indexOf('|', segStart);
+    if (segEnd<0) segEnd=len;
+    const eq=text.indexOf('=', segStart);
+    if (eq<0 || eq>=segEnd) {
+      if (segEnd-segStart===5 && text.slice(segStart, segEnd).toLowerCase()==='frame') isFrame=true;
+    } else {
+      const kLen=eq-segStart;
+      if (kLen===16 && text.startsWith('interlaced_frame', segStart)) {
+        isFrame=true;
+        if (interlacedVal===null && segEnd-eq===2) {
+          const ch=text.charCodeAt(eq+1);
+          if (ch===48 || ch===49) interlacedVal=ch-48;
+        }
+      } else if (kLen===26 && text.startsWith('best_effort_timestamp_time', segStart)) {
+        isFrame=true;
+        if (tsRaw===null && segEnd>eq+1) tsRaw=text.slice(eq+1, segEnd);
+      } else if (checkSideData && kLen>=14 && text.startsWith('side_data_type', eq-14)) {
+        const val=text.slice(eq+1, segEnd);
+        if (/^Dolby Vision (?:RPU Data|Metadata)/i.test(val)) hasDovi=true;
+        if (/SMPTE\s*2094-40|HDR10(?:\+|[ _-]*plus)/i.test(val)) hasHdr10Plus=true;
+        else if (isNonDolbyDynamic(val)) hasOtherDynamic=true;
+      } else if (checkColor && text.charCodeAt(segStart)===99) {
+        if (cTransfer===undefined && kLen===14 && text.startsWith('color_transfer', segStart)) cTransfer=text.slice(eq+1, segEnd);
+        else if (cPrimaries===undefined && kLen===15 && text.startsWith('color_primaries', segStart)) cPrimaries=text.slice(eq+1, segEnd);
+        else if (cSpace===undefined && kLen===11 && text.startsWith('color_space', segStart)) cSpace=text.slice(eq+1, segEnd);
+        else if (cRange===undefined && kLen===11 && text.startsWith('color_range', segStart)) cRange=text.slice(eq+1, segEnd);
+      }
+    }
+    if (segEnd===len) break;
+    segStart=segEnd+1;
+  }
   if (!isFrame) return;
   scan.frames++;
-  const interlaced=text.match(/(?:^|\|)interlaced_frame=([01])(?:\||$)/);
-  if (scan.timestamps) {
-    const ts=text.match(/(?:^|\|)best_effort_timestamp_time=([^|]+)/);
-    const value=ts && ts[1].trim()!=='N/A' ? Number(ts[1].trim()) : NaN;
-    scan.timestamps.push(Number.isFinite(value) ? value : NaN);
+  let frameTs=NaN;
+  if (tsRaw!==null) {
+    const trimmed=tsRaw.trim();
+    const value=trimmed && trimmed!=='N/A' ? Number(trimmed) : NaN;
+    if (Number.isFinite(value)) frameTs=value;
   }
-  if (interlaced?.[1] === '1') scan.interlaced++;
-  if (/side_data_type=Dolby Vision (?:RPU Data|Metadata)/i.test(text)) scan.dovi++;
-  const sideTypes=Array.from(text.matchAll(/side_data_type=([^|]+)/g),m=>m[1]);
-  if (sideTypes.some(x=>/SMPTE\s*2094-40|HDR10(?:\+|[ _-]*plus)/i.test(x))) scan.hdr10plus++;
-  if (sideTypes.some(x=>isNonDolbyDynamic(x) && !/SMPTE\s*2094-40|HDR10(?:\+|[ _-]*plus)/i.test(x))) scan.otherDynamic++;
-  if (scan.staticInfo) collectHdrFrameStatic(text, scan.staticInfo);
-  if (scan.colorInfo) for (const field of ['color_transfer','color_primaries','color_space','color_range']) {
-    const wanted=scan.colorInfo.expected?.[field], match=text.match(new RegExp('(?:^|\\|)'+field+'=([^|]+)'));
-    const got=match?.[1];
-    if (!got || got==='unknown' || got==='unspecified') continue;
+  if (scan.timestamps) scan.timestamps.push(frameTs);
+  if (interlacedVal===1) scan.interlaced++;
+  if (hasDovi) scan.dovi++;
+  if (hasHdr10Plus) scan.hdr10plus++;
+  if (hasOtherDynamic) scan.otherDynamic++;
+  if (scan.staticInfo) collectHdrFrameStatic(text, scan.staticInfo, scan.frames, frameTs);
+  if (scan.colorInfo) {
     if (!scan.colorInfo.observed) scan.colorInfo.observed={};
-    if (scan.colorInfo.observed[field] && scan.colorInfo.observed[field]!==got) scan.colorInfo.conflict=true;
-    else scan.colorInfo.observed[field]=got;
-    if (wanted && wanted!=='unknown' && wanted!=='unspecified' && got!==wanted) scan.colorInfo.conflict=true;
+    for (const [field, got] of [
+      ['color_transfer', cTransfer],
+      ['color_primaries', cPrimaries],
+      ['color_space', cSpace],
+      ['color_range', cRange]
+    ]) {
+      if (!got || got==='unknown' || got==='unspecified') continue;
+      const wanted=scan.colorInfo.expected?.[field];
+      if (scan.colorInfo.observed[field] && scan.colorInfo.observed[field]!==got) scan.colorInfo.conflict=true;
+      else scan.colorInfo.observed[field]=got;
+      if (wanted && wanted!=='unknown' && wanted!=='unspecified' && got!==wanted) scan.colorInfo.conflict=true;
+    }
   }
-
 };
 const estimateVideoFrames = (video, fallbackDuration=0) => {
   const exact=Number(video?.nb_frames);
@@ -466,7 +507,10 @@ const buildFrameScanArguments = (file,index,threads=getDecodeThreadCount()) => {
 };
 const inspectVideoFrames = async (ffprobe, file, index, options={}) => {
   const scan={frames:0,interlaced:0,dovi:0,hdr10plus:0,otherDynamic:0};
-  if (options.staticMetadata) scan.staticInfo={mastering:null,light:null,conflict:false};
+  if (options.staticMetadata) {
+    scan.staticInfo={mastering:null,light:null,conflict:false};
+    if (options.allowIntroMasteringSplice) scan.staticInfo.allowIntroSplice=true;
+  }
   if (options.timestamps) scan.timestamps=[];
   if (options.expectedColor) scan.colorInfo={expected:options.expectedColor,conflict:false};
   const expectedFrames=Number(options.expectedFrames),onProgress=options.onProgress;
@@ -506,17 +550,36 @@ const inspectVideoFrames = async (ffprobe, file, index, options={}) => {
     if (options.sourceBasic==='sdr') validateSdrFrameSignaling(options.sourceBasic,scan,options.expectedColor);
   };
   update(false);
+  const readCompactField=(text,key)=>{
+    const token=`${key}=`;
+    let pos=0;
+    while(true){
+      const found=text.indexOf(token,pos);
+      if(found<0)return undefined;
+      if(found===0||text.charCodeAt(found-1)===124){
+        const valStart=found+token.length;
+        const bar=text.indexOf('|',valStart);
+        return bar<0?text.slice(valStart):text.slice(valStart,bar);
+      }
+      pos=found+1;
+    }
+  };
   const argv=buildFrameScanArguments(file,index,options.threads ?? getDecodeThreadCount());
   let scannerDiagnostics='';
   await runTimelineProcess(ffprobe, argv, line=>{
     recordHdrFrame(line,scan);
     failOnKnownFrameMismatch();
     const text=String(line);
-    const positionMatch=text.match(/(?:^|\|)pkt_pos=([^|]+)/);
-    const position=positionMatch&&positionMatch[1]!=='N/A'?Number(positionMatch[1]):NaN;
+    const posRaw=readCompactField(text,'pkt_pos');
+    const position=posRaw!==undefined&&posRaw!=='N/A'&&posRaw!==''?Number(posRaw):NaN;
     if(Number.isFinite(position)&&position>=0){lastPacketPosition=Math.max(lastPacketPosition,position);hasPacketPosition=true;}
-    const timestampMatch=text.match(/(?:^|\|)best_effort_timestamp_time=([^|]+)/);
-    const timestamp=timestampMatch&&timestampMatch[1]!=='N/A'?Number(timestampMatch[1]):NaN;
+    let timestamp=NaN;
+    if(scan.timestamps){
+      if(scan.timestamps.length)timestamp=scan.timestamps[scan.timestamps.length-1];
+    }else{
+      const tsRaw=readCompactField(text,'best_effort_timestamp_time');
+      timestamp=tsRaw!==undefined&&tsRaw!=='N/A'&&tsRaw!==''?Number(tsRaw):NaN;
+    }
     if(Number.isFinite(timestamp))lastTimestamp=Math.max(lastTimestamp,timestamp);
     const now=Date.now();
     if (scan.frames===1 || scan.frames%256===0 || now-lastProgressAt>=1000) { update(false); lastProgressAt=now; }
@@ -535,6 +598,23 @@ const inspectVideoFrames = async (ffprobe, file, index, options={}) => {
     throw Error(`${prefix} ${scannerDiagnostics.trim().slice(-800)}`);
   }
   if (!scan.frames) throw validationUnavailable('Decoded frame metadata unavailable');
+  if (scan.staticInfo?.introSplice && !scan.staticInfo.conflict) {
+    const splice=scan.staticInfo.introSplice;
+    const postSpliceFrames=scan.frames-splice.introFrames;
+    const ratioOk=scan.frames>=1000 ? (splice.introFrames/scan.frames)<=0.01 : postSpliceFrames>=splice.introFrames*3;
+    if (!(splice.introFrames>=1 && splice.mainFrames>=1 && postSpliceFrames>=splice.introFrames*3 && ratioOk)) {
+      scan.staticInfo.conflict=true;
+      if (options.failFast) throw Error('Conflicting or changing static HDR metadata in decoded frames');
+    } else {
+      splice.postSpliceFrames=postSpliceFrames;
+    }
+  }
+  if (scan.staticInfo) {
+    delete scan.staticInfo.allowIntroSplice;
+    delete scan.staticInfo.firstFrameTs;
+    delete scan.staticInfo.masteringFrames;
+    delete scan.staticInfo.lightFrames;
+  }
   update(true);
   return scan;
 };
@@ -807,13 +887,20 @@ const mediaInfoContentLightMetadata = info => {
   if (!Number.isInteger(max) || !Number.isInteger(avg) || max<1 || max>65535 || avg<1 || avg>max) return null;
   return {side_data_type:'Content light level metadata',max_content:max,max_average:avg};
 };
-const seedHdrMetadataFromMediaInfo = (video,info) => {
+const seedHdrMetadataFromMediaInfo = (video,info,staticInfo=null) => {
   const side=[...(video?.side_data_list || [])],added=[];
   const candidateMastering=mediaInfoMasteringMetadata(info);
   if(candidateMastering){
     const existing=side.find(item=>item.side_data_type==='Mastering display metadata');
     if(existing){
-      if(!sameHdrSideData(existing,candidateMastering,hdrMasterFields))throw Error('MediaInfo and FFprobe HDR mastering metadata conflict');
+      if(!sameHdrSideData(existing,candidateMastering,hdrMasterFields)){
+        const splice=staticInfo?.introSplice && !staticInfo.conflict ? staticInfo.introSplice : null;
+        const spliceMatch=splice && staticInfo.mastering && (
+          (sameHdrSideData(existing,splice.introMastering,hdrMasterFields) && sameHdrSideData(candidateMastering,staticInfo.mastering,hdrMasterFields))
+          || (sameHdrSideData(existing,staticInfo.mastering,hdrMasterFields) && sameHdrSideData(candidateMastering,splice.introMastering,hdrMasterFields))
+        );
+        if(!spliceMatch)throw Error('MediaInfo and FFprobe HDR mastering metadata conflict');
+      }
     }else{side.push(candidateMastering);added.push('mastering');}
   }
   const candidateLight=mediaInfoContentLightMetadata(info);
@@ -823,7 +910,15 @@ const seedHdrMetadataFromMediaInfo = (video,info) => {
       const existing=side[index];
       const unspecified=Number(existing.max_content)===0 && Number(existing.max_average)===0;
       if(unspecified){side[index]=candidateLight;added.push('content-light');}
-      else if(!sameHdrSideData(existing,candidateLight,['max_content','max_average']))throw Error('MediaInfo and FFprobe content-light metadata conflict');
+      else if(!sameHdrSideData(existing,candidateLight,['max_content','max_average'])){
+        const splice=staticInfo?.introSplice && !staticInfo.conflict ? staticInfo.introSplice : null;
+        const cllFields=['max_content','max_average'];
+        const lightSpliceMatch=splice?.introLight && staticInfo.light && (
+          (sameHdrSideData(existing,splice.introLight,cllFields) && sameHdrSideData(candidateLight,staticInfo.light,cllFields))
+          || (sameHdrSideData(existing,staticInfo.light,cllFields) && sameHdrSideData(candidateLight,splice.introLight,cllFields))
+        );
+        if(!lightSpliceMatch)throw Error('MediaInfo and FFprobe content-light metadata conflict');
+      }
     }else{side.push(candidateLight);added.push('content-light');}
   }
   return {
@@ -868,23 +963,213 @@ const isKnownQsvHdrMasteringClamp = (source,output,error) => {
       || sourceGreenY<=qsvClamp+0.0001 || sourceGreenY>=0.84) return false;
   return sameHdrSideData(sourceMastering,outputMastering,hdrMasterFields.filter(field=>field!=='green_y'));
 };
-const collectHdrFrameStatic = (line, info) => {
-  for (const [prefix,key,type,fields] of [
-    ['side_datum/mastering_display_metadata:','mastering','Mastering display metadata',hdrMasterFields],
-    ['side_datum/content_light_level_metadata:','light','Content light level metadata',['max_content','max_average']]
-  ]) {
-    const entries=String(line).split('|').filter(x=>x.startsWith(prefix));
-    if (!entries.length) continue;
-    const value={side_data_type:type}, seen=new Set();
-    for (const part of entries) { const p=part.slice(prefix.length),i=p.indexOf('='); if(i>0) { const k=p.slice(0,i); if(seen.has(k)) info.conflict=true; seen.add(k); value[k]=p.slice(i+1); } }
-    if (fields.some(f=>!Number.isFinite(rationalValue(value[f])))) {info.conflict=true;continue;}
-    // FFmpeg reports 0/0 for both CLL fields when HDR content-light data is
-    // unspecified. Do not compare this placeholder against Dolby Level 6 data
-    // used to supply the missing HDR10 light metadata.
-    if (key==='light' && Number(value.max_content)===0 && Number(value.max_average)===0) continue;
-    if (info[key] && !sameHdrSideData(info[key],value,fields)) info.conflict=true;
-    else if (!info[key]) info[key]=value;
+const collectHdrFrameStatic = (line, info, frameIndex=0, timestamp=NaN) => {
+  if (info.allowIntroSplice && Number.isFinite(timestamp) && info.firstFrameTs===undefined) {
+    info.firstFrameTs=timestamp;
   }
+  const text=String(line);
+  if (text.indexOf('side_datum/')<0) return;
+  const masterPrefix='side_datum/mastering_display_metadata:';
+  const lightPrefix='side_datum/content_light_level_metadata:';
+  let masterValue=null, masterSeen=null;
+  let lightValue=null, lightSeen=null;
+  const len=text.length;
+  for (let segStart=0; segStart<=len; ) {
+    let segEnd=text.indexOf('|', segStart);
+    if (segEnd<0) segEnd=len;
+    if (text.startsWith(masterPrefix, segStart)) {
+      const i=text.indexOf('=', segStart+masterPrefix.length);
+      if (i>segStart+masterPrefix.length && i<segEnd) {
+        if (!masterValue) { masterValue={side_data_type:'Mastering display metadata'}; masterSeen=new Set(); }
+        const k=text.slice(segStart+masterPrefix.length, i);
+        if (masterSeen.has(k)) info.conflict=true;
+        masterSeen.add(k);
+        masterValue[k]=text.slice(i+1, segEnd);
+      }
+    } else if (text.startsWith(lightPrefix, segStart)) {
+      const i=text.indexOf('=', segStart+lightPrefix.length);
+      if (i>segStart+lightPrefix.length && i<segEnd) {
+        if (!lightValue) { lightValue={side_data_type:'Content light level metadata'}; lightSeen=new Set(); }
+        const k=text.slice(segStart+lightPrefix.length, i);
+        if (lightSeen.has(k)) info.conflict=true;
+        lightSeen.add(k);
+        lightValue[k]=text.slice(i+1, segEnd);
+      }
+    }
+    if (segEnd===len) break;
+    segStart=segEnd+1;
+  }
+  if (masterValue && hdrMasterFields.some(f=>!Number.isFinite(rationalValue(masterValue[f])))) {
+    info.conflict=true;
+    masterValue=null;
+  }
+  if (lightValue) {
+    if (['max_content','max_average'].some(f=>!Number.isFinite(rationalValue(lightValue[f])))) {
+      info.conflict=true;
+      lightValue=null;
+    } else if (Number(lightValue.max_content)===0 && Number(lightValue.max_average)===0) {
+      // FFmpeg reports 0/0 for both CLL fields when HDR content-light data is
+      // unspecified. Do not compare this placeholder against Dolby Level 6 data
+      // used to supply the missing HDR10 light metadata.
+      lightValue=null;
+    }
+  }
+  if (!masterValue && !lightValue) return;
+  if (info.allowIntroSplice) {
+    if (masterValue) info.masteringFrames=(info.masteringFrames || 0)+1;
+    if (lightValue) info.lightFrames=(info.lightFrames || 0)+1;
+  }
+  const masterChanged=Boolean(masterValue && info.mastering && !sameHdrSideData(info.mastering,masterValue,hdrMasterFields));
+  const lightChanged=Boolean(lightValue && info.light && !sameHdrSideData(info.light,lightValue,['max_content','max_average']));
+  if (!masterChanged && !lightChanged) {
+    if (masterValue && !info.mastering) info.mastering=masterValue;
+    if (lightValue && !info.light) info.light=lightValue;
+    if (info.introSplice) info.introSplice.mainFrames=(info.introSplice.mainFrames || 0)+1;
+    return;
+  }
+  if (!info.allowIntroSplice || info.introSplice) {
+    info.conflict=true;
+    return;
+  }
+  const introFrames=frameIndex>1
+    ? frameIndex-1
+    : Math.max(0,(masterChanged ? info.masteringFrames : info.lightFrames)-1);
+  const introDurationSec=Number.isFinite(timestamp) && Number.isFinite(info.firstFrameTs) ? timestamp-info.firstFrameTs : NaN;
+  const windowOk=introFrames>=1 && introFrames<=300
+    && (Number.isFinite(introDurationSec) ? (introDurationSec>=0 && introDurationSec<=5.0) : introFrames<=150);
+  let masterOk=true;
+  if (masterChanged) {
+    const chromFields=['red_x','red_y','green_x','green_y','blue_x','blue_y','white_point_x','white_point_y'];
+    const minL=rationalValue(masterValue.min_luminance), maxL=rationalValue(masterValue.max_luminance);
+    masterOk=sameHdrSideData(info.mastering,masterValue,chromFields)
+      && Number.isFinite(minL) && Number.isFinite(maxL) && minL>=0 && maxL>0 && minL<=maxL;
+  }
+  let lightOk=true;
+  if (lightChanged) {
+    const cMax=Number(lightValue.max_content), cAvg=Number(lightValue.max_average);
+    lightOk=Number.isInteger(cMax) && Number.isInteger(cAvg) && cMax>=1 && cMax<=65535 && cAvg>=1 && cAvg<=cMax;
+  }
+  if (!windowOk || !masterOk || !lightOk) {
+    info.conflict=true;
+    return;
+  }
+  info.introSplice={
+    introMastering:masterChanged ? info.mastering : null,
+    introLight:lightChanged ? info.light : null,
+    introFrames,
+    introDurationSec:Number.isFinite(introDurationSec)?Number(introDurationSec.toFixed(3)):null,
+    mainFrames:1
+  };
+  if (masterChanged) info.mastering=masterValue;
+  else if (masterValue && !info.mastering) info.mastering=masterValue;
+  if (lightChanged) info.light=lightValue;
+  else if (lightValue && !info.light) info.light=lightValue;
+};
+/** Normalize a verified leading intro mastering-display and/or CLL splice to the uniform feature values. */
+const normalizeIntroMasteringSplice = (source, scan) => {
+  const staticInfo=scan?.staticInfo;
+  const splice=staticInfo?.introSplice;
+  if (!splice) return {metadata:source,masteringDisplayArg:null,contentLightArg:null,normalized:null};
+  const mainMastering=staticInfo?.mastering, mainLightSide=staticInfo?.light;
+  const totalFrames=Number(scan?.frames || 0);
+  const postSpliceFrames=Number.isSafeInteger(splice.postSpliceFrames)
+    ? splice.postSpliceFrames
+    : (totalFrames-Number(splice.introFrames || 0));
+  const ratioOk=totalFrames>=1000
+    ? (Number(splice.introFrames || 0)/totalFrames)<=0.01
+    : postSpliceFrames>=Number(splice.introFrames || 0)*3;
+  if (staticInfo?.conflict || (!splice.introMastering && !splice.introLight)
+      || !(splice.introFrames>=1 && splice.introFrames<=300)
+      || (splice.introDurationSec!==null && splice.introDurationSec!==undefined && !(splice.introDurationSec>=0 && splice.introDurationSec<=5.0))
+      || !(splice.mainFrames>=1 && postSpliceFrames>=splice.introFrames*3 && ratioOk)) {
+    throw Error('Conflicting or changing static HDR metadata in decoded frames');
+  }
+  const side=[...(source?.side_data_list || [])];
+  let masteringDisplayArg=null, contentLightArg=null;
+  let introMinLuminance=null, mainMinLuminance=null, introMaxLuminance=null, mainMaxLuminance=null;
+  let introLight=null, mainLight=null;
+
+  if (splice.introMastering) {
+    const chromFields=['red_x','red_y','green_x','green_y','blue_x','blue_y','white_point_x','white_point_y'];
+    if (!mainMastering || !sameHdrSideData(splice.introMastering,mainMastering,chromFields)) {
+      throw Error('Conflicting or changing static HDR metadata in decoded frames');
+    }
+    const coordUnits=chromFields.map(f=>{
+      const v=rationalValue(mainMastering[f]);
+      if (!Number.isFinite(v) || v<0 || v>1) throw Error('HDR mastering display chromaticities are invalid');
+      return Math.round(v*50000);
+    });
+    const minLum=rationalValue(mainMastering.min_luminance), maxLum=rationalValue(mainMastering.max_luminance);
+    const introMinLum=rationalValue(splice.introMastering.min_luminance), introMaxLum=rationalValue(splice.introMastering.max_luminance);
+    if (!Number.isFinite(minLum) || !Number.isFinite(maxLum) || !Number.isFinite(introMinLum) || !Number.isFinite(introMaxLum)
+        || minLum<0 || maxLum<=0 || minLum>maxLum || introMinLum<0 || introMaxLum<=0 || introMinLum>introMaxLum) {
+      throw Error('HDR mastering display luminance bounds are invalid');
+    }
+    const primaries={
+      r:[coordUnits[0],coordUnits[1]],
+      g:[coordUnits[2],coordUnits[3]],
+      b:[coordUnits[4],coordUnits[5]],
+      wp:[coordUnits[6],coordUnits[7]]
+    };
+    masteringDisplayArg=formatMasteringDisplayArg(primaries,minLum,maxLum);
+    const mdIdx=side.findIndex(x=>x.side_data_type==='Mastering display metadata');
+    if (mdIdx>=0) {
+      const existing=side[mdIdx];
+      if (!sameHdrSideData(existing,splice.introMastering,hdrMasterFields)
+          && !sameHdrSideData(existing,mainMastering,hdrMasterFields)) {
+        throw Error('HDR mastering metadata conflicts with decoded frames');
+      }
+      side[mdIdx]={...mainMastering};
+    } else {
+      side.push({...mainMastering});
+    }
+    introMinLuminance=Math.round(introMinLum*10000)/10000;
+    mainMinLuminance=Math.round(minLum*10000)/10000;
+    introMaxLuminance=Math.round(introMaxLum*10000)/10000;
+    mainMaxLuminance=Math.round(maxLum*10000)/10000;
+  }
+
+  if (splice.introLight) {
+    const iMax=Number(splice.introLight.max_content), iAvg=Number(splice.introLight.max_average);
+    const mMax=Number(mainLightSide?.max_content), mAvg=Number(mainLightSide?.max_average);
+    const validPair=(max,avg)=>Number.isInteger(max) && Number.isInteger(avg) && max>=1 && max<=65535 && avg>=1 && avg<=max;
+    if (!mainLightSide || !validPair(iMax,iAvg) || !validPair(mMax,mAvg)) {
+      throw Error('Conflicting or changing static HDR metadata in decoded frames');
+    }
+    contentLightArg=`${mMax},${mAvg}`;
+    const cllIdx=side.findIndex(x=>x.side_data_type==='Content light level metadata');
+    if (cllIdx>=0) {
+      const existing=side[cllIdx];
+      const unspecified=Number(existing.max_content)===0 && Number(existing.max_average)===0;
+      if (!unspecified
+          && !sameHdrSideData(existing,splice.introLight,['max_content','max_average'])
+          && !sameHdrSideData(existing,mainLightSide,['max_content','max_average'])) {
+        throw Error('HDR light metadata conflicts with decoded frames');
+      }
+      side[cllIdx]={side_data_type:'Content light level metadata',max_content:mMax,max_average:mAvg};
+    } else {
+      side.push({side_data_type:'Content light level metadata',max_content:mMax,max_average:mAvg});
+    }
+    introLight={max_content:iMax,max_average:iAvg};
+    mainLight={max_content:mMax,max_average:mAvg};
+  }
+
+  return {
+    metadata:{...source,side_data_list:side},
+    masteringDisplayArg,
+    contentLightArg,
+    normalized:{
+      introFrames:splice.introFrames,
+      postSpliceFrames,
+      introDurationSec:splice.introDurationSec ?? null,
+      introMinLuminance,
+      mainMinLuminance,
+      introMaxLuminance,
+      mainMaxLuminance,
+      introLight,
+      mainLight
+    }
+  };
 };
 const checkHdrFrameStatic = (metadata, scan, requireLight=true, requireMastering=true) => {
   const current=scan?.staticInfo;

@@ -83,6 +83,7 @@ SYMBOL_STAGE_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         "validateQsvWithSvtHdrClampFallback": ("decode",),
         "isKnownQsvHdrMasteringClamp": ("precheck_video", "decode"),
         "collectHdrFrameStatic": ("precheck_video", "candidate_frames"),
+        "normalizeIntroMasteringSplice": ("precheck_video", "encode", "decode"),
         "checkHdrFrameStatic": ("precheck_video", "encode", "decode"),
         "hdrFrameMetadataRequirements": ("precheck_video", "decode"),
         "composeVideoFilterChain": ("encode",),

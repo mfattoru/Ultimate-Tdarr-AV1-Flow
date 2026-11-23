@@ -138,7 +138,7 @@ const verifyTimestampIsolatedVideo=async({ffmpeg,input,index,threads,expectedFra
   if(frames!==expectedFrames)throw Error(`Timestamp-isolated decode frame count differs: expected ${expectedFrames}, decoded ${frames}`);
   return stderr;
 };
-const verifyCandidateDecodes=async({report,canUseQsv=true,candidatePacketTimestampsVerified=false,audioTracks=[],sourceVideoIndex=0,runVideo,runAudio,checkSource,isCorruption})=>{
+const verifyCandidateDecodes=async({report,canUseQsv=true,candidatePacketTimestampsVerified=false,proactiveTimestampIsolated=false,audioTracks=[],sourceVideoIndex=0,runVideo,runAudio,checkSource,isCorruption})=>{
   const clean=async(operation,allowDiagnostic)=>{
     const diagnostic=String(await operation() || '').trim();
     // All decoder commands use -v error. Exit zero with error-level output is
@@ -176,6 +176,12 @@ const verifyCandidateDecodes=async({report,canUseQsv=true,candidatePacketTimesta
       report.recoveries.push({code:'timestamp_isolated_decode',outcome:'passed',diagnostic:validationDetail(error)});
       return true;
     };
+    if(proactiveTimestampIsolated && candidatePacketTimestampsVerified){
+      try { await clean(()=>runVideo('timestamp-isolated')); }
+      catch(retryError) { await failDecode('video',[{sourceIndex:sourceVideoIndex,error:retryError}]); }
+      report.recoveries.push({code:'timestamp_isolated_decode',outcome:'passed',diagnostic:'Proactively routed to timestamp-isolated decode after verified matched candidate DTS ties'});
+      return;
+    }
     let qsvError;
     if(canUseQsv){
       try {await clean(()=>runVideo('qsv'),isBenignQsvInitializationDiagnostic);return;}
@@ -206,4 +212,177 @@ const verifyCandidateDecodes=async({report,canUseQsv=true,candidatePacketTimesta
     }
   });
 };
-if(typeof module!=='undefined')module.exports={newValidationReport,validationFailure,validationUnavailable,validationStage,completeValidation,validateVideoPacketDts,validateRetainedAttachments,verifyCandidateDecodes,verifyTimestampIsolatedVideo,isVerificationInfrastructureDiagnostic};
+/** Measure video, audio, and subtitle packet timelines in a single container pass. */
+const measureStreamTimelinesBatch = async (ffprobe, file, targets, runProcess, onProgress, durationHint, role='file') => {
+  if (!Array.isArray(targets) || targets.length === 0) return new Map();
+  const states = new Map();
+  const orderedStates = [];
+  for (const target of targets) {
+    const idx = Number(target?.index);
+    const type = target?.type;
+    if (!Number.isSafeInteger(idx) || idx < 0 || !['video','audio','subtitle'].includes(type)) {
+      throw validationUnavailable(`Invalid timeline scan target: ${JSON.stringify(target)}`);
+    }
+    const ignoreEmptySubtitleMaxBytes = type === 'subtitle'
+      && Number.isSafeInteger(target?.ignoreEmptySubtitleMaxBytes)
+      && target.ignoreEmptySubtitleMaxBytes > 0
+      ? target.ignoreEmptySubtitleMaxBytes
+      : 0;
+    const state = {
+      index: idx,
+      type,
+      ignoreEmptySubtitleMaxBytes,
+      first: Infinity,
+      last: -Infinity,
+      count: 0,
+      packetCount: 0,
+      invalid: 0,
+      missingPtsCount: 0,
+      missingTimestampCount: 0,
+      previousDts: null,
+      outputDtsNonIncreasingCount: 0,
+      missingDtsCount: 0,
+      missingPtsPackets: [],
+      missingTimestampPackets: [],
+      missingPtsBitmap: Buffer.alloc(0),
+      missingTimestampBitmap: Buffer.alloc(0)
+    };
+    states.set(idx, state);
+    orderedStates.push(state);
+  }
+  const markMissingPacket = (bitmap, ordinal) => {
+    const byteIndex = Math.floor(ordinal / 8);
+    if (byteIndex >= bitmap.length) {
+      const grown = Buffer.alloc(Math.max(byteIndex + 1, bitmap.length ? bitmap.length * 2 : 1024));
+      bitmap.copy(grown);
+      bitmap = grown;
+    }
+    bitmap[byteIndex] |= 1 << (ordinal % 8);
+    return bitmap;
+  };
+  const readCompactField = (text, key) => {
+    const token = `${key}=`;
+    let pos = 0;
+    while (true) {
+      const found = text.indexOf(token, pos);
+      if (found < 0) return undefined;
+      if (found === 0 || text.charCodeAt(found - 1) === 124) {
+        const valStart = found + token.length;
+        const bar = text.indexOf('|', valStart);
+        return bar < 0 ? text.slice(valStart) : text.slice(valStart, bar);
+      }
+      pos = found + 1;
+    }
+  };
+  const needSize = orderedStates.some(s => s.ignoreEmptySubtitleMaxBytes > 0);
+  const singleState = orderedStates.length === 1 ? orderedStates[0] : null;
+  const packetEntries = singleState
+    ? (needSize ? 'packet=pts_time,dts_time,duration_time,pos,size' : 'packet=pts_time,dts_time,duration_time,pos')
+    : (needSize ? 'packet=stream_index,pts_time,dts_time,duration_time,pos,size' : 'packet=stream_index,pts_time,dts_time,duration_time,pos');
+  const argv = singleState
+    ? ['-v','error','-select_streams',String(singleState.index),'-show_packets','-show_entries',packetEntries,'-of','compact=p=0:nk=0',file]
+    : ['-v','error','-show_packets','-show_entries',packetEntries,'-of','compact=p=0:nk=0',file];
+  let fileBytes = 0, lastPosition = 0, lastRatio = 0, lastReported = -1, lastReportAt = 0, hasPacketPosition = false;
+  try { fileBytes = require('fs').statSync(file).size; } catch (_) {}
+  const emitProgress = (ptsValue, position) => {
+    if (typeof onProgress !== 'function') return;
+    if (Number.isFinite(position) && position >= 0) {
+      lastPosition = Math.max(lastPosition, position);
+      hasPacketPosition = true;
+    }
+    let ratio = fileBytes > 0 && hasPacketPosition
+      ? lastPosition / fileBytes
+      : (Number.isFinite(ptsValue) && durationHint > 0 ? ptsValue / durationHint : 0);
+    ratio = Math.max(lastRatio, Math.max(0, Math.min(1, Number.isFinite(ratio) ? ratio : 0)));
+    lastRatio = ratio;
+    const now = Date.now();
+    if (ratio - lastReported >= 0.002 || now - lastReportAt >= 1000 || ratio >= 1) {
+      lastReported = ratio;
+      lastReportAt = now;
+      try { onProgress(ratio); } catch (_) {}
+    }
+  };
+  await runProcess(ffprobe, argv, line => {
+    const text = String(line || '');
+    const posRaw = readCompactField(text, 'pos');
+    const position = posRaw !== undefined && posRaw !== 'N/A' && posRaw !== '' ? Number(posRaw) : NaN;
+    let state = singleState;
+    if (!state) {
+      const rawIdx = readCompactField(text, 'stream_index');
+      if (rawIdx !== undefined && rawIdx.trim() !== '') {
+        const idx = Number(rawIdx);
+        if (Number.isSafeInteger(idx)) state = states.get(idx);
+      }
+    }
+    if (!state) {
+      if (Number.isFinite(position) && position >= 0) emitProgress(NaN, position);
+      return;
+    }
+    const ptsRaw = readCompactField(text, 'pts_time');
+    const dtsRaw = readCompactField(text, 'dts_time');
+    if (ptsRaw === undefined && dtsRaw === undefined) return;
+    const packetOrdinal = state.packetCount++;
+    const pts = ptsRaw !== undefined && ptsRaw !== 'N/A' && ptsRaw !== '' ? Number(ptsRaw) : NaN;
+    const dts = dtsRaw !== undefined && dtsRaw !== 'N/A' && dtsRaw !== '' ? Number(dtsRaw) : NaN;
+    const durRaw = readCompactField(text, 'duration_time');
+    const duration = durRaw !== undefined && durRaw !== 'N/A' && durRaw !== '' ? Number(durRaw) : 0;
+    const sizeRaw = state.ignoreEmptySubtitleMaxBytes > 0 ? readCompactField(text, 'size') : undefined;
+    const packetSize = sizeRaw !== undefined && sizeRaw !== 'N/A' && sizeRaw !== '' ? Number(sizeRaw) : NaN;
+    if (Number.isFinite(dts)) {
+      if (state.previousDts !== null && dts <= state.previousDts) state.outputDtsNonIncreasingCount++;
+      state.previousDts = dts;
+    } else state.missingDtsCount++;
+    if (!Number.isFinite(pts)) {
+      state.missingPtsCount++;
+      if (state.missingPtsPackets.length < 1024) state.missingPtsPackets.push(packetOrdinal);
+      if (state.type === 'audio') state.missingPtsBitmap = markMissingPacket(state.missingPtsBitmap, packetOrdinal);
+    }
+    if (!Number.isFinite(pts) && !Number.isFinite(dts)) {
+      state.missingTimestampCount++;
+      if (state.missingTimestampPackets.length < 1024) state.missingTimestampPackets.push(packetOrdinal);
+      if (state.type === 'audio') state.missingTimestampBitmap = markMissingPacket(state.missingTimestampBitmap, packetOrdinal);
+    }
+    emitProgress(Number.isFinite(pts) ? pts : dts, position);
+    if (state.ignoreEmptySubtitleMaxBytes > 0 && Number.isFinite(packetSize) && packetSize <= state.ignoreEmptySubtitleMaxBytes) return;
+    const timelineTime = state.type === 'audio' && !Number.isFinite(pts) ? dts : pts;
+    if (!Number.isFinite(timelineTime)) { state.invalid++; return; }
+    state.first = Math.min(state.first, timelineTime);
+    state.last = Math.max(state.last, timelineTime + (Number.isFinite(duration) && duration > 0 ? duration : 0));
+    state.count++;
+  });
+  if (typeof onProgress === 'function') try { onProgress(1); } catch (_) {}
+  const results = new Map();
+  for (const state of orderedStates) {
+    if (state.invalid && state.type !== 'audio') {
+      const firstMissing = (state.missingTimestampPackets[0] ?? state.missingPtsPackets[0]);
+      const packetText = firstMissing === undefined ? '' : ' (first at packet ' + (firstMissing + 1) + ')';
+      throw validationUnavailable(`${state.type} ${role} stream ${state.index} has ${state.invalid} packets without a usable ${state.type === 'audio' ? 'PTS or DTS' : 'PTS'}${packetText}`);
+    }
+    if (state.count === 0 && state.type === 'subtitle') { results.set(state.index, { empty: true }); continue; }
+    if (state.count === 0 && state.type === 'audio' && state.packetCount > 0) throw validationUnavailable(`audio ${role} stream ${state.index} has no packets with usable PTS or DTS`);
+    if (state.count === 0 || !Number.isFinite(state.first) || !Number.isFinite(state.last) || (state.type === 'video' && (state.count < 2 || !(state.last > state.first)))) {
+      throw validationUnavailable(`${state.type} ${role} stream ${state.index} timeline is unavailable or too short to verify`);
+    }
+    const bitmapBytes = Math.ceil(state.packetCount / 8);
+    results.set(state.index, {
+      first: state.first,
+      last: state.last,
+      duration: state.last - state.first,
+      packets: state.count,
+      totalPackets: state.packetCount,
+      outputDtsNonIncreasingCount: state.outputDtsNonIncreasingCount,
+      missingDtsCount: state.missingDtsCount,
+      missingPtsCount: state.missingPtsCount,
+      missingPtsPackets: state.missingPtsPackets,
+      missingPtsTruncated: state.missingPtsCount > state.missingPtsPackets.length,
+      missingPtsBitmap: state.missingPtsBitmap.subarray(0, bitmapBytes),
+      missingTimestampCount: state.missingTimestampCount,
+      missingTimestampPackets: state.missingTimestampPackets,
+      missingTimestampsTruncated: state.missingTimestampCount > state.missingTimestampPackets.length,
+      missingTimestampBitmap: state.missingTimestampBitmap.subarray(0, bitmapBytes),
+      empty: false
+    });
+  }
+  return results;
+};
+if(typeof module!=='undefined')module.exports={newValidationReport,validationFailure,validationUnavailable,validationStage,completeValidation,validateVideoPacketDts,validateRetainedAttachments,verifyCandidateDecodes,verifyTimestampIsolatedVideo,isVerificationInfrastructureDiagnostic,measureStreamTimelinesBatch};

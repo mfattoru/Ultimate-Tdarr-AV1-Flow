@@ -282,3 +282,116 @@ test('isolated decode reports throttled frame progress and completion without ch
   assert.deepEqual(updates[0],{frames:2,total:6,complete:false,fps:48.5});
   assert.deepEqual(updates[updates.length-1],{frames:6,total:6,complete:true,fps:55.0});
 });
+
+
+test('measureStreamTimelinesBatch scans multiple stream types in one pass with exact bitsets and subtitle filtering',async()=>{
+  const {measureStreamTimelinesBatch}=require('../src/validation');
+  const calls=[];const progress=[];
+  const result=await measureStreamTimelinesBatch(
+    'ffprobe',
+    'unused-source.mkv',
+    [
+      {index:0,type:'video'},
+      {index:1,type:'audio'},
+      {index:2,type:'subtitle',ignoreEmptySubtitleMaxBytes:2},
+      {index:3,type:'subtitle'}
+    ],
+    async(bin,argv,onLine)=>{
+      calls.push({bin,argv});
+      for(const line of [
+        'stream_index=0|pts_time=0.000|dts_time=0.000|duration_time=0.040|pos=100|size=5000',
+        'stream_index=1|pts_time=N/A|dts_time=0.000|duration_time=0.020|pos=200|size=1200',
+        'stream_index=99|pts_time=50.0|dts_time=50.0|duration_time=0.040|pos=300|size=900',
+        'stream_index=2|pts_time=1.000|dts_time=1.000|duration_time=0.500|pos=400|size=2',
+        'stream_index=2|pts_time=2.000|dts_time=2.000|duration_time=0.500|pos=500|size=25',
+        'stream_index=0|pts_time=0.040|dts_time=0.040|duration_time=0.040|pos=600|size=4500',
+        'stream_index=1|pts_time=0.020|dts_time=0.020|duration_time=0.020|pos=700|size=1100'
+      ]) onLine(line);
+    },
+    ratio=>progress.push(ratio),
+    10,
+    'source'
+  );
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].argv.includes('-select_streams'),false);
+  assert.ok(calls[0].argv.includes('packet=stream_index,pts_time,dts_time,duration_time,pos,size'));
+  assert.equal(result.size,4);
+
+  const v=result.get(0);
+  assert.equal(v.packets,2);
+  assert.equal(v.first,0);
+  assert.ok(Math.abs(v.last-0.08)<1e-6);
+
+  const a=result.get(1);
+  assert.equal(a.totalPackets,2);
+  assert.equal(a.missingPtsCount,1);
+  assert.equal(a.missingPtsBitmap[0]&1,1);
+  assert.equal(a.missingTimestampCount,0);
+
+  const s2=result.get(2);
+  assert.equal(s2.packets,1);
+  assert.equal(s2.first,2);
+  assert.equal(s2.last,2.5);
+
+  const s3=result.get(3);
+  assert.deepEqual(s3,{empty:true});
+  assert.equal(result.has(99),false);
+  assert.equal(progress.at(-1),1);
+});
+
+test('measureStreamTimelinesBatch preserves single-target -select_streams and missing-timestamp errors',async()=>{
+  const {measureStreamTimelinesBatch}=require('../src/validation');
+  let seenArgv;
+  const single=await measureStreamTimelinesBatch(
+    'ffprobe',
+    'unused.mkv',
+    [{index:0,type:'video'}],
+    async(_bin,argv,onLine)=>{
+      seenArgv=argv;
+      onLine('pts_time=0.000|dts_time=0.000|duration_time=0.040|pos=10');
+      onLine('pts_time=0.040|dts_time=0.040|duration_time=0.040|pos=20');
+    },
+    undefined,
+    1,
+    'candidate'
+  );
+  assert.equal(seenArgv[seenArgv.indexOf('-select_streams')+1],'0');
+  assert.ok(seenArgv.includes('packet=pts_time,dts_time,duration_time,pos'));
+  assert.equal(single.get(0).packets,2);
+
+  await assert.rejects(
+    measureStreamTimelinesBatch(
+      'ffprobe',
+      'unused.mkv',
+      [{index:0,type:'video'},{index:1,type:'audio'}],
+      async(_bin,_argv,onLine)=>{
+        onLine('stream_index=0|pts_time=0.000|dts_time=0.000|duration_time=0.040|pos=10');
+        onLine('stream_index=0|pts_time=N/A|dts_time=0.040|duration_time=0.040|pos=20');
+      },
+      undefined,
+      1,
+      'candidate'
+    ),
+    err=>err.validation?.outcome==='inconclusive'&&/video candidate stream 0 has 1 packets without a usable PTS \(first at packet 2\)/.test(err.message)
+  );
+});
+
+test('proactive timestamp-isolated decode bypasses QSV and software null-mux decodes when matched DTS ties are verified',async()=>{
+  const modes=[],o=options({candidatePacketTimestampsVerified:true,proactiveTimestampIsolated:true,runVideo:async mode=>{modes.push(mode);return '';}});
+  await verifyCandidateDecodes(o);completeValidation(o.report);
+  assert.deepEqual(modes,['timestamp-isolated']);
+  assert.equal(o.report.outcome,'recovered');
+  assert.equal(o.report.recoveries[0].code,'timestamp_isolated_decode');
+});
+
+test('proactive timestamp-isolated decode is ignored when candidate packet timestamps are unverified',async()=>{
+  const modes=[],o=options({candidatePacketTimestampsVerified:false,proactiveTimestampIsolated:true,runVideo:async mode=>{modes.push(mode);return '';}});
+  await verifyCandidateDecodes(o);completeValidation(o.report);
+  assert.deepEqual(modes,['qsv']);
+  assert.equal(o.report.outcome,'passed');
+});
+
+test('proactive timestamp-isolated decode still rejects corrupt candidates',async()=>{
+  const o=options({candidatePacketTimestampsVerified:true,proactiveTimestampIsolated:true,runVideo:async()=>{throw Error('Invalid data found');}});
+  await assert.rejects(verifyCandidateDecodes(o),e=>e.validation?.outcome==='rejected');
+});

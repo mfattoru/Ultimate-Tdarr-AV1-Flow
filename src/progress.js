@@ -227,7 +227,8 @@ const createStallSafeProgressEmitter = ({
   workerDetails,
   minStep = 0.01,
   heartbeatIntervalMs = 120000,
-  defaultFps = 0
+  defaultFps = 0,
+  resetOnStart = false
 } = {}) => {
   const start = Number.isFinite(range?.start) ? Number(range.start) : 0;
   const end = Number.isFinite(range?.end) ? Math.max(start, Number(range.end)) : start;
@@ -239,11 +240,13 @@ const createStallSafeProgressEmitter = ({
   const microCeiling = end > start ? Math.max(start, round4(end - 0.0001)) : end;
   let lastEmitted = start, lastEmitAt = Date.now(), hasEmitted = false;
   const emitPercent = (percentage, fps) => {
+    const isInitialReset = Boolean(resetOnStart) && !hasEmitted;
     const bounded = Math.min(99.9, end, Math.max(start, lastEmitted, round4(percentage)));
     lastEmitted = bounded;
     lastEmitAt = Date.now();
     hasEmitted = true;
     const data = { percentage: bounded, status };
+    if (isInitialReset) data.resetProgress = true;
     if (Number.isFinite(fps) && fps > 0) data.fps = fps;
     else if (defaultFps !== undefined) data.fps = defaultFps;
     reportWorkerProgress(updateWorker, data, workerDetails);

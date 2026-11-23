@@ -58,6 +58,7 @@ const engineExports = {
   testKnownQsvHdrClampRisk: 'isQsvHdrMasteringClampRisk',
   testKnownQsvHdrClampRetry: 'shouldRetrySvtForQsvHdrClamp',
   testQsvHdrFallbackRunner: 'validateQsvWithSvtHdrClampFallback',
+  testNormalizeIntroMasteringSplice: 'normalizeIntroMasteringSplice',
   testMustRetainOriginalAtQualityFloor: 'mustRetainOriginalAtQualityFloor',
   testIsVerifiedHdrColorRange: 'isVerifiedHdrColorRange',
   testIsExplicitSdrColorTriplet: 'isExplicitSdrColorTriplet',
