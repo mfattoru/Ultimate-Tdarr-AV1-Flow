@@ -315,3 +315,64 @@ test('HDR guard preflight holds classify as hdr_signaling warnings even without 
   assert.match(embed.title, /^⚠️/);
   assert.match(embed.footer.text, /hdr signaling/i);
 });
+
+test('source corruption embed accurately reports blocklisted + deleted file and still exits output 1', async () => {
+  const h = harness();
+  h.args.variables.user.failure_reason = '[Source media corruption] Invalid NAL unit size (0 > 155162).';
+  h.args.variables.user.arr_corruption_blocklist_status = 'blocklisted';
+  h.args.variables.user.arr_corruption_blocklist_release = 'Dragon.1993.2160p.REMUX-BAD';
+  h.args.variables.user.arr_corruption_delete_status = 'deleted';
+  h.args.variables.user.arr_corruption_search_status = 'requested';
+  h.args.variables.user.arr_corruption_search_target = 'Radarr Movies';
+  const result = await h.run(h.args);
+  assert.equal(result.outputNumber, 1);
+  const desc = h.requests[0].body.embeds[0].description;
+  assert.doesNotMatch(desc, /kept the original file/i);
+  assert.doesNotMatch(desc, /original remains in place/i);
+  assert.match(desc, /Dragon\.1993\.2160p\.REMUX-BAD/);
+  assert.match(desc, /deleted via Radarr Movies/i);
+  assert.match(desc, /replacement search/i);
+});
+
+test('source corruption embed reports blocklist + opt-out kept file when TDARR_ARR_DELETE_CORRUPT=false', async () => {
+  const h = harness();
+  h.args.variables.user.failure_reason = '[Source media corruption] Invalid bitstream';
+  h.args.variables.user.arr_corruption_blocklist_status = 'blocklisted';
+  h.args.variables.user.arr_corruption_blocklist_release = 'Test.Film.Bad-GRP';
+  h.args.variables.user.arr_corruption_delete_status = 'disabled';
+  h.args.variables.user.arr_corruption_search_status = 'requested';
+  h.args.variables.user.arr_corruption_search_target = 'Radarr Movies';
+  await h.run(h.args);
+  const desc = h.requests[0].body.embeds[0].description;
+  assert.match(desc, /kept the original file/i);
+  assert.match(desc, /Test\.Film\.Bad-GRP/);
+  assert.match(desc, /TDARR_ARR_DELETE_CORRUPT=false/);
+});
+
+test('source corruption embed explains when missing grab history skips blocklist and deletion', async () => {
+  const h = harness();
+  h.args.variables.user.failure_reason = '[Source media corruption] Invalid bitstream';
+  h.args.variables.user.arr_corruption_blocklist_status = 'no_history';
+  h.args.variables.user.arr_corruption_delete_status = 'skipped_no_blocklist';
+  h.args.variables.user.arr_corruption_search_status = 'requested';
+  h.args.variables.user.arr_corruption_search_target = 'Radarr Movies';
+  await h.run(h.args);
+  const desc = h.requests[0].body.embeds[0].description;
+  assert.match(desc, /no matching grab history/i);
+  assert.match(desc, /original remains in place/i);
+});
+
+test('source corruption embed reports when release was blocklisted but delete failed', async () => {
+  const h = harness();
+  h.args.variables.user.failure_reason = '[Source media corruption] Invalid bitstream';
+  h.args.variables.user.arr_corruption_blocklist_status = 'blocklisted';
+  h.args.variables.user.arr_corruption_blocklist_release = 'Bad.Release';
+  h.args.variables.user.arr_corruption_delete_status = 'failed';
+  h.args.variables.user.arr_corruption_search_status = 'requested';
+  h.args.variables.user.arr_corruption_search_target = 'Radarr Movies';
+  await h.run(h.args);
+  const desc = h.requests[0].body.embeds[0].description;
+  assert.match(desc, /Bad\.Release/);
+  assert.match(desc, /delete.*failed/i);
+  assert.match(desc, /remain on disk/i);
+});

@@ -1544,7 +1544,7 @@ if arr_config.count('const ARR_CONFIG = {')!=1: raise RuntimeError('Arr configur
 arr_iso=next(p for p in flow['flowPlugins'] if p['id']=='notify_arr_iso')
 arr_action=(src/'arr_action.js').read_text()
 if arr_action.count('__ARR_CONFIG_DECLARATION__')!=1: raise RuntimeError('Arr action must contain one configuration placeholder')
-arr_iso['name']='Arr: ISO rescan or confirmed source-corruption search'
+arr_iso['name']='Arr: ISO rescan or confirmed source-corruption blocklist/replace'
 arr_iso['inputsDB']['code']=arr_action.replace('__ARR_CONFIG_DECLARATION__',arr_config)
 success_arr=next(p for p in flow['flowPlugins'] if p['id']=='notify_arr')
 success_code=success_arr['inputsDB']['code']
@@ -1732,7 +1732,7 @@ flow['name']='AV1 Intel Arc QSV [Single ICQ, Seek-Heal Fallback V15]'
 flow['description']=(
     'Automates Intel Arc QSV AV1 encoding at ICQ 22 for eligible video. A full source precheck and candidate validation guard replacement; if AV1 does not reduce size, the flow tries a validated seek-healing remux using the source video. '
     'Supported HDR and Dolby Vision paths use guarded metadata handling; unsupported or ambiguous sources are held. Audio and subtitle tracks follow the flow’s retention policy. '
-    'Item-scoped Arr searches run only for confirmed source corruption; ISO deletion requests an Arr rescan. Discord reports success, failure, already-processed files, and ISO deletion/rescan status.'
+    'Confirmed source corruption blocklists the grabbed release, deletes the corrupt file via Arr unless TDARR_ARR_DELETE_CORRUPT=false, and requests an item-scoped replacement search; ISO deletion requests an Arr rescan. Discord reports success, failure, already-processed files, and ISO deletion/rescan status.'
 )
 out=root/'flow.json'
 fd=os.open(out,os.O_CREAT|os.O_TRUNC|os.O_WRONLY,0o600)

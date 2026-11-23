@@ -20,10 +20,21 @@ module.exports = async args => {
   const isoRemoval = /disc image removed/i.test(reason);
   user.arr_refetch_status = 'not_attempted';
   user.arr_corruption_search_status = sourceCorruption ? 'not_attempted' : 'not_applicable';
+  user.arr_corruption_blocklist_status = sourceCorruption ? 'not_attempted' : 'not_applicable';
+  user.arr_corruption_delete_status = sourceCorruption ? 'not_attempted' : 'not_applicable';
   if (!isoRemoval && !sourceCorruption) {
     log('[ARR Notifier] No ISO removal or confirmed source corruption; skipping Arr action.');
     return {outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables};
   }
+
+  const parseEnvBool = (raw, fallback = true) => {
+    const val = String(raw ?? '').trim().toLowerCase();
+    if (!val) return fallback;
+    if (['0', 'false', 'no', 'off'].includes(val)) return false;
+    if (['1', 'true', 'yes', 'on'].includes(val)) return true;
+    return fallback;
+  };
+  const deleteCorruptEnabled = parseEnvBool(process.env?.TDARR_ARR_DELETE_CORRUPT, true);
 
   __ARR_CONFIG_DECLARATION__
 
@@ -53,6 +64,7 @@ module.exports = async args => {
     log(`[ARR Notifier] File path '${filePath}' did not match a configured Arr library; skipping action.`);
     return {outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables};
   }
+  if (sourceCorruption) user.arr_corruption_search_target = target.label;
 
   const request = (method,urlString,apiKey,body=null) => new Promise(resolve => {
     let url;
@@ -61,6 +73,7 @@ module.exports = async args => {
     const data = body ? JSON.stringify(body) : null;
     const headers = {'X-Api-Key':apiKey,'Accept':'application/json','User-Agent':'Tdarr-ArrNotifier/1.0'};
     if (data) { headers['Content-Type']='application/json'; headers['Content-Length']=Buffer.byteLength(data); }
+    else if (method === 'POST' || method === 'PUT') { headers['Content-Length'] = 0; }
     let settled = false;
     let timer;
     const finish = result => {
@@ -90,6 +103,146 @@ module.exports = async args => {
     }
   });
 
+  const normalizeArrPath = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const baseNameLower = value => path.posix.basename(normalizeArrPath(value)).toLowerCase();
+  const isEventType = (record, targetType) => String(record?.eventType || '').toLowerCase() === targetType.toLowerCase();
+  const positiveId = value => {
+    const id = Number(value);
+    return Number.isSafeInteger(id) && id > 0 ? id : null;
+  };
+  const sanitizeReleaseTitle = value => String(value || '').replace(/[`\r\n]+/g, ' ').trim().slice(0, 200);
+  const resolveHistoryRecords = payload => Array.isArray(payload) ? payload : (Array.isArray(payload?.records) ? payload.records : null);
+  const sortNewestFirst = records => [...records].sort((a, b) => {
+    const dt = (Date.parse(b?.date || '') || 0) - (Date.parse(a?.date || '') || 0);
+    return dt !== 0 ? dt : (Number(b?.id || 0) - Number(a?.id || 0));
+  });
+
+  const selectUniqueMatchedFile = (files, sourceName, normalizedFullPath) => {
+    const allMatches = files.filter(item => baseNameLower(item?.path || item?.relativePath || item?.relativepath || '') === sourceName);
+    if (!allMatches.length) return { matched: false, file: null, allMatches: [], ambiguous: false };
+    if (allMatches.length === 1) return { matched: true, file: allMatches[0], allMatches, ambiguous: false };
+    const exactFull = normalizedFullPath ? allMatches.filter(item => normalizeArrPath(item?.path) === normalizedFullPath) : [];
+    if (exactFull.length === 1) return { matched: true, file: exactFull[0], allMatches, ambiguous: false };
+    return { matched: true, file: null, allMatches, ambiguous: true };
+  };
+
+  const findGrabbedHistoryForFile = (records, matchedFile, { normalizedFullPath, sourceName, episodeIds }) => {
+    const ordered = sortNewestFirst(records);
+    const imports = ordered.filter(r => isEventType(r, 'downloadFolderImported'));
+    const matchedFileId = positiveId(matchedFile?.id);
+    const matchedFilePath = normalizeArrPath(matchedFile?.path);
+    const sceneTitle = String(matchedFile?.sceneName || '').trim().toLowerCase();
+
+    let importRecord = matchedFileId !== null
+      ? imports.find(r => String(r?.data?.fileId ?? '').trim() === String(matchedFileId))
+      : null;
+    if (!importRecord) {
+      importRecord = imports.find(r => {
+        const importedPath = normalizeArrPath(r?.data?.importedPath || r?.data?.droppedPath || '');
+        if (!importedPath) return false;
+        if (normalizedFullPath && importedPath === normalizedFullPath) return true;
+        if (matchedFilePath && importedPath === matchedFilePath) return true;
+        return baseNameLower(importedPath) === sourceName;
+      }) || null;
+    }
+    if (!importRecord && sceneTitle) {
+      importRecord = imports.find(r => String(r?.sourceTitle || '').trim().toLowerCase() === sceneTitle) || null;
+    }
+
+    const releaseTitle = sanitizeReleaseTitle(importRecord?.sourceTitle || matchedFile?.sceneName);
+    const downloadId = String(importRecord?.downloadId || '').trim();
+    if (!downloadId) return { status: 'no_history', grab: null, alreadyFailed: false, releaseTitle };
+
+    const failedRecord = ordered.find(r => isEventType(r, 'downloadFailed') && String(r?.downloadId || '').trim() === downloadId);
+    if (failedRecord) {
+      return {
+        status: 'already_blocklisted',
+        grab: null,
+        alreadyFailed: true,
+        releaseTitle: sanitizeReleaseTitle(failedRecord?.sourceTitle || releaseTitle)
+      };
+    }
+
+    const matchingGrabs = ordered.filter(r =>
+      isEventType(r, 'grabbed') && String(r?.downloadId || '').trim() === downloadId && positiveId(r?.id) !== null
+    );
+    if (!matchingGrabs.length) return { status: 'no_history', grab: null, alreadyFailed: false, releaseTitle };
+
+    const epScoped = Array.isArray(episodeIds) && episodeIds.length
+      ? matchingGrabs.filter(g => g?.episodeId !== undefined && episodeIds.includes(Number(g.episodeId)))
+      : [];
+    const grab = (epScoped.length ? epScoped[0] : matchingGrabs[0]);
+    return {
+      status: 'found',
+      grab,
+      alreadyFailed: false,
+      releaseTitle: sanitizeReleaseTitle(grab?.sourceTitle || releaseTitle)
+    };
+  };
+
+  const blocklistAndMaybeDeleteCorruptFile = async ({ baseUrl, historyUrl, deleteUrlFor, matchedFile, matchedTitle, ambiguous, normalizedFullPath, sourceName, episodeIds }) => {
+    if (ambiguous || !matchedFile) {
+      user.arr_corruption_blocklist_status = 'no_history';
+      user.arr_corruption_delete_status = deleteCorruptEnabled ? 'skipped_no_file_id' : 'disabled';
+      log(`[ARR Notifier] Matched multiple files named '${sourceName}' in ${target.label}; skipping automatic blocklist and deletion.`);
+      return false;
+    }
+    const historyRes = await request('GET', historyUrl, target.apiKey);
+    const records = historyRes.ok ? resolveHistoryRecords(historyRes.data) : null;
+    if (!historyRes.ok || !records) {
+      user.arr_corruption_blocklist_status = 'history_unavailable';
+      user.arr_corruption_delete_status = deleteCorruptEnabled ? 'skipped_no_blocklist' : 'disabled';
+      log(`[ARR Notifier] Could not query history for '${matchedTitle}' (${target.label}, HTTP ${historyRes.statusCode}); skipping blocklist and deletion.`);
+      return false;
+    }
+
+    const lookup = findGrabbedHistoryForFile(records, matchedFile, { normalizedFullPath, sourceName, episodeIds });
+    if (lookup.releaseTitle) user.arr_corruption_blocklist_release = lookup.releaseTitle;
+
+    if (lookup.alreadyFailed) {
+      user.arr_corruption_blocklist_status = 'already_blocklisted';
+      log(`[ARR Notifier] Release '${lookup.releaseTitle || 'unknown'}' is already blocklisted in ${target.label}.`);
+    } else if (lookup.status !== 'found' || !positiveId(lookup.grab?.id)) {
+      user.arr_corruption_blocklist_status = 'no_history';
+      user.arr_corruption_delete_status = deleteCorruptEnabled ? 'skipped_no_blocklist' : 'disabled';
+      log(`[ARR Notifier] No matching grab history found for '${sourceName}' in ${target.label}; skipping blocklist and deletion.`);
+      return false;
+    } else {
+      const failRes = await request('POST', `${baseUrl}/api/v3/history/failed/${encodeURIComponent(lookup.grab.id)}`, target.apiKey);
+      if (!failRes.ok) {
+        user.arr_corruption_blocklist_status = 'failed';
+        user.arr_corruption_delete_status = deleteCorruptEnabled ? 'skipped_no_blocklist' : 'disabled';
+        log(`[ARR Notifier] Failed to mark history ${lookup.grab.id} failed in ${target.label} (HTTP ${failRes.statusCode}); skipping file deletion.`);
+        return false;
+      }
+      user.arr_corruption_blocklist_status = 'blocklisted';
+      log(`[ARR Notifier] Blocklisted release '${lookup.releaseTitle || `history#${lookup.grab.id}`}' in ${target.label} (HTTP ${failRes.statusCode}).`);
+    }
+
+    if (!deleteCorruptEnabled) {
+      user.arr_corruption_delete_status = 'disabled';
+      log(`[ARR Notifier] Corrupt file auto-deletion disabled (TDARR_ARR_DELETE_CORRUPT=false); source remains in place.`);
+      return false;
+    }
+
+    const fileId = positiveId(matchedFile?.id);
+    if (!fileId) {
+      user.arr_corruption_delete_status = 'skipped_no_file_id';
+      log(`[ARR Notifier] Blocklisted release, but Arr did not expose a file ID for '${sourceName}'; skipping file deletion.`);
+      return false;
+    }
+
+    const delRes = await request('DELETE', deleteUrlFor(fileId), target.apiKey);
+    if (!delRes.ok) {
+      user.arr_corruption_delete_status = 'failed';
+      log(`[ARR Notifier] Deleted Arr file ${fileId} in ${target.label} failed (HTTP ${delRes.statusCode}); source may remain on disk.`);
+      return false;
+    }
+    user.arr_corruption_delete_status = 'deleted';
+    log(`[ARR Notifier] Deleted corrupt file ${fileId} via ${target.label} (HTTP ${delRes.statusCode}).`);
+    return true;
+  };
+
   try {
     const baseUrl=target.host.replace(/\/+$/,'');
     const isSonarr=target.type==='sonarr';
@@ -99,13 +252,13 @@ module.exports = async args => {
     if(listRes.ok&&Array.isArray(listRes.data)){
       matchedItem=listRes.data.find(item=>{
         if(!item.path)return false;
-        const itemPath=String(item.path).replace(/\\/g,'/').replace(/\/+$/,'');
+        const itemPath=normalizeArrPath(item.path);
         return filePath===itemPath||filePath.startsWith(itemPath+'/');
       });
       if(!matchedItem&&contentFolder){
         const name=contentFolder.toLowerCase();
         matchedItem=listRes.data.find(item=>{
-          const itemPath=String(item.path||'').replace(/\\/g,'/').replace(/\/+$/,'');
+          const itemPath=normalizeArrPath(item.path);
           return (itemPath.split('/').pop()||'').toLowerCase()===name;
         });
       }
@@ -133,12 +286,26 @@ module.exports = async args => {
       return {outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables};
     }
 
-    if(!targetId){user.arr_corruption_search_status='not_found';log(`[ARR Notifier] Could not resolve the Arr item for '${filePath}'; no search was sent.`);return {outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables};}
-    const sourceName=path.posix.basename(filePath).toLowerCase();
+    if(!targetId){
+      user.arr_corruption_search_status='not_found';
+      user.arr_corruption_blocklist_status='not_found';
+      user.arr_corruption_delete_status=deleteCorruptEnabled?'skipped_no_blocklist':'disabled';
+      log(`[ARR Notifier] Could not resolve the Arr item for '${filePath}'; no blocklist or search was sent.`);
+      return {outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables};
+    }
+    const normalizedFullPath=normalizeArrPath(filePath);
+    const sourceName=baseNameLower(filePath);
     if(isSonarr){
       const episodeFiles=await request('GET',`${baseUrl}/api/v3/episodefile?seriesId=${encodeURIComponent(targetId)}`,target.apiKey);
-      if(!episodeFiles.ok||!Array.isArray(episodeFiles.data)){user.arr_corruption_search_status='failed';log(`[ARR Notifier] Could not list episode files for '${matchedTitle}' (${target.label}, HTTP ${episodeFiles.statusCode}); no search was sent.`);return {outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables};}
-      const matching=episodeFiles.data.filter(item=>path.posix.basename(String(item.path||item.relativePath||item.relativepath||'').replace(/\\/g,'/')).toLowerCase()===sourceName);
+      if(!episodeFiles.ok||!Array.isArray(episodeFiles.data)){
+        user.arr_corruption_search_status='failed';
+        user.arr_corruption_blocklist_status='history_unavailable';
+        user.arr_corruption_delete_status=deleteCorruptEnabled?'skipped_no_blocklist':'disabled';
+        log(`[ARR Notifier] Could not list episode files for '${matchedTitle}' (${target.label}, HTTP ${episodeFiles.statusCode}); no action was sent.`);
+        return {outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables};
+      }
+      const selection=selectUniqueMatchedFile(episodeFiles.data,sourceName,normalizedFullPath);
+      const matching=selection.allMatches;
       let ids=[...new Set(matching.flatMap(item=>Array.isArray(item.episodeIds)?item.episodeIds:Array.isArray(item.episodes)?item.episodes.map(episode=>episode?.id):[]).map(Number).filter(id=>Number.isSafeInteger(id)&&id>0))];
       if(!ids.length){
         const seasonMatch=sourceName.match(/(?:^|[^a-z0-9])s(\d{1,2})e(\d{1,3})(?:(?:[ ._-]*e)(\d{1,3}))*/i);
@@ -149,24 +316,70 @@ module.exports = async args => {
           if(episodes.ok&&Array.isArray(episodes.data))ids=[...new Set(episodes.data.filter(episode=>numbers.includes(Number(episode.episodeNumber))).map(episode=>Number(episode.id)).filter(id=>Number.isSafeInteger(id)&&id>0))];
         }
       }
-      if(!ids.length){user.arr_corruption_search_status='file_unmatched';log(`[ARR Notifier] Matched Sonarr series '${matchedTitle}' but could not map '${sourceName}' to episode IDs; no search was sent.`);return {outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables};}
+      if(!ids.length){
+        user.arr_corruption_search_status='file_unmatched';
+        user.arr_corruption_blocklist_status='file_unmatched';
+        user.arr_corruption_delete_status=deleteCorruptEnabled?'skipped_no_blocklist':'disabled';
+        log(`[ARR Notifier] Matched Sonarr series '${matchedTitle}' but could not map '${sourceName}' to episode IDs; no search was sent.`);
+        return {outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables};
+      }
+      const seasonNumber=Number(selection.file?.seasonNumber);
+      const seasonQuery=Number.isSafeInteger(seasonNumber)?`&seasonNumber=${encodeURIComponent(seasonNumber)}`:'';
+      const deleted=await blocklistAndMaybeDeleteCorruptFile({
+        baseUrl,
+        historyUrl:`${baseUrl}/api/v3/history/series?seriesId=${encodeURIComponent(targetId)}${seasonQuery}`,
+        deleteUrlFor:id=>`${baseUrl}/api/v3/episodefile/${encodeURIComponent(id)}`,
+        matchedFile:selection.file,
+        matchedTitle,
+        ambiguous:selection.ambiguous,
+        normalizedFullPath,
+        sourceName,
+        episodeIds:ids
+      });
       const result=await request('POST',`${baseUrl}/api/v3/command`,target.apiKey,{name:'EpisodeSearch',episodeIds:ids});
       user.arr_corruption_search_status=result.ok?'requested':'failed';
-      if(result.ok)user.arr_corruption_search_target=target.label;
-      log(result.ok?`[ARR Notifier] Sonarr accepted EpisodeSearch for ${ids.length} episode(s) in '${matchedTitle}' (${target.label}, HTTP ${result.statusCode}). Source remains in place.`:`[ARR Notifier] EpisodeSearch for '${matchedTitle}' failed with HTTP ${result.statusCode}. Source remains in place.`);
+      const tail=deleted?'Corrupt file deleted via Sonarr.':'Source remains in place.';
+      log(result.ok?`[ARR Notifier] Sonarr accepted EpisodeSearch for ${ids.length} episode(s) in '${matchedTitle}' (${target.label}, HTTP ${result.statusCode}). ${tail}`:`[ARR Notifier] EpisodeSearch for '${matchedTitle}' failed with HTTP ${result.statusCode}. ${tail}`);
       return {outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables};
     }
 
     const movieFiles=await request('GET',`${baseUrl}/api/v3/moviefile?movieId=${encodeURIComponent(targetId)}`,target.apiKey);
-    if(!movieFiles.ok||!Array.isArray(movieFiles.data)){user.arr_corruption_search_status='failed';log(`[ARR Notifier] Could not list movie files for '${matchedTitle}' (${target.label}, HTTP ${movieFiles.statusCode}); no search was sent.`);return {outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables};}
-    const exactFile=movieFiles.data.some(item=>path.posix.basename(String(item.path||item.relativePath||item.relativepath||'').replace(/\\/g,'/')).toLowerCase()===sourceName);
-    if(!exactFile){user.arr_corruption_search_status='file_unmatched';log(`[ARR Notifier] Matched Radarr movie '${matchedTitle}' but could not match exact file '${sourceName}'; no search was sent.`);return {outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables};}
+    if(!movieFiles.ok||!Array.isArray(movieFiles.data)){
+      user.arr_corruption_search_status='failed';
+      user.arr_corruption_blocklist_status='history_unavailable';
+      user.arr_corruption_delete_status=deleteCorruptEnabled?'skipped_no_blocklist':'disabled';
+      log(`[ARR Notifier] Could not list movie files for '${matchedTitle}' (${target.label}, HTTP ${movieFiles.statusCode}); no action was sent.`);
+      return {outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables};
+    }
+    const selection=selectUniqueMatchedFile(movieFiles.data,sourceName,normalizedFullPath);
+    if(!selection.matched){
+      user.arr_corruption_search_status='file_unmatched';
+      user.arr_corruption_blocklist_status='file_unmatched';
+      user.arr_corruption_delete_status=deleteCorruptEnabled?'skipped_no_blocklist':'disabled';
+      log(`[ARR Notifier] Matched Radarr movie '${matchedTitle}' but could not match exact file '${sourceName}'; no search was sent.`);
+      return {outputFileObj:args.inputFileObj,outputNumber:1,variables:args.variables};
+    }
+    const deleted=await blocklistAndMaybeDeleteCorruptFile({
+      baseUrl,
+      historyUrl:`${baseUrl}/api/v3/history/movie?movieId=${encodeURIComponent(targetId)}`,
+      deleteUrlFor:id=>`${baseUrl}/api/v3/moviefile/${encodeURIComponent(id)}`,
+      matchedFile:selection.file,
+      matchedTitle,
+      ambiguous:selection.ambiguous,
+      normalizedFullPath,
+      sourceName,
+      episodeIds:null
+    });
     const result=await request('POST',`${baseUrl}/api/v3/command`,target.apiKey,{name:'MoviesSearch',movieIds:[Number(targetId)]});
     user.arr_corruption_search_status=result.ok?'requested':'failed';
-    if(result.ok)user.arr_corruption_search_target=target.label;
-    log(result.ok?`[ARR Notifier] Radarr accepted MoviesSearch for '${matchedTitle}' (${target.label}, HTTP ${result.statusCode}). Source remains in place.`:`[ARR Notifier] MoviesSearch for '${matchedTitle}' failed with HTTP ${result.statusCode}. Source remains in place.`);
+    const tail=deleted?'Corrupt file deleted via Radarr.':'Source remains in place.';
+    log(result.ok?`[ARR Notifier] Radarr accepted MoviesSearch for '${matchedTitle}' (${target.label}, HTTP ${result.statusCode}). ${tail}`:`[ARR Notifier] MoviesSearch for '${matchedTitle}' failed with HTTP ${result.statusCode}. ${tail}`);
   } catch(error) {
-    if(sourceCorruption)user.arr_corruption_search_status='failed';
+    if(sourceCorruption){
+      if(user.arr_corruption_search_status==='not_attempted')user.arr_corruption_search_status='failed';
+      if(user.arr_corruption_blocklist_status==='not_attempted')user.arr_corruption_blocklist_status='failed';
+      if(user.arr_corruption_delete_status==='not_attempted')user.arr_corruption_delete_status='failed';
+    }
     else user.arr_refetch_status='failed';
     log(`[ARR Notifier] Non-fatal error communicating with ${target.label}: ${error.message||error}`);
   }

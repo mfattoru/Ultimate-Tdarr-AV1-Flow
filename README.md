@@ -55,7 +55,7 @@ For the full node-by-node view, see [the flow diagram](docs/architecture/flow-di
 | Audio | Keep English, Japanese, Spanish, Italian, and undetermined tracks. Preserve selected audio streams by copy, then run timing and decode checks. |
 | Subtitles | Preserve styled ASS/SSA and all source attachments when a retained ASS/SSA track is copied. Precheck packet timing; if predicted repair exceeds 0.5 seconds, attempt to reconstruct an ASS script for chronological muxing. Validate candidate packet payloads and timing, attachment hashes and metadata, PGS segments, and `mov_text -> subrip` conversions (skipping empty `<= 2`-byte `tx3g` clear-screen packets on source scans while still rejecting dropped cues). Muxing uses a ten-second interleave bound. |
 | Notifications | Send success/failure notices, an info notice for already-processed files, and a warning when an ISO is deleted and an Arr rescan is requested. Success notices distinguish `timestamp_isolated_decode` from `qsv_decode_fallback`; failure notices retain specific subtitle/timing explanations and quarantine paths alongside generic rejections. |
-| Arr searches | Route a targeted search only when the flow confirms known source corruption. A queued search does not guarantee a replacement download. |
+| Arr searches | Confirmed source corruption blocklists the grabbed release (`POST /api/v3/history/failed/{id}`), deletes the corrupt file via Arr unless `TDARR_ARR_DELETE_CORRUPT=false`, and requests an item-scoped replacement search. |
 
 ## Video formats and HDR
 
@@ -87,6 +87,7 @@ Configure these variables in the Tdarr node/container environment:
 | `TDARR_ARR_RADARR_URL`, `TDARR_ARR_RADARR_API_KEY` | Radarr endpoint and key. |
 | `TDARR_ARR_SONARR_TV_URL`, `TDARR_ARR_SONARR_TV_API_KEY` | TV Sonarr endpoint and key. |
 | `TDARR_ARR_SONARR_ANIME_URL`, `TDARR_ARR_SONARR_ANIME_API_KEY` | Anime Sonarr endpoint and key. |
+| `TDARR_ARR_DELETE_CORRUPT` | Defaults to `true`: after confirming source corruption and blocklisting the grabbed release, delete the corrupt file via Radarr/Sonarr so a replacement search downloads a different release cleanly. Set `false`/`0`/`no`/`off` to keep the original file on disk while still blocklisting and searching. |
 
 Unset Arr settings disable that target. The local `.env` is ignored by Git and does not load automatically in Tdarr; `.env.example` lists the variable names without values. Keep production secrets in the Tdarr node environment.
 

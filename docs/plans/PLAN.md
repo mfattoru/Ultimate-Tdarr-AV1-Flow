@@ -924,3 +924,29 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
 1. **Red Phase:** Update/add tests in `tests/policy.test.js` and `tests/integration.test.js` for CLL-only and combined mastering+CLL intro splices, split/late/2nd-flip/invalid-CLL rejections, and confirm failure before production edits.
 2. **Green Phase:** Update `collectHdrFrameStatic`, `seedHdrMetadataFromMediaInfo`, `inspectVideoFrames`, and `normalizeIntroMasteringSplice` (`src/policy.js`) and HDR routing (`scripts/build.py`); rebuild `flow.json`.
 3. **Verification:** Run `python3 scripts/stage_signatures.py --check-isolation`, `make check`, and an isolated `tdarr-flow-live-test-20261102` end-to-end test on a 12s clip from *The Mummy (1999)*, then log to `docs/plans/IMPLEMENTATION_LOG.md` and run a final check.
+
+
+---
+
+# V16.14 Execution Plan — Confirmed Source-Corruption Release Blocklisting & Opt-Out Auto-Delete
+
+## Change Categorization
+- **In-Place Feature Extension (`notify_arr_iso`, `notify_failure`):**
+  - Extends confirmed source-corruption handling (`sourceCorruption === true`) across [`src/arr_action.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/arr_action.js) and [`src/failure_notify.js`](file:///Users/mfattoru/Documents/ChatGPT/Homelab/Ultimate-Tdarr-AV1-Flow/src/failure_notify.js) with zero changes to `arc_av1_monolithic` or `STAGE_CODE_HASHES`.
+  - Controlled by `TDARR_ARR_DELETE_CORRUPT` (defaults to `true` when unset/empty; set `TDARR_ARR_DELETE_CORRUPT=false` / `0` / `no` / `off` to keep corrupt files on disk while still blocklisting the bad release and triggering a replacement search).
+
+## Architectural Review
+- **Safety-First Order of Operations (`src/arr_action.js`):**
+  1. Match exact Radarr `movieFile` or Sonarr `episodeFile` (unique basename match, narrowed by exact full normalized path if multiple matches exist).
+  2. Query item history (`GET /api/v3/history/movie?movieId={targetId}` for Radarr; `GET /api/v3/history/series?seriesId={targetId}` plus `&seasonNumber={seasonNumber}` when `Number.isSafeInteger(Number(matchedFile.seasonNumber))` for Sonarr).
+  3. Trace the newest matching `downloadFolderImported` event (`data.fileId === matchedFileId`, `data.importedPath` matching path/basename, or `matchedFile.sceneName === sourceTitle`), extract its `downloadId`, check whether a `downloadFailed` record already exists (`already_blocklisted`), or locate the matching `grabbed` history record (`grab.id`).
+  4. Mark the grabbed history record failed via `POST /api/v3/history/failed/{grab.id}` (sending explicit `Content-Length: 0` header for empty-body POSTs) so Arr blocklists that release.
+  5. **Only if** `deleteCorruptEnabled === true` **and** blocklist succeeded (`'blocklisted'` or `'already_blocklisted'`) **and** a unique positive integer `matchedFileId` exists: call `DELETE /api/v3/moviefile/{matchedFileId}` or `DELETE /api/v3/episodefile/{matchedFileId}`. Fail closed (skip deletion) on `no_history`, `history_unavailable`, `failed`, or `skipped_no_file_id`.
+  6. Trigger `MoviesSearch` or `EpisodeSearch` via `POST /api/v3/command`.
+- **Notifications & Docs (`src/failure_notify.js`, `scripts/build.py`, `README.md`, `.env.example`, `docs/architecture/FAILURE_DIAGNOSTICS.md`):**
+  - Update `notify_failure` embeds to accurately report blocklist/delete/search status and avoid claiming `"original remains in place"` / `"kept the original file"` when `arr_corruption_delete_status === 'deleted'`, while still returning `outputNumber: 1` (`fail_flow`).
+
+## Step-by-Step Execution Path (TDD)
+1. **Red Phase:** Update `tests/arr_action.test.js` and `tests/failure_notify.test.js` with failing tests covering Radarr/Sonarr blocklist+delete+search, `TDARR_ARR_DELETE_CORRUPT=false` opt-out, already-blocklisted, fail-closed history/blocklist/file-ID guards, delete failure, non-corruption isolation, and notification embeds.
+2. **Green Phase:** Implement changes in `src/arr_action.js`, `src/failure_notify.js`, and `scripts/build.py`, and rebuild `flow.json`.
+3. **Documentation & Verification:** Update `.env.example`, `README.md`, `docs/architecture/FAILURE_DIAGNOSTICS.md`, and `docs/plans/IMPLEMENTATION_LOG.md`; verify `python3 scripts/stage_signatures.py --check-isolation` (unchanged engine stage hashes) and `make check` (`0` errors, full coverage, clean `git diff --check`).

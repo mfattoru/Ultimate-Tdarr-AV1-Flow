@@ -216,6 +216,11 @@ module.exports = async (args) => {
     const arrStatus = String(user.arr_refetch_status || 'unknown');
     const corruptionSearchStatus = String(user.arr_corruption_search_status || 'unknown');
     const corruptionSearchTarget = String(user.arr_corruption_search_target || 'Arr');
+    const blocklistStatus = String(user.arr_corruption_blocklist_status || '');
+    const blocklistRelease = String(user.arr_corruption_blocklist_release || '').replace(/[`\r\n]+/g, ' ').trim().slice(0, 180);
+    const deleteStatus = String(user.arr_corruption_delete_status || '');
+    const hasLifecycleTracking = (blocklistStatus && !['not_applicable', 'not_attempted'].includes(blocklistStatus))
+      || (deleteStatus && !['not_applicable', 'not_attempted'].includes(deleteStatus));
     const icon = isoRemoved || explanation.severity === 'warning' ? '⚠️' : '❌';
     const description = [];
     if (isoRemoved) {
@@ -226,9 +231,18 @@ module.exports = async (args) => {
       else if (arrStatus === 'skipped') description.push('📡 **Arr:** This path did not match a configured library, so no rescan request was sent.');
       else description.push('📡 **Arr:** No accepted rescan request was recorded; check the Arr logs.');
     } else {
+      const deletedViaArr = explanation.category === 'source_media_corruption' && deleteStatus === 'deleted';
+      const fileState = deletedViaArr
+        ? `The bad release was blocklisted and the corrupt original was deleted via ${corruptionSearchTarget} so Arr can fetch a different release.`
+        : explanation.fileState;
+      const action = deletedViaArr
+        ? (corruptionSearchStatus === 'requested'
+            ? `Monitor ${corruptionSearchTarget} for a replacement download; the blocklisted release will not be grabbed again.`
+            : `The replacement search was not accepted; trigger a manual search in ${corruptionSearchTarget} (the bad release is already blocklisted).`)
+        : explanation.action;
       description.push(`**What happened:** ${explanation.summary}`);
-      description.push(`**File state:** ${explanation.fileState}`);
-      description.push(`**What to do:** ${explanation.action}`);
+      description.push(`**File state:** ${fileState}`);
+      description.push(`**What to do:** ${action}`);
       if (user.quarantine_entry && typeof user.quarantine_entry.candidatePath === 'string') {
         const originalPath = args.originalLibraryFile?._id;
         const displayable = typeof originalPath === 'string' && originalPath.startsWith('/') && originalPath.length <= 1200 && !/[\r\n`]/.test(originalPath);
@@ -237,12 +251,36 @@ module.exports = async (args) => {
         else description.push('The original path could not be safely displayed; copy the full node-visible library path from the Tdarr job.');
       }
       if (explanation.category === 'source_media_corruption') {
-        if (corruptionSearchStatus === 'requested') description.push(`📡 **Arr:** ${corruptionSearchTarget} accepted a targeted search. The original remains in place; a replacement is not guaranteed unless an available release meets your profile and upgrade rules.`);
-        else if (corruptionSearchStatus === 'failed') description.push('📡 **Arr:** The targeted search could not be submitted. Check the Arr connection/log and search manually if needed. The original remains in place.');
-        else if (corruptionSearchStatus === 'not_found') description.push('📡 **Arr:** The matching series/movie could not be resolved, so no search was submitted. The original remains in place; search manually if needed.');
-        else if (corruptionSearchStatus === 'file_unmatched') description.push('📡 **Arr:** The series/movie matched, but the exact file could not be mapped. No search was submitted; the original remains in place.');
-        else if (corruptionSearchStatus === 'skipped_path') description.push('📡 **Arr:** The file path did not match a configured Sonarr/Radarr library. No search or file change was made.');
-        else description.push('📡 **Arr:** No targeted search was recorded. The original remains in place; check the Tdarr job log and search manually if needed.');
+        if (!hasLifecycleTracking) {
+          if (corruptionSearchStatus === 'requested') description.push(`📡 **Arr:** ${corruptionSearchTarget} accepted a targeted search. The original remains in place; a replacement is not guaranteed unless an available release meets your profile and upgrade rules.`);
+          else if (corruptionSearchStatus === 'failed') description.push('📡 **Arr:** The targeted search could not be submitted. Check the Arr connection/log and search manually if needed. The original remains in place.');
+          else if (corruptionSearchStatus === 'not_found') description.push('📡 **Arr:** The matching series/movie could not be resolved, so no search was submitted. The original remains in place; search manually if needed.');
+          else if (corruptionSearchStatus === 'file_unmatched') description.push('📡 **Arr:** The series/movie matched, but the exact file could not be mapped. No search was submitted; the original remains in place.');
+          else if (corruptionSearchStatus === 'skipped_path') description.push('📡 **Arr:** The file path did not match a configured Sonarr/Radarr library. No search or file change was made.');
+          else description.push('📡 **Arr:** No targeted search was recorded. The original remains in place; check the Tdarr job log and search manually if needed.');
+        } else {
+          const releaseTag = blocklistRelease ? ` \`${blocklistRelease}\`` : '';
+          const parts = [];
+          if (blocklistStatus === 'blocklisted') parts.push(`Blocklisted${releaseTag} in ${corruptionSearchTarget}.`);
+          else if (blocklistStatus === 'already_blocklisted') parts.push(`Release${releaseTag} was already blocklisted in ${corruptionSearchTarget}.`);
+          else if (blocklistStatus === 'no_history') parts.push(`Found no matching grab history in ${corruptionSearchTarget}, so blocklisting was skipped.`);
+          else if (blocklistStatus === 'history_unavailable') parts.push(`Could not query ${corruptionSearchTarget} history, so blocklisting was skipped.`);
+          else if (blocklistStatus === 'failed') parts.push(`Marking${releaseTag || ' the release'} failed in ${corruptionSearchTarget} failed.`);
+          else if (blocklistStatus === 'not_found') parts.push(`Could not resolve the item in ${corruptionSearchTarget}.`);
+          else if (blocklistStatus === 'file_unmatched') parts.push(`Matched the item in ${corruptionSearchTarget}, but not the exact file.`);
+
+          if (deleteStatus === 'deleted') parts.push(`Corrupt file deleted via ${corruptionSearchTarget}.`);
+          else if (deleteStatus === 'disabled') parts.push('Original file kept (`TDARR_ARR_DELETE_CORRUPT=false`).');
+          else if (deleteStatus === 'failed') parts.push(`Delete of the corrupt file via ${corruptionSearchTarget} failed; the original may remain on disk.`);
+          else if (deleteStatus === 'skipped_no_file_id') parts.push('Automatic deletion skipped because Arr did not provide a unique file ID; the original remains in place.');
+          else parts.push('Automatic deletion skipped; the original remains in place.');
+
+          if (corruptionSearchStatus === 'requested') parts.push(`${corruptionSearchTarget} accepted a targeted replacement search.`);
+          else if (corruptionSearchStatus === 'failed') parts.push(`Replacement search failed in ${corruptionSearchTarget}; trigger a manual search if needed.`);
+          else parts.push('No replacement search was submitted.');
+
+          description.push(`📡 **Arr:** ${parts.join(' ')}`);
+        }
       }
       if (explanation.details) description.push(`🧾 **Diagnostic detail:**\n\`\`\`\n${explanation.details}\n\`\`\``);
     }

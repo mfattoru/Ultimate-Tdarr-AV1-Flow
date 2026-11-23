@@ -1335,7 +1335,7 @@ test('fast frame parser preserves bare FRAME markers, first-match color semantic
  const fakeProbe=path.join(tempDir,'sample.mkv');
  const fakeFfprobe=path.join(tempDir,'ffprobe');
  fs.writeFileSync(fakeProbe,'stub-bytes-for-stat-size-1234567890');
- fs.writeFileSync(fakeFfprobe,'#!/usr/bin/env node\nprocess.stdout.write("frame|best_effort_timestamp_time=0.000|pkt_pos=10|interlaced_frame=0\\nframe|best_effort_timestamp_time=0.500|pkt_pos=30|interlaced_frame=0\\n");\n');
+ fs.writeFileSync(fakeFfprobe,"#!/bin/sh\nprintf 'frame|best_effort_timestamp_time=0.000|pkt_pos=10|interlaced_frame=0\\nframe|best_effort_timestamp_time=0.500|pkt_pos=30|interlaced_frame=0\\n'\n");
  fs.chmodSync(fakeFfprobe,0o755);
  const updates=[];
  try{
@@ -1389,7 +1389,7 @@ test('bounded intro-splice HDR10 mastering normalizer accepts uniform main featu
   const runFakeScan=async(lines,allowIntro=true)=>{
    const outFile=path.join(tempDir,'lines.txt');
    fs.writeFileSync(outFile,lines.join('\n')+'\n');
-   fs.writeFileSync(scriptPath,`#!/usr/bin/env node\nprocess.stdout.write(require('fs').readFileSync(${JSON.stringify(outFile)},'utf8'));\n`);
+   fs.writeFileSync(scriptPath,`#!/bin/sh\nexec cat '${outFile.replace(/'/g,"'\\''")}'\n`);
    fs.chmodSync(scriptPath,0o755);
    return await p.testScanFrames(scriptPath,dummyMedia,0,{staticMetadata:true,timestamps:true,failFast:true,scanRole:allowIntro?'source':'candidate',allowIntroMasteringSplice:allowIntro});
   };
