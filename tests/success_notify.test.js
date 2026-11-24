@@ -71,3 +71,14 @@ test('success recovery message distinguishes timestamp_isolated_decode from qsv_
  assert.match(bothDesc,/Verification recovery:.*software verification/i);
  assert.match(bothDesc,/frame-isolated timestamps/i);
 });
+
+test('Software SVT-AV1 fallback reports CRF rather than ICQ on the bitrate line',async()=>{
+ const h=harness();
+ h.args.variables.user.qsv_mode='Software SVT-AV1 (CRF 28 HDR fallback)';
+ h.args.variables.user.quality_value=28;
+ await h.run(h.args);
+ const desc=h.calls[0].body.embeds[0].description;
+ assert.match(desc,/\(CRF 28\)/);
+ assert.doesNotMatch(desc,/\(ICQ 28\)/);
+ assert.match(desc,/Method:.*Software SVT-AV1 encode at CRF 28/);
+});

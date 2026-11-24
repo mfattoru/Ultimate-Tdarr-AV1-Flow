@@ -275,10 +275,11 @@ new_size_block='''  const originalBytes=Number(args.variables?.user?.original_si
 success_code=success_code[:size_start]+new_size_block+success_code[size_end:]
 bitrate_start=success_code.index('  const qualVal = args.variables?.user?.quality_value;')
 bitrate_end=success_code.index('\n\n  const medium =',bitrate_start)
-new_bitrate_block='''  const qualVal = args.variables?.user?.quality_value;
+new_bitrate_block='''  const softwareEncode = /Software SVT-AV1/i.test(String(pipelineMode || ''));
+  const qualVal = args.variables?.user?.quality_value;
   let bitrateStr = "";
   if (transcodeStartTs && transcodeEndTs && origVidKbps > 0 && newVidKbps > 0) {
-    const qualDesc = qualVal ? `ICQ ${qualVal}` : "ICQ mode";
+    const qualDesc = softwareEncode ? (qualVal ? `CRF ${qualVal}` : "CRF mode") : (qualVal ? `ICQ ${qualVal}` : "ICQ mode");
     bitrateStr = `\\`${formatBitrate(origVidKbps)}\\` ➔ \\`${formatBitrate(newVidKbps)}\\` **(${qualDesc})**`;
   } else if (wasQuarantined) {
     const kind=/seek-heal/i.test(String(args.variables?.user?.qsv_mode||''))?'stored seek-heal candidate':'stored AV1 candidate';
@@ -293,7 +294,6 @@ desc_start=success_code.index('  const descLines = [')
 desc_end=success_code.index('\n  const payload = JSON.stringify({',desc_start)
 new_desc_block='''  const wasEncoded=Boolean(transcodeStartTs&&transcodeEndTs);
   const cpuDecode=/CPU Decode|Downsample/i.test(String(pipelineMode||''));
-  const softwareEncode=/Software SVT-AV1/i.test(String(pipelineMode||''));
   const methodLine=wasQuarantined
     ? `🔁 **Method:** Quarantined candidate revalidated • no encode ran`
     : isFallback
