@@ -652,6 +652,15 @@ const summarizeLevel6Rows = (rows, expectedFrames, includeCount=false) => {
   if (!first || count<1 || (expectedFrames!==null && count!==expectedFrames)) throw Error(`Dolby Level 6 frame count mismatch (${count} / ${expectedFrames})`);
   return includeCount ? {value:first,frames:count} : first;
 };
+const reconcileDolbyLevel6FrameCount = (route, level6Frames, scanFrames) => {
+  if (level6Frames === scanFrames) return {warning: null};
+  const missing = scanFrames - level6Frames;
+  // DV7/8.1 discards the RPU/EL and uses uniform Level 6 only as static HDR10 fallback; tolerate 1-2 missing RPU frames on full-length streams.
+  if (route !== 'dovi5_hdr10' && missing >= 1 && missing <= 2 && scanFrames >= 100 && level6Frames >= 1) {
+    return {warning: `[HDR warning] Dolby Level 6 metadata missing on ${missing} of ${scanFrames} frame(s); all ${level6Frames} present frames are uniform.`};
+  }
+  throw Error(`Dolby Level 6 frame count mismatch (${level6Frames} / ${scanFrames})`);
+};
 // Verified Dolby Vision Level 9 source_primary_index chromaticity coordinates (1/50000 units).
 const DOLBY_LEVEL9_PRIMARIES = {
   0: {r:[34000,16000],g:[13250,34500],b:[7500,3000],wp:[15635,16450]}, // DCI-P3 D65 (Display P3)

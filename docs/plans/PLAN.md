@@ -997,3 +997,37 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
    - Run `python3 scripts/stage_signatures.py --check-isolation` (confirm all 4 isolation invariants pass) and `make check` (`423+` tests passing, coverage >= 90%, `git diff --check` clean).
    - Run an isolated live container encode smoke test in `tdarr-flow-live-test-20261102` on short spliced clips matching *Hellboy (2004)* (`av1_qsv`) and *Toy Story 5 (2026)* (`libsvtav1` + DV7->HDR10) confirming `outputNumber: 1` and 100% uniform frame CLL, then clean scratch directories cleanly.
    - Append V16.15 results to `docs/plans/IMPLEMENTATION_LOG.md` and run a final `make check`.
+
+
+---
+
+# V16.16 Execution Plan — Stall-Safe Dolby Preflight Progress & Bounded DV7/8.1 Level 6 Frame Tolerance
+
+## Change Categorization
+- **In-Place Reliability Fix & Bounded Tolerance Extension (`scripts/build.py`, `tests/`):**
+  - **Fix 1 (*Tron (1982)* `XfzHcXP-log.txt`):** Eliminates false `Tdarr_Node` worker stall cancellations during slow `45+ GB` Dolby Vision RPU extractions (`extractDolbyLevel6` / `extractDolbyProfile5HdrMetadata`) by routing `onDoviProgress` through `createStallSafeProgressEmitter` instead of letting `percentage` freeze at `0.93%`–`0.94%`.
+  - **Fix 2 (*Skyfall (2012)* `nODT1Mx-log.txt`):** Relaxes the exact `1:1` Level 6 frame-count check in `scripts/build.py` **only** for `dovi7` / `dovi81` HDR10-base routes (where the DV EL+RPU is discarded anyway and all present Level 6 rows already passed strict uniformity in `summarizeLevel6Rows`), allowing `1..2` missing RPU frames on full-length streams (`>= 100` frames) with a `[HDR warning]` log.
+  - **Preserved Strictness:** `dovi5_hdr10` continues to require an exact `1:1` Level 6 frame count (`preflightLevel6.frames === frameScan.frames`), and any `dovi7`/`dovi81` mismatch where `preflightLevel6.frames > frameScan.frames` or `frameScan.frames - preflightLevel6.frames > 2` (or `frameScan.frames < 100`) still fails closed with `Dolby Level 6 frame count mismatch`.
+
+## Architectural Review
+- **1. Stall-Safe Dolby Preflight Progress (`scripts/build.py`):**
+  - Replace the raw `onDoviProgress` callback (lines `702-706`) with `createStallSafeProgressEmitter({ updateWorker: args.updateWorker, range: { start: 0.5, end: 0.98 }, status: 'Precheck: Dolby Vision metadata', workerDetails: initialWorkerProgressDetails, minStep: 0.01, heartbeatIntervalMs: 60000 })`.
+  - Wrap `extractDolbyProfile5HdrMetadata` (line `725`) and `extractDolbyLevel6` (line `747`) in `doviProgress.run(async () => ...)` and pass `onProgress: info => doviProgress.update(info?.ratio, info?.fps)`.
+  - Because `createStallSafeProgressEmitter` emits `round4` micro-nudges (`+0.0001%`) up to `0.9799%` whenever `round2` reaches `ceilingBeforeEnd`, `Tdarr_Node` sees monotonic progress updates even if a large array demux/RPU extraction takes >50 minutes.
+  - Does **not** alter `STAGE_CODE_HASHES` stage blocks (`precheck_video`, `precheck_audio`, `encode`, `candidate_frames`, `decode`), keeping `stage_signatures.py --check-isolation` passing.
+- **2. Bounded DV7/8.1 Level 6 Frame Tolerance (`scripts/build.py`):**
+  - At line `774` (`if (preflightLevel6 && preflightLevel6.frames !== frameScan.frames)`):
+    - Keep exact equality required when `preflightDoviRoute === 'dovi5_hdr10'`.
+    - For `dovi7` / `dovi81` routes, compute `const missingL6 = frameScan.frames - preflightLevel6.frames`:
+      - If `missingL6 >= 1 && missingL6 <= 2 && frameScan.frames >= 100`, log `[HDR warning] Dolby Level 6 metadata missing on ${missingL6} of ${frameScan.frames} frame(s); all ${preflightLevel6.frames} present frames are uniform.` and continue.
+      - Otherwise throw `Error(\`Dolby Level 6 frame count mismatch (${preflightLevel6.frames} / ${frameScan.frames})\`)`.
+- **3. Tests & Docs:**
+  - `tests/` (TDD Red -> Green):
+    - Add unit/flow tests verifying: (a) `dovi7_hdr10` with `1` or `2` missing Level 6 frames (`>= 100` frames, uniform Level 6) passes with `[HDR warning]` instead of failing; (b) `3+` missing frames, excess Level 6 frames (`preflightLevel6.frames > frameScan.frames`), short streams (`< 100`), or `dovi5_hdr10` with `1` missing frame still throw `Dolby Level 6 frame count mismatch`; (c) `createStallSafeProgressEmitter` over `{ start: 0.5, end: 0.98 }` continues emitting advancing `percentage` values past the `0.92` ratio mark.
+  - Rebuild `flow.json` via `python3 scripts/build.py`.
+  - Update `docs/plans/IMPLEMENTATION_LOG.md`.
+
+## Execution Path (TDD)
+1. **Red Phase:** Add failing tests covering the DV7/8.1 bounded Level 6 tolerance, strict rejections (`>2`, excess, `<100`, `dovi5_hdr10`), and stall-safe Dolby preflight progress behavior; verify they fail.
+2. **Green Phase:** Update `scripts/build.py`, rebuild `flow.json`, and verify all tests pass.
+3. **Verification:** Run `python3 scripts/stage_signatures.py --check-isolation && make check` (`0` failures, `git diff --check` clean) and update `docs/plans/IMPLEMENTATION_LOG.md` before final `make check`.

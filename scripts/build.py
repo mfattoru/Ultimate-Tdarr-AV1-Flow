@@ -699,11 +699,15 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
     if(preflightDoviRoute) {
       initialWorkerProgressDetails.status="Precheck: Dolby Vision metadata";
       const doviExpectedDuration=Number(mainVideo.duration || args.inputFileObj?.ffProbeData?.format?.duration || 0);
-      const onDoviProgress=info=>{
-        const r=Math.max(0,Math.min(1,Number(info?.ratio || 0)));
-        const pct=Number((0.5+0.48*r).toFixed(2));
-        reportWorkerProgress(args.updateWorker,{percentage:pct,fps:Number(info?.fps || 0),status:initialWorkerProgressDetails.status},initialWorkerProgressDetails);
-      };
+      const doviProgress=createStallSafeProgressEmitter({
+        updateWorker:args.updateWorker,
+        range:{start:0.5,end:0.98},
+        status:initialWorkerProgressDetails.status,
+        workerDetails:initialWorkerProgressDetails,
+        minStep:0.01,
+        heartbeatIntervalMs:60000
+      });
+      const onDoviProgress=info=>doviProgress.update(info?.ratio,info?.fps);
       if(preflightDoviRoute==="dovi5_hdr10") {
         try {
           fs.accessSync(INTEL_VULKAN_ICD,fs.constants.R_OK);
@@ -722,7 +726,7 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
           reportWorkerProgress(args.updateWorker,{percentage:0.5,fps:0,status:initialWorkerProgressDetails.status},initialWorkerProgressDetails);
           verifyDolbyProfile5RpuFullRange(readHdrFrames(ffprobeBin,inputPath,mainVideo.index));
           didRunHdrPrecheck=true;
-          preflightLevel6=await extractDolbyProfile5HdrMetadata(ffmpegBin,inputPath,mainVideo.index,null,{expectedDuration:doviExpectedDuration,onProgress:onDoviProgress});
+          preflightLevel6=await doviProgress.run(()=>extractDolbyProfile5HdrMetadata(ffmpegBin,inputPath,mainVideo.index,null,{expectedDuration:doviExpectedDuration,onProgress:onDoviProgress}));
           hdrPreflightToSave={route:"dovi5_hdr10",frames:preflightLevel6.frames,level6:preflightLevel6.level6,level9:preflightLevel6.level9 ?? null};
         }
         const dovi5Target=buildDovi5HdrTarget(preflightLevel6.level6,preflightLevel6.level9);
@@ -744,7 +748,7 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
             return preflightLevel6.value;
           }
           didRunHdrPrecheck=true;
-          preflightLevel6=await extractDolbyLevel6(ffmpegBin,inputPath,mainVideo.index,null,true,false,{expectedDuration:doviExpectedDuration,onProgress:onDoviProgress});
+          preflightLevel6=await doviProgress.run(()=>extractDolbyLevel6(ffmpegBin,inputPath,mainVideo.index,null,true,false,{expectedDuration:doviExpectedDuration,onProgress:onDoviProgress}));
           hdrPreflightToSave={route:preflightDoviRoute,frames:preflightLevel6.frames,level6:preflightLevel6.value,level9:null};
           return preflightLevel6.value;
         });
@@ -771,7 +775,10 @@ one('  const vCodec = (mainVideo.codec_name || "").toLowerCase();', '''  const m
     log("[Source precheck] Running the full CPU source frame, color, HDR, and timestamp scan before encoding.");
     frameScan=await inspectVideoFrames(ffprobeBin,inputPath,mainVideo.index,scanOptions);
     assertOriginalUnchanged();
-    if(preflightLevel6 && preflightLevel6.frames!==frameScan.frames) throw Error(`Dolby Level 6 frame count mismatch (${preflightLevel6.frames} / ${frameScan.frames})`);
+    if(preflightLevel6) {
+      const l6Check=reconcileDolbyLevel6FrameCount(preflightDoviRoute,preflightLevel6.frames,frameScan.frames);
+      if(l6Check.warning) log(l6Check.warning);
+    }
     if (frameScan.interlaced) throw Error("Interlaced video frames are unsupported");
     if (frameScan.colorInfo.conflict) throw Error("Source frame color signaling conflicts with the stream");
     validateSdrFrameSignaling(preflightBasic,frameScan,mainVideo);

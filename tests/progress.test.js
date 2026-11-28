@@ -290,3 +290,22 @@ test('createStallSafeProgressEmitter resetOnStart re-anchors saturated stage ran
  assert.equal(retryUpdates.at(-1).percentage,97.92);
  for(let i=1;i<retryUpdates.length;i++) assert.ok(retryUpdates[i].percentage>=retryUpdates[i-1].percentage);
 });
+
+test('createStallSafeProgressEmitter emits micro-nudges past 0.92 ratio in Dolby preflight range (0.5..0.98)',async()=>{
+ const {createStallSafeProgressEmitter}=require('../src/progress');
+ const updates=[];
+ const dovi=createStallSafeProgressEmitter({
+  updateWorker:d=>updates.push(d),
+  range:{start:0.5,end:0.98},
+  status:'Precheck: Dolby Vision metadata',
+  minStep:0.01,
+  heartbeatIntervalMs:15
+ });
+ await dovi.run(async()=>{
+  dovi.update(0.92,0);
+  await new Promise(r=>setTimeout(r,95));
+ });
+ assert.ok(updates.length>=4,`expected multiple heartbeat updates, got ${updates.length}`);
+ for(let i=1;i<updates.length;i++) assert.ok(updates[i].percentage>=updates[i-1].percentage);
+ assert.ok(updates.at(-1).percentage>0.94 && updates.at(-1).percentage<=0.98,`expected micro-nudged percentage > 0.94, got ${updates.at(-1).percentage}`);
+});

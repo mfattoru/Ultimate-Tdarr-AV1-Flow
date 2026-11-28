@@ -301,3 +301,9 @@ test('V16.5 engine uses route-aware createStageProgressPlan budgets instead of f
  assert.equal(engine.includes('forceStreamCopy?80:10'),false,'hardcoded 10-80 encode range must be removed');
  assert.equal(engine.includes('1+7*(complete?1:'),false,'hardcoded 1-8% source scan range must be removed');
 });
+
+test('V16.16 engine uses stall-safe Dolby preflight progress and reconcileDolbyLevel6FrameCount',()=>{
+ assert.ok(engine.includes('doviProgress=createStallSafeProgressEmitter(') || engine.includes('doviProgress = createStallSafeProgressEmitter('),'Dolby preflight must use createStallSafeProgressEmitter');
+ assert.ok(engine.includes('doviProgress.run('),'Dolby preflight extractions must run inside doviProgress.run');
+ assert.ok(engine.includes('reconcileDolbyLevel6FrameCount('),'engine must reconcile Dolby Level 6 frame counts via reconcileDolbyLevel6FrameCount');
+});

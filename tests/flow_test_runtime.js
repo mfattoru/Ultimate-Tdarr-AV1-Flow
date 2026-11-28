@@ -64,6 +64,7 @@ const engineExports = {
   testIsExplicitSdrColorTriplet: 'isExplicitSdrColorTriplet',
   testIsSdrWithOrphanStaticHdr: 'isSdrWithOrphanStaticHdr',
   testHasFrameDolbyRpu: 'hasFrameDolbyRpu',
+  testReconcileDolbyLevel6FrameCount: 'reconcileDolbyLevel6FrameCount',
   testValidate: 'validateOutput',
   releaseForTest: 'releaseCapacity'
 };

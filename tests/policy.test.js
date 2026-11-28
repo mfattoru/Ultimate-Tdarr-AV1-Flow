@@ -1485,9 +1485,13 @@ test('bounded intro-splice HDR10 mastering normalizer accepts uniform main featu
   for(let i=48;i<240;i++) splitLines.push(makeLine(i*1001/24000,'10000000/10000',982,312));
   await assert.rejects(()=>runFakeScan(splitLines,true),/Conflicting or changing static HDR metadata/);
 
-  // Reject 2nd CLL transition later in the file, invalid CLL (avg > max), late switch (>5s), insufficient dominance, candidate strict mode, and 3rd stream CLL
+  // 2nd CLL flip and >5s CLL switch now promote cleanly to varyingCll peak normalization; invalid CLL (avg > max), insufficient intro dominance, candidate strict mode, and 3rd stream CLL still reject
   const secondCllFlip=[...cllOnlyLines,makeLine(240*1001/24000,'10000000/10000',1033,345,{min_luminance:'0/10000'})];
-  await assert.rejects(()=>runFakeScan(secondCllFlip,true),/Conflicting or changing static HDR metadata/);
+  const secondCllScan=await runFakeScan(secondCllFlip,true);
+  assert.equal(secondCllScan.staticInfo.introSplice,undefined);
+  assert.equal(secondCllScan.staticInfo.varyingCll.switches,2);
+  assert.equal(Number(secondCllScan.staticInfo.light.max_content),1033);
+  assert.equal(Number(secondCllScan.staticInfo.light.max_average),345);
 
   const invalidCllSplice=[makeLine(0,'10000000/10000',1033,345),...Array.from({length:10},(_,k)=>makeLine((k+1)*0.042,'10000000/10000',200,500))];
   await assert.rejects(()=>runFakeScan(invalidCllSplice,true),/Conflicting or changing static HDR metadata/);
@@ -1495,7 +1499,11 @@ test('bounded intro-splice HDR10 mastering normalizer accepts uniform main featu
   const lateCllSwitch=[];
   for(let i=0;i<130;i++) lateCllSwitch.push(makeLine(i*1001/24000,'10000000/10000',1033,345));
   for(let i=130;i<600;i++) lateCllSwitch.push(makeLine(i*1001/24000,'10000000/10000',982,312));
-  await assert.rejects(()=>runFakeScan(lateCllSwitch,true),/Conflicting or changing static HDR metadata/);
+  const lateCllScan=await runFakeScan(lateCllSwitch,true);
+  assert.equal(lateCllScan.staticInfo.introSplice,undefined);
+  assert.equal(lateCllScan.staticInfo.varyingCll.switches,1);
+  assert.equal(Number(lateCllScan.staticInfo.light.max_content),1033);
+  assert.equal(Number(lateCllScan.staticInfo.light.max_average),345);
 
   const shortCllMain=[];
   for(let i=0;i<48;i++) shortCllMain.push(makeLine(i*1001/24000,'10000000/10000',1033,345));
@@ -1639,4 +1647,26 @@ test('mid-movie varying CLL normalizes to presentation-wide peak when mastering 
  } finally {
   fs.rmSync(tempDir,{recursive:true,force:true});
  }
+});
+
+test('V16.16 DV7/8.1 Level 6 frame count tolerates 1-2 missing RPU frames while keeping DV5 and larger mismatches strict',()=>{
+ assert.equal(typeof p.testReconcileDolbyLevel6FrameCount,'function','reconcileDolbyLevel6FrameCount test hook is missing');
+
+ // Skyfall (2012) pattern: 205959 uniform Level 6 rows vs 205960 decoded video frames
+ const skyfall=p.testReconcileDolbyLevel6FrameCount('dovi7_hdr10',205959,205960);
+ assert.match(skyfall.warning,/Dolby Level 6 metadata missing on 1 of 205960 frame\(s\)/);
+
+ // Exact match produces no warning
+ assert.deepEqual(p.testReconcileDolbyLevel6FrameCount('dovi7_hdr10',205960,205960),{warning:null});
+ assert.deepEqual(p.testReconcileDolbyLevel6FrameCount('dovi5_hdr10',205960,205960),{warning:null});
+
+ // 2 missing frames on >=100-frame DV8.1 stream is also tolerated
+ const twoMissing=p.testReconcileDolbyLevel6FrameCount('dovi81_hdr10',998,1000);
+ assert.match(twoMissing.warning,/Dolby Level 6 metadata missing on 2 of 1000 frame\(s\)/);
+
+ // Strict rejections: DV5, >2 missing, excess L6 frames, or <100-frame stream
+ assert.throws(()=>p.testReconcileDolbyLevel6FrameCount('dovi5_hdr10',205959,205960),/Dolby Level 6 frame count mismatch \(205959 \/ 205960\)/);
+ assert.throws(()=>p.testReconcileDolbyLevel6FrameCount('dovi7_hdr10',205957,205960),/Dolby Level 6 frame count mismatch \(205957 \/ 205960\)/);
+ assert.throws(()=>p.testReconcileDolbyLevel6FrameCount('dovi7_hdr10',205961,205960),/Dolby Level 6 frame count mismatch \(205961 \/ 205960\)/);
+ assert.throws(()=>p.testReconcileDolbyLevel6FrameCount('dovi7_hdr10',49,50),/Dolby Level 6 frame count mismatch \(49 \/ 50\)/);
 });

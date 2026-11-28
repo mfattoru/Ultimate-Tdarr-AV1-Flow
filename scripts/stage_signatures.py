@@ -63,6 +63,7 @@ SYMBOL_STAGE_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         "parseDolbyLevel6": ("precheck_video",),
         "readHdrFrames": ("precheck_video", "encode"),
         "summarizeLevel6Rows": ("precheck_video",),
+        "reconcileDolbyLevel6FrameCount": ("precheck_video",),
         "DOLBY_LEVEL9_PRIMARIES": ("precheck_video", "encode"),
         "parseDolbyLevel9": ("precheck_video",),
         "summarizeLevel9Rows": ("precheck_video",),
