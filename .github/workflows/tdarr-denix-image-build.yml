@@ -57,13 +57,18 @@ jobs:
           file: ./deployment/tdarr-denix-vpl-pr385/Dockerfile
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' }}
-          tags: ${{ env.IMAGE }}:candidate-${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE }}:candidate-${{ github.sha }}
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+            ${{ env.IMAGE }}:latest
 
       - name: Report candidate reference
         run: |
           if [[ "${{ github.event_name }}" == "push" ]]; then
-            echo "Published candidate: ${IMAGE}:candidate-${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
-            echo "Run the Arc smoke check on Unraid before promoting it to latest." >> "$GITHUB_STEP_SUMMARY"
+            echo "Published image tags:" >> "$GITHUB_STEP_SUMMARY"
+            echo "- ${IMAGE}:candidate-${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- ${IMAGE}:sha-${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- ${IMAGE}:latest" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "Built candidate locally in CI; pull requests do not publish registry images." >> "$GITHUB_STEP_SUMMARY"
           fi

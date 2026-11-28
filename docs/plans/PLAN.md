@@ -1031,3 +1031,22 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
 1. **Red Phase:** Add failing tests covering the DV7/8.1 bounded Level 6 tolerance, strict rejections (`>2`, excess, `<100`, `dovi5_hdr10`), and stall-safe Dolby preflight progress behavior; verify they fail.
 2. **Green Phase:** Update `scripts/build.py`, rebuild `flow.json`, and verify all tests pass.
 3. **Verification:** Run `python3 scripts/stage_signatures.py --check-isolation && make check` (`0` failures, `git diff --check` clean) and update `docs/plans/IMPLEMENTATION_LOG.md` before final `make check`.
+
+
+---
+
+# V16.17 Execution Plan — Auto-Publish `:latest` on `main` Image Builds
+
+## Change Categorization
+- **In-Place Workflow Update (`.github/workflows/tdarr-denix-image-build.yml`):**
+  - Updates `Build or publish candidate` so pushes to `main` automatically tag and push `:latest` and `:sha-${{ github.sha }}` alongside `:candidate-${{ github.sha }}` once the build succeeds, while PR builds keep `push: false`.
+  - Retains `.github/workflows/tdarr-denix-image-promote.yml` unchanged for manual rollbacks to any prior `candidate-<sha>`.
+
+## Architectural Review
+- In `.github/workflows/tdarr-denix-image-build.yml`:
+  - Replace single `tags: ${{ env.IMAGE }}:candidate-${{ github.sha }}` with multi-line tags:
+    - `${{ env.IMAGE }}:candidate-${{ github.sha }}`
+    - `${{ env.IMAGE }}:sha-${{ github.sha }}`
+    - `${{ env.IMAGE }}:latest`
+  - Update `Report candidate reference` step summary on `push` to list all three published tags.
+  - Validate YAML syntax and `make check`.
