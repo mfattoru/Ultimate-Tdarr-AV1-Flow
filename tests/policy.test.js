@@ -1530,3 +1530,113 @@ test('bounded intro-splice HDR10 mastering normalizer accepts uniform main featu
   fs.rmSync(tempDir,{recursive:true,force:true});
  }
 });
+
+test('mid-movie varying CLL normalizes to presentation-wide peak when mastering display is uniform',async()=>{
+ const nodeOs=require('node:os');
+ const makeMastering=(maxLum,overrides={})=>({
+  side_data_type:'Mastering display metadata',
+  red_x:'34000/50000',red_y:'16000/50000',
+  green_x:'13250/50000',green_y:'34500/50000',
+  blue_x:'7500/50000',blue_y:'3000/50000',
+  white_point_x:'15635/50000',white_point_y:'16450/50000',
+  min_luminance:'50/10000',max_luminance:maxLum,
+  ...overrides
+ });
+ const makeLine=(ts,maxLum,cllMax,cllAvg,overrides={})=>{
+  const md=makeMastering(maxLum,overrides);
+  return `frame|best_effort_timestamp_time=${ts.toFixed(6)}|pkt_pos=1024|interlaced_frame=0`
+   +`|side_datum/mastering_display_metadata:side_data_type=Mastering display metadata`
+   +`|side_datum/mastering_display_metadata:red_x=${md.red_x}|side_datum/mastering_display_metadata:red_y=${md.red_y}`
+   +`|side_datum/mastering_display_metadata:green_x=${md.green_x}|side_datum/mastering_display_metadata:green_y=${md.green_y}`
+   +`|side_datum/mastering_display_metadata:blue_x=${md.blue_x}|side_datum/mastering_display_metadata:blue_y=${md.blue_y}`
+   +`|side_datum/mastering_display_metadata:white_point_x=${md.white_point_x}|side_datum/mastering_display_metadata:white_point_y=${md.white_point_y}`
+   +`|side_datum/mastering_display_metadata:min_luminance=${md.min_luminance}|side_datum/mastering_display_metadata:max_luminance=${md.max_luminance}`
+   +`|side_datum/content_light_level_metadata:side_data_type=Content light level metadata`
+   +`|side_datum/content_light_level_metadata:max_content=${cllMax}|side_datum/content_light_level_metadata:max_average=${cllAvg}`;
+ };
+ const tempDir=fs.mkdtempSync(path.join(nodeOs.tmpdir(),'tdarr-varying-cll-'));
+ try {
+  const dummyMedia=path.join(tempDir,'sample.mkv');
+  fs.writeFileSync(dummyMedia,'dummy');
+  const scriptPath=path.join(tempDir,'ffprobe-cll');
+  const runFakeScan=async(lines,allowIntro=true)=>{
+   const outFile=path.join(tempDir,'lines.txt');
+   fs.writeFileSync(outFile,lines.join('\n')+'\n');
+   fs.writeFileSync(scriptPath,`#!/bin/sh\nexec cat '${outFile.replace(/'/g,"'\\''")}'\n`);
+   fs.chmodSync(scriptPath,0o755);
+   return await p.testScanFrames(scriptPath,dummyMedia,0,{staticMetadata:true,timestamps:true,failFast:true,scanRole:allowIntro?'source':'candidate',allowIntroMasteringSplice:allowIntro});
+  };
+
+  // 1. Hellboy (2004) pattern: uniform mastering (4000 nits), CLL dips mid-movie (9121/1265 -> 3646/166 -> 9121/1265)
+  const hellboyLines=[];
+  for(let i=0;i<150;i++) hellboyLines.push(makeLine(i*1001/24000,'40000000/10000',9121,1265));
+  for(let i=150;i<180;i++) hellboyLines.push(makeLine(i*1001/24000,'40000000/10000',3646,166));
+  for(let i=180;i<240;i++) hellboyLines.push(makeLine(i*1001/24000,'40000000/10000',9121,1265));
+  const hellboyScan=await runFakeScan(hellboyLines,true);
+  assert.equal(hellboyScan.staticInfo.conflict,false);
+  assert.equal(hellboyScan.staticInfo.introSplice,undefined);
+  assert.equal(hellboyScan.staticInfo.varyingCll.switches,2);
+  assert.equal(Number(hellboyScan.staticInfo.light.max_content),9121);
+  assert.equal(Number(hellboyScan.staticInfo.light.max_average),1265);
+  const hellboySource={
+   codec_name:'hevc',color_transfer:'smpte2084',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv',
+   side_data_list:[makeMastering('40000000/10000'),{side_data_type:'Content light level metadata',max_content:9121,max_average:1265}]
+  };
+  const hellboyNorm=p.testNormalizeIntroMasteringSplice(hellboySource,hellboyScan);
+  assert.equal(hellboyNorm.masteringDisplayArg,null);
+  assert.equal(hellboyNorm.contentLightArg,'9121,1265');
+  assert.equal(hellboyNorm.normalized.varyingCll.switches,2);
+  assert.deepEqual(hellboyNorm.normalized.mainLight,{max_content:9121,max_average:1265});
+
+  // 2. Toy Story 5 (2026) pattern: uniform mastering (BT.2020 1000 nits), CLL rises across scenes (130/66 -> 238/38 -> 259/35 -> 258/68)
+  const bt2020={red_x:'35400/50000',red_y:'14600/50000',green_x:'8500/50000',green_y:'39850/50000',blue_x:'6550/50000',blue_y:'2300/50000',min_luminance:'1/10000'};
+  const ts5Lines=[];
+  for(let i=0;i<140;i++) ts5Lines.push(makeLine(i*1001/24000,'10000000/10000',130,66,bt2020));
+  for(let i=140;i<180;i++) ts5Lines.push(makeLine(i*1001/24000,'10000000/10000',238,38,bt2020));
+  for(let i=180;i<220;i++) ts5Lines.push(makeLine(i*1001/24000,'10000000/10000',259,35,bt2020));
+  for(let i=220;i<260;i++) ts5Lines.push(makeLine(i*1001/24000,'10000000/10000',258,68,bt2020));
+  const ts5Scan=await runFakeScan(ts5Lines,true);
+  assert.equal(ts5Scan.staticInfo.conflict,false);
+  assert.equal(ts5Scan.staticInfo.varyingCll.switches,3);
+  assert.equal(Number(ts5Scan.staticInfo.light.max_content),259);
+  assert.equal(Number(ts5Scan.staticInfo.light.max_average),68);
+  const ts5Source={
+   codec_name:'hevc',color_transfer:'smpte2084',color_primaries:'bt2020',color_space:'bt2020nc',color_range:'tv',
+   side_data_list:[makeMastering('10000000/10000',bt2020),{side_data_type:'Content light level metadata',max_content:130,max_average:66}]
+  };
+  const ts5Norm=p.testNormalizeIntroMasteringSplice(ts5Source,ts5Scan);
+  assert.equal(ts5Norm.masteringDisplayArg,null);
+  assert.equal(ts5Norm.contentLightArg,'259,68');
+  assert.deepEqual(ts5Norm.normalized.mainLight,{max_content:259,max_average:68});
+  const ts5OutCll=ts5Norm.metadata.side_data_list.find(s=>s.side_data_type==='Content light level metadata');
+  assert.equal(ts5OutCll.max_content,259);
+  assert.equal(ts5OutCll.max_average,68);
+
+  // 3. Promoting a CLL-only intro splice when a 2nd CLL switch occurs later
+  const promoLines=[];
+  for(let i=0;i<24;i++) promoLines.push(makeLine(i*1001/24000,'10000000/10000',1033,345));
+  for(let i=24;i<200;i++) promoLines.push(makeLine(i*1001/24000,'10000000/10000',982,312));
+  for(let i=200;i<240;i++) promoLines.push(makeLine(i*1001/24000,'10000000/10000',1100,350));
+  const promoScan=await runFakeScan(promoLines,true);
+  assert.equal(promoScan.staticInfo.introSplice,undefined);
+  assert.equal(promoScan.staticInfo.varyingCll.switches,2);
+  assert.equal(Number(promoScan.staticInfo.light.max_content),1100);
+  assert.equal(Number(promoScan.staticInfo.light.max_average),350);
+
+  // 4. Reject mid-movie mastering display changes, invalid CLL, candidate varying CLL, and 3rd stream CLL
+  const midMasterLines=[...ts5Lines.slice(0,150),makeLine(150*1001/24000,'40000000/10000',238,38,bt2020)];
+  await assert.rejects(()=>runFakeScan(midMasterLines,true),/Conflicting or changing static HDR metadata/);
+
+  const badCllLines=[...ts5Lines.slice(0,150),makeLine(150*1001/24000,'10000000/10000',200,500,bt2020)];
+  await assert.rejects(()=>runFakeScan(badCllLines,true),/Conflicting or changing static HDR metadata/);
+
+  await assert.rejects(()=>runFakeScan(ts5Lines,false),/Conflicting or changing static HDR metadata/);
+
+  assert.throws(()=>p.testNormalizeIntroMasteringSplice({
+   ...ts5Source,
+   side_data_list:[ts5Source.side_data_list[0],{side_data_type:'Content light level metadata',max_content:1500,max_average:400}]
+  },ts5Scan),/HDR light metadata conflicts/i);
+ } finally {
+  fs.rmSync(tempDir,{recursive:true,force:true});
+ }
+});

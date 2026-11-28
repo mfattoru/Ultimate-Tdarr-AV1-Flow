@@ -950,3 +950,50 @@ Replace the single monolithic engine hash (`__PRECHECK_ENGINE_HASH__`) and candi
 1. **Red Phase:** Update `tests/arr_action.test.js` and `tests/failure_notify.test.js` with failing tests covering Radarr/Sonarr blocklist+delete+search, `TDARR_ARR_DELETE_CORRUPT=false` opt-out, already-blocklisted, fail-closed history/blocklist/file-ID guards, delete failure, non-corruption isolation, and notification embeds.
 2. **Green Phase:** Implement changes in `src/arr_action.js`, `src/failure_notify.js`, and `scripts/build.py`, and rebuild `flow.json`.
 3. **Documentation & Verification:** Update `.env.example`, `README.md`, `docs/architecture/FAILURE_DIAGNOSTICS.md`, and `docs/plans/IMPLEMENTATION_LOG.md`; verify `python3 scripts/stage_signatures.py --check-isolation` (unchanged engine stage hashes) and `make check` (`0` errors, full coverage, clean `git diff --check`).
+
+
+---
+
+# V16.15 Execution Plan — Mid-Movie Varying Content Light Level (MaxCLL/MaxFALL) Peak Normalization
+
+## Change Categorization
+- **In-Place Feature Extension (`src/policy.js`, `scripts/build.py`):**
+  - Extends V16.13's source HDR static-metadata normalization in place to handle discs whose **Mastering Display metadata stays strictly uniform** (or has only the single bounded `<= 5.0s / <= 300 frames` leading intro splice), while **`Content light level metadata` (`MaxCLL`/`MaxFALL`) varies per scene or per chapter mid-movie** — observed in *Hellboy (2004)* (`9121/1265 -> 3646/166 -> 9121/1265`, QSV route) and *Toy Story 5 (2026)* (`130/66 -> 238/38 -> 259/35 -> 258/68`, `dovi7_hdr10` + `SVT-AV1` route).
+  - Strictly preserves fail-closed rejection on:
+    - Any mid-movie Mastering Display change outside the bounded 5s intro window (`red/green/blue/white_point`, `min_luminance`, `max_luminance`, or 2nd mastering switch).
+    - Any invalid CLL values (`!Number.isInteger` or outside `1 <= MaxFALL <= MaxCLL <= 65535`).
+    - All candidate validation scans (`allowIntroMasteringSplice = false` remains strictly per-frame uniform).
+  - Preserves V16.13 exact behavior for single bounded leading intro splices (*The Mummy (1999)* `1033/345 -> 982/312`, *Batman Begins (2005)* `4000 -> 1000 cd/m²`).
+  - **Empirically verified encoder behavior (`tdarr-flow-live-test-20261102`):** Passing `-content_light <maxCll>,<maxFall>` before `-i` (already wired via `hdrLightOverride`) overrides per-frame CLL SEI uniformly across `48/48` output frames (`100%`) on **both** `libsvtav1` and `av1_qsv`.
+
+## Architectural Review
+- **1. Full-Source Peak-CLL Tracking (`src/policy.js`):**
+  - Keep `inspectVideoFrames` opt-in on `scanRole === 'source'` (`allowIntroMasteringSplice: true`):
+    - In `collectHdrFrameStatic(line, info, frameIndex, timestamp)`:
+      - Keep all Mastering Display checks unchanged (at most one single luminance-only transition inside `<= 300 frames / <= 5.0s` preserving identical primaries/white point; any other mastering change sets `info.conflict = true` immediately).
+      - When `info.allowIntroSplice` is enabled and `lightValue` is valid (`1 <= cAvg <= cMax <= 65535`):
+        - Track `info.initialLight` (first non-zero CLL) and `info.lastLight` (most recently seen non-zero CLL).
+        - If a single CLL transition occurs inside the leading intro window (with or without mastering changing on the same boundary) and no later CLL switch occurs, keep `info.introSplice` intact so bounded intro-only splices (*The Mummy*) still normalize to the main-feature CLL (`982/312`).
+        - If CLL switches **outside** the leading intro window (provided `!masterChanged` at that frame and Mastering Display stayed uniform/valid) OR switches a **second** time after a CLL-only intro splice (clearing `introSplice.introLight` and deleting `info.introSplice` if `!info.introSplice.introMastering`): activate `info.varyingCll = { switches, initialLight, minMaxContent, minMaxAverage }` while updating `info.light` to the component-wise running peak `{ side_data_type: 'Content light level metadata', max_content: Math.max(...), max_average: Math.max(...) }` across all remaining scanned frames (incrementing `switches` whenever `lightValue` differs from `info.lastLight`).
+      - Strip scratch fields (`firstFrameTs`, `masteringFrames`, `lightFrames`, `initialLight`, `lastLight`) inside `inspectVideoFrames` before returning `scan.staticInfo`.
+  - Update `isSdrWithOrphanStaticHdr` (and `scripts/build.py` `orphan_dovi_sdr` / `dovi5_hdr10` guards) to also reject `scan.staticInfo?.varyingCll` so non-HDR10 routes remain strictly protected.
+  - Update `seedHdrMetadataFromMediaInfo` to accept frame-0 MediaInfo CLL alongside `staticInfo.varyingCll` peak `staticInfo.light` when MediaInfo matches `varyingCll.initialLight` or `staticInfo.light`.
+  - Update `normalizeIntroMasteringSplice(source, scan)`:
+    - Handle `staticInfo.introSplice`, `staticInfo.varyingCll`, or both together (`introMastering` + `varyingCll`).
+    - When `varyingCll` is present, validate `initialLight` and peak `staticInfo.light`, ensure any existing non-`0/0` stream/MediaInfo CLL matches either `varyingCll.initialLight` or `staticInfo.light` (still rejecting an unrelated injected 3rd CLL value), always emit `contentLightArg = "${peakMax},${peakAvg}"` (even when `initialLight` equals `peakLight`, as in *Hellboy* `9121/1265 -> 3646/166 -> 9121/1265`), replace stream CLL with peak CLL, and populate `normalized.varyingCll`.
+- **2. Routing, Preflight & Quality-Floor Guards (`scripts/build.py`):**
+  - At line 945 (`dovi7` / `dovi81` preflight cache fast-path): guard with `&& !frameScan.staticInfo?.introSplice && !frameScan.staticInfo?.varyingCll` so `preflightHdrSource` / `preflightHdrLightOverride` from frame-0 opening probe does not shadow the full-film peak CLL from `frameScan`.
+  - At `mustRetainOriginalAtQualityFloor` / `introMasteringNormalized` remux guard: keep the existing regex guard intact for `tests/flow.test.js`, and skip `seek_heal` copy remux whenever `introMasteringNormalized` is truthy (`introNorm.normalized` covers both `introSplice` and `varyingCll`), since a stream-copy remux would copy varying source CLL packets that candidate validation rejects.
+  - Update `[HDR metadata]` log line and `args.variables.user.hdr_conversion` summary to clearly describe normalized varying CLL (`peak MaxCLL/MaxFALL across N switch(es)`).
+- **3. Tests & Docs:**
+  - `tests/policy.test.js`: test mid-movie CLL dips/peaks (*Hellboy* `9121/1265 -> 3646/166 -> 9121/1265`, *Toy Story 5* `130/66 -> 238/38 -> 259/35 -> 258/68`), CLL promotion after >1 switch, preservation of bounded *The Mummy* intro splice (`982/312`), strict rejection on mid-movie mastering change / invalid CLL / candidate varying CLL, and `seedHdrMetadataFromMediaInfo` with `varyingCll`.
+  - `tests/integration.test.js`: real FFmpeg end-to-end tests with multi-segment HEVC fixtures (`hdr10` QSV path emitting `-content_light 9121,1265` and `dovi`/`svt` `libsvtav1` path emitting `-content_light 259,68`), plus strict rejection of a candidate retaining varying CLL.
+  - `docs/plans/IMPLEMENTATION_LOG.md`: append V16.15 verification results.
+
+## Execution Path (TDD)
+1. **Red Phase:** Add failing unit & integration tests in `tests/policy.test.js` and `tests/integration.test.js`; verify failures before production edits.
+2. **Green Phase:** Update `src/policy.js` and `scripts/build.py`, and rebuild `flow.json` via `python3 scripts/build.py`.
+3. **Verification:**
+   - Run `python3 scripts/stage_signatures.py --check-isolation` (confirm all 4 isolation invariants pass) and `make check` (`423+` tests passing, coverage >= 90%, `git diff --check` clean).
+   - Run an isolated live container encode smoke test in `tdarr-flow-live-test-20261102` on short spliced clips matching *Hellboy (2004)* (`av1_qsv`) and *Toy Story 5 (2026)* (`libsvtav1` + DV7->HDR10) confirming `outputNumber: 1` and 100% uniform frame CLL, then clean scratch directories cleanly.
+   - Append V16.15 results to `docs/plans/IMPLEMENTATION_LOG.md` and run a final `make check`.

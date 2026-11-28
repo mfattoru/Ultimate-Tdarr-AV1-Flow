@@ -902,7 +902,7 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
       if (!effectiveRange) throw new Error("Untagged SDR YUV range could not be inferred safely");
       sdrSource.color_range=effectiveRange;
       log(`[Color] Input transfer, primaries, and matrix are unspecified; using ${effectiveRange==='tv'?'TV limited':'PC full'} range for the untagged SDR YUV encode.`);
-    } else if (preflightDoviRoute === "orphan_dovi_sdr" && isExplicitSdrColorTriplet(mainVideo, infoVideos[0]) && !frameScan.dovi && !frameScan.hdr10plus && !frameScan.otherDynamic && !frameScan.staticInfo?.conflict && !frameScan.staticInfo?.introSplice) {
+    } else if (preflightDoviRoute === "orphan_dovi_sdr" && isExplicitSdrColorTriplet(mainVideo, infoVideos[0]) && !frameScan.dovi && !frameScan.hdr10plus && !frameScan.otherDynamic && !frameScan.staticInfo?.conflict && !frameScan.staticInfo?.introSplice && !frameScan.staticInfo?.varyingCll) {
       validateEffectiveSdrTransfer(mainVideo, infoVideos[0], frameScan);
       validateSdrFrameSignaling("sdr", frameScan, mainVideo);
       sdrSource = effectiveSdrSource(mainVideo, infoVideos[0], frameScan);
@@ -924,7 +924,7 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
         hdrSource = mainVideo;
         validateHlg(hdrSource,hdrSource);
       } else if (hdrClass === "dovi5_hdr10") {
-        if (frameScan.staticInfo?.introSplice) throw Error("Conflicting or changing static HDR metadata in decoded frames");
+        if (frameScan.staticInfo?.introSplice || frameScan.staticInfo?.varyingCll) throw Error("Conflicting or changing static HDR metadata in decoded frames");
         if (preflightDoviRoute==="dovi5_hdr10" && preflightHdrSource) {
           hdrSource=preflightHdrSource;
           hdrMasterOverride=preflightHdrMasterOverride;
@@ -942,7 +942,7 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
       } else {
         const canUseDolbyLevel6 = hdrClass === "dovi81_hdr10" || hdrClass === "dovi7_hdr10" || hdrClass === "dovi81_hdr10plus_hdr10" || hdrClass === "dovi7_hdr10plus_hdr10";
         const doviProfile=route=>/^dovi(7|81)_hdr10(?:plus_hdr10)?$/.exec(String(route || ''))?.[1] || '';
-        if(doviProfile(preflightDoviRoute) && doviProfile(preflightDoviRoute)===doviProfile(hdrClass) && preflightHdrSource && !frameScan.staticInfo?.introSplice) {
+        if(doviProfile(preflightDoviRoute) && doviProfile(preflightDoviRoute)===doviProfile(hdrClass) && preflightHdrSource && !frameScan.staticInfo?.introSplice && !frameScan.staticInfo?.varyingCll) {
           hdrSource=preflightHdrSource;
           hdrLightOverride=preflightHdrLightOverride;
         } else {
@@ -963,13 +963,19 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
                 : `${n.introMaxLuminance} -> ${n.mainMaxLuminance} cd/m^2`;
               parts.push(`mastering ${lumChanged}`);
             }
-            if (n.mainLight) {
+            if (n.varyingCll) {
+              parts.push(`peak CLL ${n.mainLight.max_content}/${n.mainLight.max_average} across ${n.varyingCll.switches} switch(es) (from ${n.introLight.max_content}/${n.introLight.max_average})`);
+            } else if (n.mainLight) {
               parts.push(`CLL ${n.introLight.max_content}/${n.introLight.max_average} -> ${n.mainLight.max_content}/${n.mainLight.max_average}`);
             }
-            const label = (n.mainMaxLuminance !== null && n.mainLight)
-              ? "HDR10 static splice"
-              : n.mainLight ? "content-light splice" : "mastering display splice";
-            log(`[HDR metadata] Normalized leading intro ${label} (${n.introFrames} frame(s)${durPart}: ${parts.join(", ")}) across ${n.postSpliceFrames} main frame(s).`);
+            if (n.varyingCll && n.mainMaxLuminance === null) {
+              log(`[HDR metadata] Normalized mid-movie varying content-light metadata to peak ${n.mainLight.max_content}/${n.mainLight.max_average} across ${n.varyingCll.switches} switch(es) (frame-0 ${n.introLight.max_content}/${n.introLight.max_average}; mastering display uniform).`);
+            } else {
+              const label = (n.mainMaxLuminance !== null && n.mainLight)
+                ? "HDR10 static splice"
+                : n.mainLight ? "content-light splice" : "mastering display splice";
+              log(`[HDR metadata] Normalized leading intro ${label} (${n.introFrames} frame(s)${durPart}: ${parts.join(", ")}) across ${n.postSpliceFrames} main frame(s).`);
+            }
           }
           const resolved = await resolveHdrLight(hdrSource,hdrClass,() => extractDolbyLevel6(ffmpegBin,inputPath,mainVideo.index,frameScan.frames,false,false,{
             expectedDuration:Number(mainVideo.duration || args.inputFileObj?.ffProbeData?.format?.duration || 0),
@@ -1012,10 +1018,14 @@ one('  const isEncodedByUs = Boolean(encodedByKey && String(formatTags[encodedBy
             ? `${introMasteringNormalized.introMinLuminance}-${introMasteringNormalized.introMaxLuminance} -> ${introMasteringNormalized.mainMinLuminance}-${introMasteringNormalized.mainMaxLuminance} cd/m^2`
             : `${introMasteringNormalized.introMaxLuminance} -> ${introMasteringNormalized.mainMaxLuminance} cd/m^2`);
         }
-        if (introMasteringNormalized.mainLight) {
+        if (introMasteringNormalized.varyingCll && introMasteringNormalized.mainMaxLuminance === null) {
+          noteParts.push(`peak CLL ${introMasteringNormalized.mainLight.max_content}/${introMasteringNormalized.mainLight.max_average} across ${introMasteringNormalized.varyingCll.switches} switch(es)`);
+        } else if (introMasteringNormalized.mainLight) {
           noteParts.push(`CLL ${introMasteringNormalized.introLight.max_content}/${introMasteringNormalized.introLight.max_average} -> ${introMasteringNormalized.mainLight.max_content}/${introMasteringNormalized.mainLight.max_average}`);
         }
-        const spliceNote = `intro ${introMasteringNormalized.mainLight && introMasteringNormalized.mainMaxLuminance === null ? "CLL" : "HDR"} splice normalized (${noteParts.join(", ")})`;
+        const spliceNote = (introMasteringNormalized.varyingCll && introMasteringNormalized.mainMaxLuminance === null)
+          ? `varying CLL normalized (${noteParts.join(", ")})`
+          : `intro ${introMasteringNormalized.mainLight && introMasteringNormalized.mainMaxLuminance === null ? "CLL" : "HDR"} splice normalized (${noteParts.join(", ")})`;
         args.variables.user.hdr_conversion = args.variables.user.hdr_conversion
           ? `${args.variables.user.hdr_conversion}; ${spliceNote}`
           : `HDR10 ${spliceNote}`;

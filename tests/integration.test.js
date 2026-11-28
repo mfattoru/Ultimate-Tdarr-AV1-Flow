@@ -1311,3 +1311,69 @@ test('bounded HDR10 CLL intro-splice normalizes leading MaxCLL/MaxFALL frames vi
  assert.equal(badRes.outputNumber,2,'candidate retaining a CLL splice must fail validation');
  assert.match(String(badArgs.variables.user.failure_reason||''),/Conflicting or changing static HDR metadata/);
 });
+
+test('mid-movie varying CLL normalizes to presentation-wide peak on QSV and SVT-AV1 HDR routes and rejects varying candidates',async()=>{
+ // 1. SVT-AV1 clamp route (BT.2020 green_y=0.797): 6s at 130/66 -> 2s at 259/35 -> 2s at 258/68
+ const svtS1=path.join(dir,'vary-svt-1.mkv'),svtS2=path.join(dir,'vary-svt-2.mkv'),svtS3=path.join(dir,'vary-svt-3.mkv'),svtList=path.join(dir,'vary-svt-list.txt');
+ const svtSrc=path.join(dir,'vary-svt-src.mkv'),svtUniform=path.join(dir,'vary-svt-uniform.mkv'),svtOut=path.join(dir,'vary-svt-out.mkv');
+ const svtBad1=path.join(dir,'vary-svt-bad1.mkv'),svtBad2=path.join(dir,'vary-svt-bad2.mkv'),svtBadList=path.join(dir,'vary-svt-badlist.txt'),svtBadOut=path.join(dir,'vary-svt-badout.mkv');
+ for(const [seg,dur,cll] of [[svtS1,'6','130,66'],[svtS2,'2','259,35'],[svtS3,'2','258,68']]) {
+  child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i',`testsrc2=size=160x90:rate=24:duration=${dur}`,'-f','lavfi','-i',`sine=frequency=440:duration=${dur}`,'-map','0:v:0','-map','1:a:0','-c:v','libx265','-preset','ultrafast','-crf','10','-x265-params',`log-level=error:pools=1:master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1):max-cll=${cll}`,'-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-c:a','aac','-y',seg],{stdio:'ignore'});
+ }
+ fs.writeFileSync(svtList,`file '${svtS1}'\nfile '${svtS2}'\nfile '${svtS3}'\n`);
+ child.execFileSync('ffmpeg',['-v','error','-f','concat','-safe','0','-i',svtList,'-c','copy','-y',svtSrc],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=24:duration=10','-f','lavfi','-i','sine=frequency=440:duration=10','-map','0:v:0','-map','1:a:0','-c:v','libx265','-preset','ultrafast','-crf','10','-x265-params','log-level=error:pools=1:master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1):max-cll=259,68','-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-c:a','aac','-y',svtUniform],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',svtUniform,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0:mastering-display=G(0.17,0.797)B(0.131,0.046)R(0.708,0.292)WP(0.3127,0.329)L(1000,0.0001):content-light=259,68','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-metadata:g','encoded_by=ArcAV1_SVTAV1_HDRFallback_V15','-y',svtOut],{stdio:'ignore'});
+
+ const svtMediaInfo={
+  HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10',
+  MasteringDisplay_ColorPrimaries:'BT.2020',MasteringDisplay_ColorPrimaries_Source:'Stream',
+  MasteringDisplay_Luminance:'min: 0.0001 cd/m2, max: 1000 cd/m2',MasteringDisplay_Luminance_Source:'Stream',
+  MaxCLL:'130 cd/m2',MaxCLL_Source:'Stream',MaxFALL:'66 cd/m2',MaxFALL_Source:'Stream'
+ };
+ const xSvt=load({hdr:true,inputPath:svtSrc,smallerOutput:svtOut,mediaInfoOverride:svtMediaInfo});
+ const argsSvt=argsFor(svtSrc,xSvt.logs),resSvt=await run(xSvt,argsSvt);
+ assert.equal(resSvt.outputNumber,1,argsSvt.variables.user.failure_reason||xSvt.logs.slice(-8).join('\n'));
+ const svtCmd=xSvt.commands.find(c=>c.args.includes('libsvtav1'));
+ assert.ok(svtCmd,'expected libsvtav1 encode command');
+ const svtClIdx=svtCmd.args.indexOf('-content_light');
+ assert.ok(svtClIdx>=0&&svtClIdx<svtCmd.args.indexOf('-i'),'-content_light must precede -i on SVT-AV1');
+ assert.equal(svtCmd.args[svtClIdx+1],'259,68');
+ assert.match(String(argsSvt.variables.user.hdr_conversion||''),/259\/68/);
+
+ // Candidate retaining varying CLL must still fail validation
+ child.execFileSync('ffmpeg',['-v','error','-i',svtS1,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0:mastering-display=G(0.17,0.797)B(0.131,0.046)R(0.708,0.292)WP(0.3127,0.329)L(1000,0.0001):content-light=130,66','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-y',svtBad1],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',svtS2,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0:mastering-display=G(0.17,0.797)B(0.131,0.046)R(0.708,0.292)WP(0.3127,0.329)L(1000,0.0001):content-light=259,35','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-y',svtBad2],{stdio:'ignore'});
+ fs.writeFileSync(svtBadList,`file '${svtBad1}'\nfile '${svtBad2}'\n`);
+ child.execFileSync('ffmpeg',['-v','error','-f','concat','-safe','0','-i',svtBadList,'-c','copy','-metadata:g','encoded_by=ArcAV1_SVTAV1_HDRFallback_V15','-y',svtBadOut],{stdio:'ignore'});
+ const badSvt=load({hdr:true,inputPath:svtSrc,smallerOutput:svtBadOut,mediaInfoOverride:svtMediaInfo});
+ const badSvtArgs=argsFor(svtSrc,badSvt.logs),badSvtRes=await run(badSvt,badSvtArgs);
+ assert.equal(badSvtRes.outputNumber,2,'candidate retaining varying CLL must fail validation');
+ assert.match(String(badSvtArgs.variables.user.failure_reason||''),/Conflicting or changing static HDR metadata/);
+
+ // 2. QSV route (Display P3 green_y=0.69): Hellboy pattern 6s at 9121/1265 -> 2s at 3646/166 -> 2s at 9121/1265
+ const qsvS1=path.join(dir,'vary-qsv-1.mkv'),qsvS2=path.join(dir,'vary-qsv-2.mkv'),qsvS3=path.join(dir,'vary-qsv-3.mkv'),qsvList=path.join(dir,'vary-qsv-list.txt');
+ const qsvSrc=path.join(dir,'vary-qsv-src.mkv'),qsvUniform=path.join(dir,'vary-qsv-uniform.mkv'),qsvOut=path.join(dir,'vary-qsv-out.mkv');
+ for(const [seg,dur,cll] of [[qsvS1,'6','9121,1265'],[qsvS2,'2','3646,166'],[qsvS3,'2','9121,1265']]) {
+  child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i',`testsrc2=size=160x90:rate=24:duration=${dur}`,'-f','lavfi','-i',`sine=frequency=440:duration=${dur}`,'-map','0:v:0','-map','1:a:0','-c:v','libx265','-preset','ultrafast','-crf','10','-x265-params',`log-level=error:pools=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(40000000,50):max-cll=${cll}`,'-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-c:a','aac','-y',seg],{stdio:'ignore'});
+ }
+ fs.writeFileSync(qsvList,`file '${qsvS1}'\nfile '${qsvS2}'\nfile '${qsvS3}'\n`);
+ child.execFileSync('ffmpeg',['-v','error','-f','concat','-safe','0','-i',qsvList,'-c','copy','-y',qsvSrc],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=24:duration=10','-f','lavfi','-i','sine=frequency=440:duration=10','-map','0:v:0','-map','1:a:0','-c:v','libx265','-preset','ultrafast','-crf','10','-x265-params','log-level=error:pools=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(40000000,50):max-cll=9121,1265','-pix_fmt','yuv420p10le','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-c:a','aac','-y',qsvUniform],{stdio:'ignore'});
+ child.execFileSync('ffmpeg',['-v','error','-i',qsvUniform,'-map','0','-c:v','libsvtav1','-preset','12','-crf','45','-svtav1-params','lp=1:log-level=0:mastering-display=G(0.265,0.69)B(0.15,0.06)R(0.68,0.32)WP(0.3127,0.329)L(4000,0.005):content-light=9121,1265','-c:a','copy','-color_primaries','bt2020','-color_trc','smpte2084','-colorspace','bt2020nc','-color_range','tv','-metadata:g','encoded_by=ArcAV1_QSV_V15','-y',qsvOut],{stdio:'ignore'});
+
+ const qsvMediaInfo={
+  HDR_Format:'SMPTE ST 2086',HDR_Format_Compatibility:'HDR10',
+  MasteringDisplay_ColorPrimaries:'Display P3',MasteringDisplay_ColorPrimaries_Source:'Stream',
+  MasteringDisplay_Luminance:'min: 0.0050 cd/m2, max: 4000 cd/m2',MasteringDisplay_Luminance_Source:'Stream',
+  MaxCLL:'9121 cd/m2',MaxCLL_Source:'Stream',MaxFALL:'1265 cd/m2',MaxFALL_Source:'Stream'
+ };
+ const xQsv=load({hdr:true,inputPath:qsvSrc,smallerOutput:qsvOut,mediaInfoOverride:qsvMediaInfo});
+ const argsQsv=argsFor(qsvSrc,xQsv.logs),resQsv=await run(xQsv,argsQsv);
+ assert.equal(resQsv.outputNumber,1,argsQsv.variables.user.failure_reason||xQsv.logs.slice(-8).join('\n'));
+ const qsvCmd=xQsv.commands.find(c=>c.args.includes('av1_qsv'));
+ assert.ok(qsvCmd,'expected av1_qsv encode command');
+ const qsvClIdx=qsvCmd.args.indexOf('-content_light');
+ assert.ok(qsvClIdx>=0&&qsvClIdx<qsvCmd.args.indexOf('-i'),'-content_light must precede -i on av1_qsv');
+ assert.equal(qsvCmd.args[qsvClIdx+1],'9121,1265');
+});
